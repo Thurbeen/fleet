@@ -579,15 +579,13 @@ fn feedback_waits_for_a_thurbox_state_that_says_ready_whatever_the_agent() {
         .unwrap();
     env.apply(runtime_config()).ok();
     let mut t = task("t1", true);
-    t["spec"]["harness"] = json!("claude-yourhosting");
+    t["spec"]["harness"] = json!("claude-custom");
     env.apply(t).ok();
     env.reconcile().ok();
     assert_eq!(env.status("t1")["phase"], "Briefed");
     let create = &argv_of(&env, "create")[0];
     assert!(
-        create
-            .windows(2)
-            .any(|a| a == ["--agent", "claude-yourhosting"]),
+        create.windows(2).any(|a| a == ["--agent", "claude-custom"]),
         "the harness name is thurbox's agent name, unchanged: {create:?}"
     );
 

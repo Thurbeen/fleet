@@ -557,7 +557,8 @@ impl Pass<'_, '_> {
 
     /// Deliver the oldest inbox entry not given up on: the brief protocol
     /// under the entry's key. One entry per pass; nothing else of the Task
-    /// changes, apart from the attention a failed delivery asks for.
+    /// changes, apart from the attention a failed or waiting delivery asks
+    /// for.
     fn deliver(&mut self, session: SessionRef) {
         if self.st.inbox.len() > MAX_INBOX {
             self.needs_attention(
