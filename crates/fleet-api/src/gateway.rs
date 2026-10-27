@@ -26,7 +26,7 @@ use crate::meta::Millis;
 use crate::observation::Observation;
 use crate::plan::EffectOutcome;
 use crate::task::Workspace;
-use crate::validate::validate_name;
+use crate::validate::{is_absolute_path, validate_name};
 
 /// How many messages the first `history` read of a thread takes: the
 /// newest 200.
@@ -669,7 +669,7 @@ impl GatewayConfig {
                 return Err(format!("{at}: bot is empty"));
             }
             if let Some(p) = &account.curl_config
-                && !p.is_absolute()
+                && !is_absolute_path(&p.to_string_lossy())
             {
                 return Err(format!("{at}: curlConfig must be an absolute path"));
             }
@@ -741,11 +741,11 @@ impl GatewayConfig {
                 return Err(format!("{at}: a bot id under allowBots is empty"));
             }
             validate_name(&route.task_config).map_err(|e| format!("{at}: taskConfig: {e}"))?;
-            if !route.brief.is_absolute() {
+            if !is_absolute_path(&route.brief.to_string_lossy()) {
                 return Err(format!("{at}: brief must be an absolute path"));
             }
             let dir = Path::new(&route.workspace.dir);
-            if !dir.is_absolute() {
+            if !is_absolute_path(&route.workspace.dir) {
                 return Err(format!("{at}: workspace.dir must be an absolute path"));
             }
             if route
@@ -1122,6 +1122,16 @@ mod tests {
                 .unwrap_err()
                 .contains("gateway.questions \"nowhere\"")
         );
+        // Both portable absolute forms pass on every platform.
+        for brief in [
+            "/etc/fleet/briefs/x.md",
+            "C:/fleet/briefs/x.md",
+            "C:\\fleet\\briefs\\x.md",
+        ] {
+            let mut c = config();
+            c.routes.get_mut("eng").unwrap().brief = brief.into();
+            assert_eq!(c.validate(), Ok(()), "{brief}");
+        }
         let mut c = config();
         c.routes.get_mut("eng").unwrap().brief = "briefs/x.md".into();
         assert!(
