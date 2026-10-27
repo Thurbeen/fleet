@@ -785,7 +785,8 @@ fn an_orphaned_conversation_keeps_its_messages_and_is_retired_after_its_retentio
     assert_eq!(st["phase"], "Tied", "{st:#}");
     assert_condition(&st, "Tied", "True", "TaskKnown");
     assert_eq!(st["task"]["state"], "created");
-    // A Task the store cannot read keeps the thread Tied.
+    // A Task the store cannot read keeps the thread Tied: the manager
+    // reports the unreadable record and decides nothing from it.
     let task_path = env.object_path("Task", &task_name);
     let bytes = fs::read(&task_path).unwrap();
     fs::write(&task_path, &bytes[..bytes.len() / 2]).unwrap();
@@ -796,7 +797,7 @@ fn an_orphaned_conversation_keeps_its_messages_and_is_retired_after_its_retentio
             .as_array()
             .unwrap()
             .iter()
-            .any(|u| u.as_str().unwrap().contains("Task/")),
+            .any(|u| u.as_str().unwrap().contains(&task_name)),
         "{report:#}"
     );
     assert_eq!(env.conversation_status(&conv)["phase"], "Tied");
