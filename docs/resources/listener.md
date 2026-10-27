@@ -1,7 +1,6 @@
 # Listener resource
 
-Design, not implemented; the store refuses this kind today as an unknown
-kind. A Listener records the inbound health of one chat account for the
+A Listener records the inbound health of one chat account for the
 [Gateway controller](../controllers/gateway/README.md). Fleet makes no
 inbound call: a separate listener program holds the platform's connection
 and hands each delivery to `fleet gateway receive`. Whether that program is

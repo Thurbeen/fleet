@@ -22,6 +22,16 @@
 //! the Forge port and decided by ChangeRequestController, whose plan is one
 //! status write and, after retention, one fenced delete. There are no effects
 //! and no receipts on that side.
+//!
+//! It then walks the Conversations and the Listeners of the `[gateway]`
+//! section: a Conversation is answered from the store (its tied Task) and
+//! the Gateway port (the account's capabilities, cached for the sweep, and
+//! one history read), decided by ConversationController, and written
+//! through `record_received`, which drains the spool with the status; a
+//! Listener is answered from the port (capabilities and identity, cached)
+//! and decided by ListenerController. Each retires its own object by a
+//! fenced delete. The receive verb that fills the spool and records beats
+//! lives in [`verbs`] and needs no lease.
 
 mod execution;
 pub mod plugins;
@@ -30,22 +40,29 @@ pub mod verbs;
 use std::collections::BTreeMap;
 
 use fleet_api::change_request::{self, ChangeRequestDefaults, ChangeRequestSpec};
+use fleet_api::conversation::{self, ConversationSpec};
 use fleet_api::follow::{ForgeDefaults, ForgeStatus};
 use fleet_api::forge::{ChangeObservation, Forge, Uncertainty};
+use fleet_api::gateway::{
+    Capabilities, Gateway, GatewayConfig, HistoryObservation, Identity, ListenerAccount,
+};
+use fleet_api::listener::{self, ListenerSpec};
 use fleet_api::plan::{Action, Effect, EffectOutcome, Observations, Plan, Probe, Receipt};
 use fleet_api::runtime::Runtime;
 use fleet_api::task;
 use fleet_api::{Clock, LeaseToken, Millis, Object, Observation, Store, StoreError};
 use fleet_controllers::{
-    ChangeRequestController, ChangeRequestInput, ChangeRequestObservations, ForgeController,
-    ForgeInput, ForgeObservations, TaskController, TaskInput,
+    ChangeRequestController, ChangeRequestInput, ChangeRequestObservations, ConversationController,
+    ConversationInput, ConversationObservations, ForgeController, ForgeInput, ForgeObservations,
+    ListenerController, ListenerInput, ListenerObservations, TaskController, TaskInput,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use verbs::{
-    ApplyOutcome, DeclareOutcome, Declared, ResultOutcome, apply, apply_change_request,
-    conversation_name, declare, declare_change_request, delete, derived_name, record_result, send,
+    ApplyOutcome, DeclareOutcome, Declared, Received, Refusal, ResultOutcome, apply,
+    apply_change_request, apply_conversation, beat, conversation_name, declare,
+    declare_change_request, delete, derived_name, ensure_listeners, receive, record_result, send,
 };
 
 /// How a bounded reconcile run ends.
@@ -92,6 +109,36 @@ pub struct Manager<'a> {
     /// The `[forge]` relay defaults a Task's `spec.forge` may override, and
     /// the ready policies it may select.
     pub forge_defaults: ForgeDefaults,
+    /// The `[gateway]` section with its port; `None` when the config has
+    /// none, in which case a Conversation or Listener is reported as an
+    /// error, never reconciled.
+    pub gateway: Option<GatewaySide<'a>>,
+}
+
+/// The chat side of a run: the port the CLI wired, the section it was
+/// wired from, and each account's digest, which the CLI computed.
+pub struct GatewaySide<'a> {
+    pub port: &'a dyn Gateway,
+    pub config: GatewayConfig,
+    /// Per account, the digest `fleet gateway account NAME --json` prints.
+    pub digests: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for GatewaySide<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GatewaySide")
+            .field("accounts", &self.config.accounts.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
+}
+
+/// One sweep's answers from the Gateway port, asked at most once per
+/// account, and the accounts a throttled history read deferred.
+#[derive(Debug, Default)]
+struct GatewayCache {
+    capabilities: BTreeMap<String, Observation<Capabilities>>,
+    whoami: BTreeMap<String, Observation<Identity>>,
+    deferred: BTreeMap<String, HistoryObservation>,
 }
 
 impl std::fmt::Debug for Manager<'_> {
@@ -196,6 +243,14 @@ impl Manager<'_> {
         report: &mut RunReport,
     ) -> Result<(), StoreError> {
         let mut passes = 0;
+        if let Some(gateway) = &self.gateway {
+            // One Listener per account, as the config loads.
+            for problem in verbs::ensure_listeners(self.store, &gateway.config) {
+                if !report.errors.contains(&problem) {
+                    report.errors.push(problem);
+                }
+            }
+        }
         while passes < opts.max_passes {
             passes += 1;
             report.passes += 1;
@@ -255,6 +310,9 @@ impl Manager<'_> {
                 busy |= self.tally(step, &obj.key(), report)?;
             }
             busy |= self.sweep_change_requests(lease, opts.lease_ttl, report)?;
+            let mut cache = GatewayCache::default();
+            busy |= self.sweep_conversations(lease, opts.lease_ttl, report, &mut cache)?;
+            busy |= self.sweep_listeners(lease, opts.lease_ttl, report, &mut cache)?;
             busy |= self.sweep_plugins(lease, opts.lease_ttl, report)?;
             if !busy {
                 report.idle = true;
@@ -395,6 +453,342 @@ impl Manager<'_> {
             }
         }
         Ok(step)
+    }
+
+    /// Every due Conversation, one account at a time in a stable order, so
+    /// that a `retryAfter` from a platform defers all of that account's
+    /// history reads together. Returns whether anything changed.
+    fn sweep_conversations(
+        &self,
+        lease: &mut LeaseToken,
+        ttl: Millis,
+        report: &mut RunReport,
+        cache: &mut GatewayCache,
+    ) -> Result<bool, StoreError> {
+        let objects = match self.store.list(conversation::KIND) {
+            Observation::Known(c) => c,
+            Observation::Unknown { why } => {
+                report.unknowns.push(format!("list Conversation: {why}"));
+                return Ok(false);
+            }
+        };
+        let now = self.clock.now();
+        let mut due: Vec<&Object> = objects
+            .iter()
+            .filter(|o| ConversationController::due(o, now))
+            .collect();
+        due.sort_by_cached_key(|o| {
+            (
+                o.spec["account"].as_str().unwrap_or_default().to_string(),
+                o.metadata.name.clone(),
+            )
+        });
+        let mut busy = false;
+        for obj in due {
+            *lease = self.store.renew_lease(lease, ttl)?;
+            let step = self.reconcile_conversation(obj, lease, ttl, report, cache);
+            busy |= self.tally(step, &obj.key(), report)?;
+        }
+        Ok(busy)
+    }
+
+    /// One Conversation: parse its address when its ref is not yet
+    /// recorded, answer its `Object` probe from the store and its
+    /// `Capabilities` and `History` probes through the Gateway port, decide,
+    /// then write the status through `record_received` (the spool drained
+    /// with it, compare-and-swap, under the lease) and, when the plan says
+    /// so, delete the object by its uid and resourceVersion.
+    fn reconcile_conversation(
+        &self,
+        obj: &Object,
+        lease: &mut LeaseToken,
+        ttl: Millis,
+        report: &mut RunReport,
+        cache: &mut GatewayCache,
+    ) -> Result<Step, StoreError> {
+        let Some(gateway) = &self.gateway else {
+            return Err(StoreError::Invalid(
+                "no [gateway] section is configured; a Conversation cannot be reconciled".into(),
+            ));
+        };
+        let spec: ConversationSpec = fleet_api::validate::typed(conversation::KIND, &obj.spec)?;
+        let mut input = ConversationInput {
+            object: obj,
+            observations: ConversationObservations::default(),
+            now: self.clock.now(),
+            defaults: gateway
+                .config
+                .defaults()
+                .for_route(gateway.config.routes.get(&spec.route).cloned()),
+        };
+        if obj.status.get("ref").is_none_or(Value::is_null) {
+            let parsed = gateway.port.parse(&spec.account, &spec.address);
+            if let Some(why) = parsed.why() {
+                report.unknowns.push(format!("{} parse: {why}", obj.key()));
+            }
+            input.observations.parsed = Some(parsed);
+        }
+        let ctl = ConversationController;
+        // Each round answers what the last one asked; the controller asks
+        // only for what it lacks, so this ends. The bound is a guard.
+        for _ in 0..4 {
+            let probes = ctl.probes(&input)?;
+            if probes.is_empty() {
+                break;
+            }
+            for probe in probes {
+                match probe {
+                    Probe::Object { kind, name } => {
+                        let o = self.store.get(&kind, &name);
+                        if let Some(why) = o.why() {
+                            report
+                                .unknowns
+                                .push(format!("{} object {kind}/{name}: {why}", obj.key()));
+                        }
+                        input.observations.task = Some(o);
+                    }
+                    Probe::Capabilities { account } => {
+                        let answer = self.capabilities(gateway, &account, lease, ttl, cache)?;
+                        if let Some(why) = answer.why() {
+                            report
+                                .unknowns
+                                .push(format!("{} capabilities {account}: {why}", obj.key()));
+                        }
+                        input.observations.capabilities = Some(answer);
+                    }
+                    Probe::History {
+                        account,
+                        conversation,
+                        query,
+                    } => {
+                        let answer = match cache.deferred.get(&account) {
+                            Some(d) => d.clone(),
+                            None => {
+                                *lease = self.store.renew_lease(lease, ttl)?;
+                                gateway.port.history(&account, &conversation, &query)
+                            }
+                        };
+                        if let HistoryObservation::Unknown {
+                            kind,
+                            why,
+                            retry_after: Some(wait),
+                        } = &answer
+                        {
+                            cache.deferred.entry(account.clone()).or_insert(
+                                HistoryObservation::Unknown {
+                                    kind: *kind,
+                                    why: format!("deferred with the account: {why}"),
+                                    retry_after: Some(*wait),
+                                },
+                            );
+                        }
+                        if let HistoryObservation::Unknown { why, .. } = &answer {
+                            report
+                                .unknowns
+                                .push(format!("{} history: {why}", obj.key()));
+                        }
+                        input.observations.history = Some(answer);
+                    }
+                    // Not this controller's.
+                    _ => {}
+                }
+            }
+        }
+        let plan = ctl.reconcile(&input)?;
+        let by = ConversationController::MANAGER;
+        let name = &obj.metadata.name;
+        let mut step = Step::default();
+        let mut rv = obj.metadata.resource_version;
+        if let Some(status) = plan.status {
+            match self
+                .store
+                .record_received(name, status, rv, by.clone(), lease)
+            {
+                Ok(o) => {
+                    rv = o.metadata.resource_version;
+                    step.wrote += 1;
+                }
+                Err(StoreError::Conflict { .. }) => {
+                    step.conflict = true;
+                    return Ok(step);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        if plan.delete {
+            *lease = self.store.renew_lease(lease, ttl)?;
+            match self.store.delete_fenced(
+                conversation::KIND,
+                name,
+                &obj.metadata.uid,
+                rv,
+                by,
+                lease,
+            ) {
+                Ok(_) => step.wrote += 1,
+                // Recreated or rewritten since the decision: nothing removed.
+                Err(StoreError::Conflict { .. }) => step.conflict = true,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(step)
+    }
+
+    /// Every due Listener. Returns whether anything changed.
+    fn sweep_listeners(
+        &self,
+        lease: &mut LeaseToken,
+        ttl: Millis,
+        report: &mut RunReport,
+        cache: &mut GatewayCache,
+    ) -> Result<bool, StoreError> {
+        let objects = match self.store.list(listener::KIND) {
+            Observation::Known(l) => l,
+            Observation::Unknown { why } => {
+                report.unknowns.push(format!("list Listener: {why}"));
+                return Ok(false);
+            }
+        };
+        let now = self.clock.now();
+        let mut busy = false;
+        for obj in objects.iter().filter(|o| ListenerController::due(o, now)) {
+            *lease = self.store.renew_lease(lease, ttl)?;
+            let step = self.reconcile_listener(obj, lease, ttl, report, cache);
+            busy |= self.tally(step, &obj.key(), report)?;
+        }
+        Ok(busy)
+    }
+
+    /// One Listener: answer its `Capabilities` and `GatewayWhoami` probes
+    /// through the Gateway port, from the sweep's cache, decide, then write
+    /// the status (compare-and-swap, under the lease) and, when its account
+    /// left the config, delete the object by its uid and resourceVersion.
+    fn reconcile_listener(
+        &self,
+        obj: &Object,
+        lease: &mut LeaseToken,
+        ttl: Millis,
+        report: &mut RunReport,
+        cache: &mut GatewayCache,
+    ) -> Result<Step, StoreError> {
+        let Some(gateway) = &self.gateway else {
+            return Err(StoreError::Invalid(
+                "no [gateway] section is configured; a Listener cannot be reconciled".into(),
+            ));
+        };
+        let spec: ListenerSpec = fleet_api::validate::typed(listener::KIND, &obj.spec)?;
+        let account = gateway
+            .config
+            .accounts
+            .get(&spec.account)
+            .map(|config| ListenerAccount {
+                config: config.clone(),
+                digest: gateway
+                    .digests
+                    .get(&spec.account)
+                    .cloned()
+                    .unwrap_or_default(),
+                routed: gateway.config.is_routed(&spec.account),
+            });
+        let mut input = ListenerInput {
+            object: obj,
+            observations: ListenerObservations::default(),
+            now: self.clock.now(),
+            defaults: gateway.config.defaults().for_account(account),
+        };
+        let ctl = ListenerController;
+        for _ in 0..4 {
+            let probes = ctl.probes(&input)?;
+            if probes.is_empty() {
+                break;
+            }
+            for probe in probes {
+                match probe {
+                    Probe::Capabilities { account } => {
+                        let answer = self.capabilities(gateway, &account, lease, ttl, cache)?;
+                        if let Some(why) = answer.why() {
+                            report
+                                .unknowns
+                                .push(format!("{} capabilities {account}: {why}", obj.key()));
+                        }
+                        input.observations.capabilities = Some(answer);
+                    }
+                    Probe::GatewayWhoami { account } => {
+                        let answer = match cache.whoami.get(&account) {
+                            Some(a) => a.clone(),
+                            None => {
+                                *lease = self.store.renew_lease(lease, ttl)?;
+                                let a = gateway.port.whoami(&account);
+                                cache.whoami.insert(account.clone(), a.clone());
+                                a
+                            }
+                        };
+                        if let Some(why) = answer.why() {
+                            report
+                                .unknowns
+                                .push(format!("{} whoami {account}: {why}", obj.key()));
+                        }
+                        input.observations.whoami = Some(answer);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let plan = ctl.reconcile(&input)?;
+        let by = ListenerController::MANAGER;
+        let name = &obj.metadata.name;
+        let mut step = Step::default();
+        let mut rv = obj.metadata.resource_version;
+        if let Some(status) = plan.status {
+            match self.store.update_status(
+                listener::KIND,
+                name,
+                status,
+                rv,
+                by.clone(),
+                Some(&*lease),
+            ) {
+                Ok(o) => {
+                    rv = o.metadata.resource_version;
+                    step.wrote += 1;
+                }
+                Err(StoreError::Conflict { .. }) => {
+                    step.conflict = true;
+                    return Ok(step);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        if plan.delete {
+            *lease = self.store.renew_lease(lease, ttl)?;
+            match self
+                .store
+                .delete_fenced(listener::KIND, name, &obj.metadata.uid, rv, by, lease)
+            {
+                Ok(_) => step.wrote += 1,
+                Err(StoreError::Conflict { .. }) => step.conflict = true,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(step)
+    }
+
+    /// An account's capabilities, asked once per sweep.
+    fn capabilities(
+        &self,
+        gateway: &GatewaySide<'_>,
+        account: &str,
+        lease: &mut LeaseToken,
+        ttl: Millis,
+        cache: &mut GatewayCache,
+    ) -> Result<Observation<Capabilities>, StoreError> {
+        if let Some(a) = cache.capabilities.get(account) {
+            return Ok(a.clone());
+        }
+        *lease = self.store.renew_lease(lease, ttl)?;
+        let a = gateway.port.capabilities(account);
+        cache.capabilities.insert(account.to_string(), a.clone());
+        Ok(a)
     }
 
     /// ForgeController on one Task: answer its `Object` probes from the store
@@ -849,7 +1243,12 @@ impl Manager<'_> {
                 obs.at_rest = Some(o);
             }
             // Not TaskController's probes: it never asks them.
-            Probe::Change { .. } | Probe::Object { .. } | Probe::Whoami { .. } => {}
+            Probe::Change { .. }
+            | Probe::Object { .. }
+            | Probe::Whoami { .. }
+            | Probe::History { .. }
+            | Probe::Capabilities { .. }
+            | Probe::GatewayWhoami { .. } => {}
         }
     }
 

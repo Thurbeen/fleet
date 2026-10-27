@@ -86,7 +86,7 @@ pub fn validate_manifest(manifest: &Manifest, name: &str) -> Result<(), StoreErr
         ));
     }
     let mut names = std::collections::BTreeSet::new();
-    for builtin in ["Task", "TaskConfig", "EnvProvider", "ChangeRequest"] {
+    for builtin in crate::kinds::BUILT_IN {
         for alias in kind_aliases(builtin) {
             names.insert(alias);
         }

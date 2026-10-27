@@ -21,6 +21,8 @@ v1's queue records, extension or operator configuration, and the root
 | `TaskConfig` | reusable execution defaults | nobody (passive data) |
 | `EnvProvider` | stored data and explicit file/command environment sources | nobody (passive data) |
 | `ChangeRequest` | one mirrored change on a forge | ChangeRequestController |
+| `Conversation` | the mirror of one chat thread | ConversationController; the account's listener, through `fleet gateway receive`, spools deliveries on `status.received` |
+| `Listener` | the inbound health of one chat account | ListenerController; the account's listener, through `fleet gateway receive`, writes `beats`, `refused` and `beatRevision` |
 | Plugin-defined | a registered external controller’s resource | `plugin/<name>`, including reserved host bookkeeping |
 
 Kinds not built in or registered by a plugin are refused on write as `unknown
@@ -51,17 +53,16 @@ whose first step is built: the `Gateway` port in `fleet_api::gateway`, with
 the `[gateway]` section's types, its validation and the pure admission
 function; the `fleet-gateway` adapter crate, depending on `fleet-api` and
 `fleet-exec` only, with a file-backed fake that models every `capabilities`
-combination; and the `[gateway]` config, loaded and validated by the CLI,
+combination; the `[gateway]` config, loaded and validated by the CLI,
 whose accounts are opened before a manager run so the lease outlasts the
-port's worst case. `Conversation` and `Listener` are still refused as
-unknown kinds, and no `fleet gateway` verb exists. As designed, the later
-steps add `ConversationController`, `ListenerController` and
-`GatewayController` field managers, a `listener/<account>` appender to the
-Conversation spool and writer of its Listener's beat (and the manager
-appending Fleet's opening post to the spool through a keyed `Receive`
-action of GatewayController's plan), a `gateway/` inbox source, and
-`status.answered`, written only by an inbox append that carries `answers`.
-None of those guarantees hold until implemented with their tests.
+port's worst case; the `Conversation` and `Listener` kinds with their
+controllers ([the mirror](#the-conversation-mirror)); and the `fleet gateway
+receive`, `account` and `status` verbs. As designed, the later steps add
+admission and Task creation to ConversationController, a `GatewayController`
+field manager (and the manager appending Fleet's opening post to the spool
+through a keyed `Receive` action of its plan), a `gateway/` inbox source,
+and `status.answered`, written only by an inbox append that carries
+`answers`. None of those guarantees hold until implemented with their tests.
 
 ## Crates and the allowed graph
 
@@ -93,11 +94,15 @@ fleet-dev          tooling        `cargo xtask`: gate and release
   crate's re-export.
 - Only the crates listed may name a status-writing field manager: only
   fleet-controllers names `FieldManager::TaskController`,
-  `FieldManager::ChangeRequestController` and `FieldManager::ForgeController`,
-  only fleet-api and fleet-controllers name `FieldManager::Plugin`;
-  only fleet-manager's `result` and `declare` verbs name `FieldManager::Worker`,
-  and only fleet-manager's `send` verb (and the store that checks it) names
-  `FieldManager::Cli`, the caller of the inbox append.
+  `FieldManager::ChangeRequestController`, `FieldManager::ForgeController`,
+  `FieldManager::ConversationController` and
+  `FieldManager::ListenerController`, only fleet-api and fleet-controllers
+  name `FieldManager::Plugin`; only fleet-manager's `result` and `declare`
+  verbs name `FieldManager::Worker`, only fleet-manager's `send` verb (and
+  the store that checks it) names `FieldManager::Cli`, the caller of the
+  inbox append, and only fleet-manager's `receive` verb (and the store)
+  names `FieldManager::Listener`, the caller of the spool and beat
+  mutations.
 - The CLI calls no store write, no controller method, no runtime effect and
   no forge read: it parses, calls a fleet-manager verb, and prints.
 - Only fleet-exec reaches `std::process::Command`, `std::os::unix::process`,
@@ -346,6 +351,75 @@ finalizer. Guarantees, each with its test in `change_request_controller` and
 
 Conditions: `Reachable`, `Mergeable`, `Settled`.
 
+## The Conversation mirror
+
+ConversationController is a pure function from the Conversation, the
+deliveries the receive verb spooled on it, one read of the thread's
+history, the account's capabilities and the Task it is tied to, to a plan:
+the whole status, with the spool drained of what it numbered, and after
+retention whether to delete its own object. It has no effects and no
+finalizer in this step; starting a Task, admission and the refusal post are
+the next step's. Guarantees, each with its test in
+`conversation_controller`, `e2e_gateway` and `store_contract`:
+
+- **Receive.** `fleet gateway receive --account NAME` reads one envelope
+  from stdin, refuses a `verified` that is not the account's `inbound`,
+  reads the payload through the adapter's pure `event`, ignores an event in
+  a channel no route covers, creates the thread's Conversation under
+  `conv-<12 hex of sha256(<account>/<address>)>` only for an event that
+  could start a Task, earn a refusal, or is Fleet's own keyed post, and
+  spools the delivery under its delivery id through `receive_event`, as
+  `listener/<account>`, without the lease. A redelivery is a no-op, the
+  spool holds at most 100, and the exit codes are 0 (written, duplicate or
+  ignored), 1 (refused: full, deleting, the wrong `verified`, an account
+  the config lacks), 4 (an unreadable envelope, payload or record) and 5
+  (a conflict the retries did not resolve). Every envelope refused or
+  unreadable is counted by reason on the account's Listener, created by the
+  verb if the manager has not yet, with `lastFaultAt` for the listener's
+  own faults.
+- **Numbered on first sight.** The first pass reads the thread's history
+  (the newest 200) where the account has it, and numbers it with the
+  spooled events in one revision, oldest first by the platform's time:
+  each message's `seq` and `firstSeq` are that revision and `position` its
+  place. A message seen from the listener and from history is one message.
+  A newer edit moves `seq` and keeps `firstSeq`; an older edit delivered
+  late changes nothing; a removal leaves the mirror. The newest 200 are
+  kept and `droppedBefore` rises to a rotated message's `seq`; the newest
+  500 delivery ids numbered are kept so a redelivery after the drain is
+  still a no-op. The spool is numbered even while the history is Unknown;
+  the read is retried after the platform's `retryAfter` or one `pollMs`.
+- **Backstop.** While Tied and active (a message within `activeMs`), the
+  history is read again every `pollMs` after the newest message; a changed
+  text is an edit. Capabilities are asked once per account per sweep, and
+  a platform without history is never read.
+- **Tied until readably gone.** A Conversation whose `status.task` names a
+  created Task asks for that Task every pass; readable absence, or another
+  Task under the name, makes it Orphaned with `Tied/TaskGone`, the messages
+  kept. An Unknown Task changes nothing.
+- **Retention.** Untied or Orphaned, `gateway.retainMs` after the later of
+  its last message, its orphaning and its creation, the controller plans
+  `delete`; the manager performs it by `uid` and `resourceVersion` under
+  the lease. A thread whose Task waits for the workspace is never retired.
+- **One write.** The status lands through `record_received`, which checks
+  the controller's fields as `update_status` does and lets `received`,
+  which nobody owns, only lose entries, never gain or alter one.
+
+Conditions: `Reachable`, `Tied`, `NeedsAttention` (`RouteUnknown`,
+`MentionsOnly`).
+
+ListenerController is a pure function from the Listener, the account as
+the config has it with its digest, and the platform's `whoami` and
+`capabilities`, to the three conditions: `Accepted` (`Loaded`, or
+`NoRoute`), `Resolved` (`IdentityMatches`, `IdentityMismatch`, or Unknown
+`Unreachable`), and `InboundReady` (`Connected`; or `NoListener`,
+`Connecting`, `Closing`, `ListenerStale`, `ListenerConfigOld`,
+`DeliveriesRefused`), judged from the beats `fleet gateway receive --beat`
+recorded, stamped by the verb's clock, against three `gateway.beatMs` and
+the current digest. The manager creates one Listener per configured
+account when it loads the config, the verb creates it when a beat comes
+first, and the controller deletes one whose account left the config.
+`listener_controller` and `e2e_gateway` hold these.
+
 ## Store
 
 A data directory holds `store.json` (format and version), `lock`, `seq`,
@@ -380,11 +454,23 @@ refused.
   `inbox`, refusing a key no entry holds. None changes another field;
   `store_contract` races appenders against the remover and tears the
   record.
+- A Conversation's `status.received` and a Listener's `beats`, `refused`
+  and `beatRevision` have no owner either. `receive_event` (the account's
+  listener, no lease) spools one delivery, a duplicate id changing nothing
+  and the hundred-and-first refused; `record_received`
+  (ConversationController, under the lease) writes the controller's status
+  and lets the spool only lose entries; `record_beat` and `record_refusal`
+  (the account's listener) replace one instance's beat, evicting the oldest
+  past eight, or count one refusal, each moving `beatRevision` and nothing
+  else. A listener writes only the objects whose spec names its account.
+  `create` takes `apply`, or the account's listener for a Conversation or
+  a Listener.
 - Deleting marks a Task while its finalizer remains; only its controller,
   holding the lease, removes the finalizer, and only from a deleting Task.
 - A controller deletes its own object (`delete_fenced`) only with the
-  object's `uid` and current `resourceVersion` and the lease; a ChangeRequest
-  has no finalizer, so it goes at once.
+  object's `uid` and current `resourceVersion` and the lease; a
+  ChangeRequest, a Conversation and a Listener have no finalizer, so they
+  go at once.
 
 ## Runtime contract
 
@@ -481,12 +567,19 @@ account's name, platform, team, bot and inbound method.
 ## The command line
 
 `fleet
-init|up|apply|get|list|status|send|declare|result|delete|reconcile|version`.
+init|up|apply|get|list|status|send|declare|result|delete|reconcile|gateway|version`.
 Exit codes:
 0 ok, 1 refused, 2 usage, 3 not found, 4 Unknown, 5 conflict, 6 lease.
-`apply`, `get`, `list`, `status` and `delete` take `changerequest` as well as
-`task`, `taskconfig` and `envprovider`; `status changerequest NAME --json`
-prints the ref and the whole numbered snapshot.
+`apply`, `get`, `list`, `status` and `delete` take `changerequest`,
+`conversation` and `listener` as well as `task`, `taskconfig` and
+`envprovider`; `status changerequest NAME --json` prints the ref and the
+whole numbered snapshot, `status conversation NAME --json` the tie, the
+numbered messages and the spool. A Conversation manifest is applied
+through the account's adapter, under its derived name; a Listener manifest
+is refused, since the config is its only source. `fleet gateway receive
+--account NAME [--beat]` is what a listener runs per envelope and per
+heartbeat; `fleet gateway account NAME --json` is what it starts from, and
+`fleet gateway status` shows each account's listener.
 
 The config file is versioned TOML; relative paths are relative to it. This
 one runs the fake runtime:
@@ -569,8 +662,10 @@ both the fake host and the stub; `e2e_forge_controller` covers `fleet declare`,
 the join and the relay against the fake forge and the fake host.
 `e2e_mark_ready` covers the mark-ready effect against the fake forge and
 the fake host, and through the stub `az`, `curl`, `gh` and `glab`.
-`e2e_gateway` covers the `[gateway]` section against the fake gateway.
-`task_controller`, `change_request_controller` and `forge_controller` test
-each controller as a pure function, one transition or Unknown per case.
+`e2e_gateway` covers the `[gateway]` section, the receive verb, the
+Conversation mirror and the Listener against the fake gateway.
+`task_controller`, `change_request_controller`, `forge_controller`,
+`conversation_controller` and `listener_controller` test each controller
+as a pure function, one transition or Unknown per case.
 `store_contract` tests the store against races, torn writes, stale leases
 and the fenced delete. The `architecture` suite enforces the graph above.

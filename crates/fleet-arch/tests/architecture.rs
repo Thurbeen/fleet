@@ -1161,3 +1161,145 @@ fn plugin_identity_and_execution_stay_behind_the_gate_and_manager() {
         );
     }
 }
+
+/// The Gateway mirror's rules, against the real rules file: the two new
+/// controllers' field managers are named by the API and the controllers
+/// alone, the listener's by the API, the manager's verb and the store that
+/// checks it, and the four typed mutations are manager methods the CLI may
+/// not call.
+#[test]
+fn the_rules_keep_the_mirrors_writes_with_the_controllers_and_the_receive_verb() {
+    let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
+    for writer in [
+        "fleet_api::store::FieldManager::ConversationController",
+        "fleet_api::store::FieldManager::ListenerController",
+    ] {
+        assert_eq!(
+            rules.status_writers.get(writer),
+            Some(&vec![
+                "fleet-api".to_string(),
+                "fleet-controllers".to_string()
+            ]),
+            "{writer}"
+        );
+    }
+    assert_eq!(
+        rules
+            .status_writers
+            .get("fleet_api::store::FieldManager::Listener"),
+        Some(&vec![
+            "fleet-api".to_string(),
+            "fleet-manager".to_string(),
+            "fleet-store".to_string()
+        ]),
+        "the receive verb is the manager's, and the store checks its caller"
+    );
+    let cli = &rules.crates["fleet-cli"];
+    for method in [
+        "receive_event",
+        "record_received",
+        "record_beat",
+        "record_refusal",
+    ] {
+        assert!(
+            cli.forbidden_methods.iter().any(|m| m == method),
+            "the CLI may not call {method}"
+        );
+    }
+}
+
+/// A listener-shaped writer, one the manager's verb speaks as without a
+/// lease, is guarded like `Cli`: the manager and the store may name it,
+/// the CLI and an adapter may not; and a fourth controller's manager is
+/// the controllers' alone, with its typed drain a method the CLI may not
+/// call.
+#[test]
+fn a_verb_writer_and_a_mirror_controller_are_named_by_the_listed_crates_alone() {
+    let rules = format!(
+        "{}\n[status_writers]\n\"fx_api::store::FieldManager::Ctl\" = [\"fx-api\", \"fx-ctl\"]\n\"fx_api::store::FieldManager::ConvCtl\" = [\"fx-api\", \"fx-ctl\"]\n\"fx_api::store::FieldManager::Cli\" = [\"fx-api\", \"fx-mgr\"]\n\"fx_api::store::FieldManager::Listener\" = [\"fx-api\", \"fx-mgr\", \"fx-store\"]\n",
+        RULES
+            .replace(
+                "[status_writers]\n\"fx_api::store::FieldManager::Ctl\" = [\"fx-api\", \"fx-ctl\"]\n\"fx_api::store::FieldManager::Cli\" = [\"fx-api\", \"fx-mgr\"]\n",
+                ""
+            )
+            .replace(
+                "forbidden_methods = [\"update_status\", \"append_inbox\"]",
+                "forbidden_methods = [\"update_status\", \"append_inbox\", \"receive_event\", \"record_received\"]"
+            )
+    );
+    let api = "//! ```compile_fail\n//! use fx_store::Store;\n//! ```\npub mod store {\n    pub enum FieldManager { Ctl, ConvCtl, Worker, Cli, Listener(String) }\n}\npub use store::FieldManager;\nuse serde::Serialize;\n";
+    expect(
+        "mirror-writers-clean",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                CTL,
+                &ctl(
+                    "use fx_api::FieldManager;\npub fn plan() -> FieldManager { FieldManager::Ctl }\npub fn mirror() -> FieldManager { FieldManager::ConvCtl }\n",
+                ),
+            ),
+            (
+                "crates/fx-mgr/src/lib.rs",
+                "pub fn run() { let _ = fx_ctl::plan(); let _ = fx_api::FieldManager::Listener(\"a\".into()); }\n",
+            ),
+            (
+                "crates/fx-store/src/lib.rs",
+                "use std::fs;\npub struct S;\npub fn read() { let _ = fs::read(\"x\"); let _ = fx_api::FieldManager::Listener(\"a\".into()); }\n",
+            ),
+        ],
+        &[],
+    );
+    expect(
+        "listener-writer-from-cli",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                "crates/fx-cli/src/main.rs",
+                "fn main() { let _ = fx_api::FieldManager::Listener(\"a\".into()); fx_mgr::run(); }\n",
+            ),
+        ],
+        &[("status-writer", "fx-cli")],
+    );
+    expect(
+        "mirror-writer-from-manager",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                "crates/fx-mgr/src/lib.rs",
+                "use fx_api::store::FieldManager as F;\npub fn run() { let _ = F::ConvCtl; }\n",
+            ),
+        ],
+        &[("status-writer", "fx-mgr")],
+    );
+    expect(
+        "listener-writer-from-controller",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                CTL,
+                &ctl(
+                    "use fx_api::FieldManager;\npub fn plan() -> FieldManager { FieldManager::Listener(\"a\".into()) }\n",
+                ),
+            ),
+        ],
+        &[("status-writer", "fx-ctl")],
+    );
+    for method in ["receive_event", "record_received"] {
+        expect(
+            &format!("mirror-{method}-from-cli"),
+            &[
+                ("architecture.toml", &rules),
+                ("crates/fx-api/src/lib.rs", api),
+                (
+                    "crates/fx-cli/src/main.rs",
+                    &format!("fn main() {{ let s = fx_store::S; s.{method}(); fx_mgr::run(); }}\n"),
+                ),
+            ],
+            &[("cli-method", "fx-cli")],
+        );
+    }
+}

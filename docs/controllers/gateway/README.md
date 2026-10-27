@@ -1,9 +1,12 @@
 # Gateway controller
 
-Design, not implemented. The installed binary has the `[gateway]` key, the
-Gateway port and the `fleet-gateway` crate with its fake adapter, from step
-1 below, but no resource kind, controller or verb from this page. A
-`Conversation` manifest is refused today as an unknown kind.
+Design, not implemented in full. The installed binary has step 1 below: the
+`[gateway]` key, the Gateway port, the `fleet-gateway` crate with its fake
+adapter, the `Conversation` and `Listener` kinds, ConversationController's
+mirror (numbering, the history backstop, orphaning and retention),
+ListenerController, and the `fleet gateway receive`, `account` and `status`
+verbs. Admission, Task creation, the refusal post and GatewayController are
+design, not implemented: a mention is mirrored, and starts nothing yet.
 
 The Gateway ties chat threads to Tasks:
 

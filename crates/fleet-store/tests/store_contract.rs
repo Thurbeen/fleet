@@ -1035,7 +1035,9 @@ fn the_inbox_bound_and_the_delivered_revision_hold_on_append() {
         }),
         ..entry(key)
     };
-    let lease2 = store2.acquire_lease("m", 10_000).unwrap();
+    // Two hundred durable writes under one lease: it must outlast a loaded
+    // gate, which is not what this case is about.
+    let lease2 = store2.acquire_lease("m", 60_000).unwrap();
     r = store2
         .append_inbox(
             "r",
@@ -1704,4 +1706,633 @@ fn plugin_status_and_verbs_are_fenced_and_never_write_worker_results() {
         Err(StoreError::LeaseLost(_))
     ));
     assert!(known(store.get("Task", "expired")).is_none());
+}
+
+// ----------------------------------------------------------------------
+// The Gateway's kinds: a Conversation's spool and a Listener's beats have
+// no owner and move only through their typed mutations, named by the
+// account's listener; the controllers own the rest and retire their own.
+// ----------------------------------------------------------------------
+
+fn conversation(name: &str) -> Object {
+    serde_json::from_value(json!({
+        "apiVersion": "fleet/v1alpha1",
+        "kind": "Conversation",
+        "metadata": {"name": name},
+        "spec": {"account": "fake-main", "address": "fake:C0123ABCD:1730000000000", "route": "eng"}
+    }))
+    .unwrap()
+}
+
+fn listener(name: &str) -> Object {
+    serde_json::from_value(json!({
+        "apiVersion": "fleet/v1alpha1",
+        "kind": "Listener",
+        "metadata": {"name": name},
+        "spec": {"account": "fake-main"}
+    }))
+    .unwrap()
+}
+
+fn delivery(id: &str, message: &str) -> fleet_api::gateway::Delivery {
+    serde_json::from_value(json!({
+        "id": id, "verified": "connection", "receivedAt": 7,
+        "event": {"type": "message", "conversation": {"platform": "fake", "chat": "C0123ABCD", "thread": "1730000000000"},
+                  "id": message, "author": {"id": "U0123ABCD", "name": "Alex", "kind": "person"},
+                  "at": 1_730_000_300_000u64, "text": "hi"}
+    }))
+    .unwrap()
+}
+
+fn listener_of(account: &str) -> FieldManager {
+    FieldManager::Listener(account.into())
+}
+
+#[test]
+fn a_conversation_is_created_by_apply_or_its_accounts_listener_and_its_spool_has_no_owner() {
+    use fleet_api::conversation::{ConversationStatus, RECEIVED_CAP, Spooled};
+    let dir = Dir::new("conversation");
+    let store = FileStore::open(&dir.0).unwrap();
+    assert!(store.served_kinds().iter().any(|k| k == "Conversation"));
+    assert!(store.served_kinds().iter().any(|k| k == "Listener"));
+    for by in [
+        FieldManager::Worker,
+        FieldManager::Cli,
+        FieldManager::ConversationController,
+        FieldManager::ListenerController,
+    ] {
+        assert!(
+            matches!(
+                store.create(conversation("conv-1"), by.clone()),
+                Err(StoreError::Forbidden(_))
+            ),
+            "{by:?} creates nothing"
+        );
+    }
+    assert!(matches!(
+        store.create(task("t"), listener_of("fake-main")),
+        Err(StoreError::Forbidden(_))
+    ));
+    let c = store
+        .create(conversation("conv-1"), listener_of("fake-main"))
+        .unwrap();
+    assert!(c.metadata.finalizers.is_empty(), "no finalizer");
+    let rv = c.metadata.resource_version;
+    let lease = store.acquire_lease("m", 60_000).unwrap();
+
+    // Only the listener of the account the spec names spools; a redelivery
+    // is a duplicate; the spool is bounded; nothing else changes.
+    assert!(matches!(
+        store.receive_event("conv-1", delivery("Ev1", "m1"), rv, listener_of("other")),
+        Err(StoreError::Forbidden(_))
+    ));
+    assert!(matches!(
+        store.receive_event("conv-1", delivery("Ev1", "m1"), rv, FieldManager::Apply),
+        Err(StoreError::Forbidden(_))
+    ));
+    assert!(matches!(
+        store.receive_event(
+            "conv-1",
+            delivery("Ev1", "m1"),
+            rv + 1,
+            listener_of("fake-main")
+        ),
+        Err(StoreError::Conflict { .. })
+    ));
+    let (c, outcome) = store
+        .receive_event(
+            "conv-1",
+            delivery("Ev1", "m1"),
+            rv,
+            listener_of("fake-main"),
+        )
+        .unwrap();
+    assert_eq!(outcome, Spooled::Written);
+    let st: ConversationStatus = serde_json::from_value(c.status.clone()).unwrap();
+    assert_eq!(st.received.len(), 1);
+    assert_eq!(st.revision, 0, "the verb numbers nothing");
+    let (same, outcome) = store
+        .receive_event(
+            "conv-1",
+            delivery("Ev1", "m1"),
+            c.metadata.resource_version,
+            listener_of("fake-main"),
+        )
+        .unwrap();
+    assert_eq!(outcome, Spooled::Duplicate);
+    assert_eq!(same.metadata.resource_version, c.metadata.resource_version);
+    let mut rv = c.metadata.resource_version;
+    for i in 2..=RECEIVED_CAP {
+        let (c, _) = store
+            .receive_event(
+                "conv-1",
+                delivery(&format!("Ev{i}"), &format!("m{i}")),
+                rv,
+                listener_of("fake-main"),
+            )
+            .unwrap();
+        rv = c.metadata.resource_version;
+    }
+    let err = store
+        .receive_event(
+            "conv-1",
+            delivery("Ev-over", "m-over"),
+            rv,
+            listener_of("fake-main"),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, StoreError::Forbidden(ref m) if m.contains("holds 100 unread events")),
+        "{err}"
+    );
+
+    // No status write may touch the spool: not the controller's, not anyone's.
+    let current = known(store.get("Conversation", "conv-1")).unwrap();
+    let mut drained = current.status.clone();
+    drained["received"] = json!([]);
+    drained["revision"] = json!(1);
+    for (by, lease_arg) in [
+        (FieldManager::ConversationController, Some(&lease)),
+        (listener_of("fake-main"), None),
+        (FieldManager::Apply, None),
+    ] {
+        let err = store
+            .update_status(
+                "Conversation",
+                "conv-1",
+                drained.clone(),
+                current.metadata.resource_version,
+                by.clone(),
+                lease_arg,
+            )
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Forbidden(_)), "{by:?}: {err}");
+    }
+    // The controller drains it with its status, through record_received,
+    // under the lease; it may remove entries and never add or alter one.
+    for by in [
+        FieldManager::Apply,
+        FieldManager::ChangeRequestController,
+        FieldManager::ListenerController,
+        listener_of("fake-main"),
+    ] {
+        assert!(matches!(
+            store.record_received(
+                "conv-1",
+                drained.clone(),
+                current.metadata.resource_version,
+                by.clone(),
+                &lease
+            ),
+            Err(StoreError::Forbidden(_))
+        ));
+    }
+    let stale = fleet_api::LeaseToken {
+        token: lease.token.saturating_sub(1),
+        ..lease.clone()
+    };
+    assert!(matches!(
+        store.record_received(
+            "conv-1",
+            drained.clone(),
+            current.metadata.resource_version,
+            FieldManager::ConversationController,
+            &stale
+        ),
+        Err(StoreError::LeaseLost(_))
+    ));
+    let mut grown = current.status.clone();
+    grown["received"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::to_value(delivery("Ev-new", "m-new")).unwrap());
+    assert!(matches!(
+        store.record_received(
+            "conv-1",
+            grown,
+            current.metadata.resource_version,
+            FieldManager::ConversationController,
+            &lease
+        ),
+        Err(StoreError::Forbidden(_))
+    ));
+    let mut altered = current.status.clone();
+    altered["received"][0]["receivedAt"] = json!(99);
+    assert!(matches!(
+        store.record_received(
+            "conv-1",
+            altered,
+            current.metadata.resource_version,
+            FieldManager::ConversationController,
+            &lease
+        ),
+        Err(StoreError::Forbidden(_))
+    ));
+    let mut half = current.status.clone();
+    half["received"].as_array_mut().unwrap().drain(..50);
+    half["revision"] = json!(1);
+    let c = store
+        .record_received(
+            "conv-1",
+            half,
+            current.metadata.resource_version,
+            FieldManager::ConversationController,
+            &lease,
+        )
+        .unwrap();
+    let st: ConversationStatus = serde_json::from_value(c.status.clone()).unwrap();
+    assert_eq!(st.received.len(), 50);
+    assert_eq!(st.revision, 1);
+    let c = store
+        .record_received(
+            "conv-1",
+            drained.clone(),
+            c.metadata.resource_version,
+            FieldManager::ConversationController,
+            &lease,
+        )
+        .unwrap();
+    let st: ConversationStatus = serde_json::from_value(c.status.clone()).unwrap();
+    assert!(st.received.is_empty());
+    // The same status again is no write.
+    let again = store
+        .record_received(
+            "conv-1",
+            c.status.clone(),
+            c.metadata.resource_version,
+            FieldManager::ConversationController,
+            &lease,
+        )
+        .unwrap();
+    assert_eq!(again.metadata.resource_version, c.metadata.resource_version);
+    // A deleting Conversation takes no event, and the spec is fixed.
+    assert!(matches!(
+        store.update_spec(
+            "Conversation",
+            "conv-1",
+            json!({"account": "fake-main", "address": "fake:C0123ABCD:2", "route": "eng"}),
+            None,
+            c.metadata.resource_version,
+            FieldManager::Apply
+        ),
+        Err(StoreError::Invalid(_))
+    ));
+    assert_eq!(
+        store
+            .delete("Conversation", "conv-1", FieldManager::Apply)
+            .unwrap(),
+        DeleteOutcome::Removed,
+        "no finalizer: the record goes at once"
+    );
+    assert!(matches!(
+        store.receive_event("conv-1", delivery("Ev9", "m9"), 1, listener_of("fake-main")),
+        Err(StoreError::NotFound(_))
+    ));
+}
+
+#[test]
+fn a_conversations_controller_deletes_its_own_fenced_and_a_bad_status_is_refused() {
+    let dir = Dir::new("conversation-delete");
+    let store = FileStore::open(&dir.0).unwrap();
+    let c = store
+        .create(conversation("conv-2"), FieldManager::Apply)
+        .unwrap();
+    let lease = store.acquire_lease("m", 60_000).unwrap();
+    let (uid, rv) = (c.metadata.uid.clone(), c.metadata.resource_version);
+    assert!(matches!(
+        store.record_received(
+            "conv-2",
+            json!({"phase": "Sideways"}),
+            rv,
+            FieldManager::ConversationController,
+            &lease
+        ),
+        Err(StoreError::Invalid(_))
+    ));
+    assert!(matches!(
+        store.update_status(
+            "Conversation",
+            "conv-2",
+            json!({"phase": "Untied", "revision": 0, "droppedBefore": 0}),
+            rv,
+            FieldManager::ConversationController,
+            None
+        ),
+        Err(StoreError::LeaseLost(_))
+    ));
+    for by in [
+        FieldManager::Apply,
+        FieldManager::ListenerController,
+        listener_of("fake-main"),
+    ] {
+        assert!(matches!(
+            store.delete_fenced("Conversation", "conv-2", &uid, rv, by, &lease),
+            Err(StoreError::Forbidden(_))
+        ));
+    }
+    assert!(matches!(
+        store.delete_fenced(
+            "Conversation",
+            "conv-2",
+            "another-uid",
+            rv,
+            FieldManager::ConversationController,
+            &lease
+        ),
+        Err(StoreError::Conflict { .. })
+    ));
+    assert_eq!(
+        store
+            .delete_fenced(
+                "Conversation",
+                "conv-2",
+                &uid,
+                rv,
+                FieldManager::ConversationController,
+                &lease
+            )
+            .unwrap(),
+        DeleteOutcome::Removed
+    );
+}
+
+#[test]
+fn a_listeners_beats_and_refusals_move_only_through_the_verbs_mutations() {
+    use fleet_api::listener::{Beat, BeatState, INSTANCE_CAP, ListenerStatus};
+    let dir = Dir::new("listener");
+    let store = FileStore::open(&dir.0).unwrap();
+    let l = store
+        .create(listener("listener-fake-main"), listener_of("fake-main"))
+        .unwrap();
+    let rv = l.metadata.resource_version;
+    let lease = store.acquire_lease("m", 60_000).unwrap();
+    let beat = |at: u64| Beat {
+        state: BeatState::Connected,
+        digest: "sha256:x".into(),
+        at,
+        sent_at: at,
+        last_delivery_at: None,
+    };
+    for by in [
+        FieldManager::Apply,
+        FieldManager::ListenerController,
+        listener_of("other"),
+    ] {
+        assert!(
+            matches!(
+                store.record_beat("listener-fake-main", "a1", beat(1), rv, by.clone()),
+                Err(StoreError::Forbidden(_))
+            ),
+            "{by:?}"
+        );
+        assert!(matches!(
+            store.record_refusal("listener-fake-main", "SpoolFull", false, 1, rv, by),
+            Err(StoreError::Forbidden(_))
+        ));
+    }
+    assert!(matches!(
+        store.record_beat(
+            "listener-fake-main",
+            " ",
+            beat(1),
+            rv,
+            listener_of("fake-main")
+        ),
+        Err(StoreError::Invalid(_))
+    ));
+    let l = store
+        .record_beat(
+            "listener-fake-main",
+            "a1",
+            beat(1),
+            rv,
+            listener_of("fake-main"),
+        )
+        .unwrap();
+    assert!(matches!(
+        store.record_beat(
+            "listener-fake-main",
+            "a1",
+            beat(2),
+            rv,
+            listener_of("fake-main")
+        ),
+        Err(StoreError::Conflict { .. })
+    ));
+    let l = store
+        .record_refusal(
+            "listener-fake-main",
+            "WrongVerified",
+            true,
+            5,
+            l.metadata.resource_version,
+            listener_of("fake-main"),
+        )
+        .unwrap();
+    let st: ListenerStatus = serde_json::from_value(l.status.clone()).unwrap();
+    assert_eq!(st.beats["a1"].at, 1);
+    assert_eq!(st.refused.as_ref().unwrap().counts["WrongVerified"], 1);
+    assert_eq!(st.refused.as_ref().unwrap().last_fault_at, Some(5));
+    assert_eq!(st.beat_revision, 2);
+    assert_eq!(st.seen, 0, "the controller's fields are untouched");
+    let mut rv = l.metadata.resource_version;
+    for i in 2..=INSTANCE_CAP + 1 {
+        let l = store
+            .record_beat(
+                "listener-fake-main",
+                &format!("a{i}"),
+                beat(i as u64),
+                rv,
+                listener_of("fake-main"),
+            )
+            .unwrap();
+        rv = l.metadata.resource_version;
+    }
+    let current = known(store.get("Listener", "listener-fake-main")).unwrap();
+    let st: ListenerStatus = serde_json::from_value(current.status.clone()).unwrap();
+    assert_eq!(st.beats.len(), INSTANCE_CAP);
+    assert!(
+        !st.beats.contains_key("a1"),
+        "the oldest instance was evicted"
+    );
+
+    // The controller writes the rest under the lease and may not touch
+    // beats, refused or beatRevision; nobody writes them through a status
+    // write.
+    let mut judged = current.status.clone();
+    judged["seen"] = json!(st.beat_revision);
+    judged["conditions"] = json!([{"type": "Accepted", "status": "True", "reason": "Loaded",
+                                   "lastTransitionTime": 9, "observedGeneration": 1}]);
+    assert!(matches!(
+        store.update_status(
+            "Listener",
+            "listener-fake-main",
+            judged.clone(),
+            current.metadata.resource_version,
+            FieldManager::ListenerController,
+            None
+        ),
+        Err(StoreError::LeaseLost(_))
+    ));
+    for by in [
+        FieldManager::Apply,
+        FieldManager::ConversationController,
+        listener_of("fake-main"),
+    ] {
+        assert!(matches!(
+            store.update_status(
+                "Listener",
+                "listener-fake-main",
+                judged.clone(),
+                current.metadata.resource_version,
+                by,
+                Some(&lease)
+            ),
+            Err(StoreError::Forbidden(_))
+        ));
+    }
+    let l = store
+        .update_status(
+            "Listener",
+            "listener-fake-main",
+            judged,
+            current.metadata.resource_version,
+            FieldManager::ListenerController,
+            Some(&lease),
+        )
+        .unwrap();
+    for field in ["beats", "refused", "beatRevision"] {
+        let mut touched = l.status.clone();
+        touched[field] = match field {
+            "beats" => json!({}),
+            "refused" => Value::Null,
+            _ => json!(99),
+        };
+        if touched[field].is_null() {
+            touched.as_object_mut().unwrap().remove(field);
+        }
+        let err = store
+            .update_status(
+                "Listener",
+                "listener-fake-main",
+                touched,
+                l.metadata.resource_version,
+                FieldManager::ListenerController,
+                Some(&lease),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, StoreError::Forbidden(ref m) if m.contains(field)),
+            "{field}: {err}"
+        );
+    }
+    assert!(matches!(
+        store.update_spec(
+            "Listener",
+            "listener-fake-main",
+            json!({"account": "other"}),
+            None,
+            l.metadata.resource_version,
+            FieldManager::Apply
+        ),
+        Err(StoreError::Invalid(_))
+    ));
+    assert_eq!(
+        store
+            .delete_fenced(
+                "Listener",
+                "listener-fake-main",
+                &l.metadata.uid,
+                l.metadata.resource_version,
+                FieldManager::ListenerController,
+                &lease
+            )
+            .unwrap(),
+        DeleteOutcome::Removed
+    );
+}
+
+#[test]
+fn the_gateway_kinds_are_reserved_against_plugin_manifests_and_validated_on_write() {
+    use fleet_api::plugin::{Manifest, validate_manifest};
+    for kind in ["Conversation", "conversations", "LISTENER", "Listeners"] {
+        let manifest: Manifest = serde_json::from_value(json!({
+            "protocol": 1, "name": "chat", "kinds": [{"kind": kind, "pollMs": 1000, "spec": {"type": "object"}, "status": null}]
+        }))
+        .unwrap();
+        assert!(validate_manifest(&manifest, "chat").is_err(), "{kind}");
+    }
+    let dir = Dir::new("gateway-validate");
+    let store = FileStore::open(&dir.0).unwrap();
+    for (what, spec) in [
+        (
+            "no route",
+            json!({"account": "fake-main", "address": "fake:C1"}),
+        ),
+        (
+            "bad address",
+            json!({"account": "fake-main", "address": "fake", "route": "eng"}),
+        ),
+        (
+            "bad account name",
+            json!({"account": "Fake Main", "address": "fake:C1", "route": "eng"}),
+        ),
+        (
+            "zero poll",
+            json!({"account": "fake-main", "address": "fake:C1", "route": "eng", "pollMs": 0}),
+        ),
+        (
+            "unknown field",
+            json!({"account": "fake-main", "address": "fake:C1", "route": "eng", "retainMs": 1}),
+        ),
+    ] {
+        let mut c = conversation("conv-x");
+        c.spec = spec;
+        assert!(
+            matches!(
+                store.create(c, FieldManager::Apply),
+                Err(StoreError::Invalid(_))
+            ),
+            "{what}"
+        );
+    }
+    let mut l = listener("listener-x");
+    l.spec = json!({"account": "Not A Name"});
+    assert!(matches!(
+        store.create(l, FieldManager::Apply),
+        Err(StoreError::Invalid(_))
+    ));
+    let mut owned = conversation("conv-y");
+    owned.metadata.owner_references = vec![OwnerReference {
+        kind: "Task".into(),
+        name: "t".into(),
+        uid: "u".into(),
+        controller: true,
+    }];
+    assert!(matches!(
+        store.create(owned, FieldManager::Apply),
+        Err(StoreError::Invalid(_))
+    ));
+    // A record whose status its readers would refuse is Unknown, never a guess.
+    let c = store
+        .create(conversation("conv-z"), FieldManager::Apply)
+        .unwrap();
+    let path = dir
+        .0
+        .join("objects")
+        .join("Conversation")
+        .join("conv-z.json");
+    let mut raw: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    raw["status"] = json!({"phase": "Untied", "messages": "none"});
+    fs::write(&path, raw.to_string()).unwrap();
+    assert!(store.get("Conversation", "conv-z").is_unknown());
+    assert!(matches!(
+        store.receive_event(
+            "conv-z",
+            delivery("Ev1", "m1"),
+            c.metadata.resource_version,
+            listener_of("fake-main")
+        ),
+        Err(StoreError::Unknown(_))
+    ));
 }

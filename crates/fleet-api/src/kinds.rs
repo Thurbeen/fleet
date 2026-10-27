@@ -1,18 +1,22 @@
 //! Which kinds this build serves, and who may write what on each.
 
-use crate::change_request;
 use crate::store::FieldManager;
-use crate::task;
+use crate::{change_request, conversation, listener, task};
+
+/// Every kind this build serves, in the order `fleet version` lists them.
+/// A plugin manifest may claim none of these names.
+pub const BUILT_IN: &[&str] = &[
+    task::KIND,
+    crate::config::TASK_CONFIG,
+    crate::config::ENV_PROVIDER,
+    change_request::KIND,
+    conversation::KIND,
+    listener::KIND,
+];
 
 /// Whether this build stores and reconciles a kind.
 pub fn is_served(kind: &str) -> bool {
-    matches!(
-        kind,
-        task::KIND
-            | crate::config::TASK_CONFIG
-            | crate::config::ENV_PROVIDER
-            | change_request::KIND
-    )
+    BUILT_IN.contains(&kind)
 }
 
 /// The controller that owns a kind's status, if the kind has one.
@@ -20,13 +24,16 @@ pub fn controller_of(kind: &str) -> Option<FieldManager> {
     match kind {
         task::KIND => Some(FieldManager::TaskController),
         change_request::KIND => Some(FieldManager::ChangeRequestController),
+        conversation::KIND => Some(FieldManager::ConversationController),
+        listener::KIND => Some(FieldManager::ListenerController),
         _ => None,
     }
 }
 
 /// Who owns one top-level status field of a kind. `None`: nobody may write
-/// it through `update_status`. `Task.status.inbox` has no owner: it changes
-/// only through the typed mutations below.
+/// it through `update_status`. `Task.status.inbox`, a Conversation's
+/// `received` and a Listener's `beats`, `refused` and `beatRevision` have
+/// no owner: they change only through the typed mutations below.
 pub fn status_owner(kind: &str, field: &str) -> Option<FieldManager> {
     match kind {
         task::KIND if task::UNOWNED_FIELDS.contains(&field) => None,
@@ -34,8 +41,37 @@ pub fn status_owner(kind: &str, field: &str) -> Option<FieldManager> {
         task::KIND if task::FORGE_FIELDS.contains(&field) => Some(FieldManager::ForgeController),
         task::KIND => Some(FieldManager::TaskController),
         change_request::KIND => Some(FieldManager::ChangeRequestController),
+        conversation::KIND if conversation::UNOWNED_FIELDS.contains(&field) => None,
+        conversation::KIND => Some(FieldManager::ConversationController),
+        listener::KIND if listener::UNOWNED_FIELDS.contains(&field) => None,
+        listener::KIND => Some(FieldManager::ListenerController),
         _ => None,
     }
+}
+
+/// Who may create an object of a kind (`Store::create`): `apply` for any
+/// kind, and an account's listener, through the receive verb, for the
+/// Conversation of a thread it delivers for and for its own Listener.
+pub fn may_create(kind: &str, by: &FieldManager) -> bool {
+    match by {
+        FieldManager::Apply => true,
+        FieldManager::Listener(_) => matches!(kind, conversation::KIND | listener::KIND),
+        _ => false,
+    }
+}
+
+/// Who may spool a delivery on a Conversation (`Store::receive_event`) and
+/// record beats and refusals on a Listener (`Store::record_beat`,
+/// `Store::record_refusal`): the listener of the account the object's spec
+/// names, and nobody else.
+pub fn is_listener_of(by: &FieldManager, account: &str) -> bool {
+    matches!(by, FieldManager::Listener(a) if a == account)
+}
+
+/// Who may write a Conversation's status and drain its spool in one write
+/// (`Store::record_received`): its controller only.
+pub fn may_record_received(by: &FieldManager) -> bool {
+    *by == FieldManager::ConversationController
 }
 
 /// Who may append to `Task.status.inbox` (`Store::append_inbox`), each

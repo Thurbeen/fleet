@@ -28,6 +28,16 @@ pub enum FieldManager {
     /// `Task.status.inbox` and owns nothing.
     Cli,
     Plugin(String),
+    /// The one controller for Conversation; owns all of its status but the
+    /// spool, `received`, which it drains.
+    ConversationController,
+    /// The one controller for Listener; owns its status but the beats and
+    /// refusals the receive verb records.
+    ListenerController,
+    /// An account's listener program, through `fleet gateway receive`:
+    /// creates Conversations and spools deliveries on them, and records
+    /// beats and refusals on its Listener. Owns nothing and needs no lease.
+    Listener(String),
 }
 
 impl FieldManager {
@@ -40,6 +50,9 @@ impl FieldManager {
             FieldManager::ForgeController => "forge-controller",
             FieldManager::Cli => "cli",
             FieldManager::Plugin(name) => return format!("plugin/{name}"),
+            FieldManager::ConversationController => "conversation-controller",
+            FieldManager::ListenerController => "listener-controller",
+            FieldManager::Listener(account) => return format!("listener/{account}"),
         }
         .into()
     }
@@ -52,6 +65,8 @@ impl FieldManager {
                 | FieldManager::ChangeRequestController
                 | FieldManager::ForgeController
                 | FieldManager::Plugin(_)
+                | FieldManager::ConversationController
+                | FieldManager::ListenerController
         )
     }
 }
@@ -116,12 +131,10 @@ pub trait Store {
     }
 
     fn served_kinds(&self) -> Vec<String> {
-        vec![
-            "Task".into(),
-            "TaskConfig".into(),
-            "EnvProvider".into(),
-            "ChangeRequest".into(),
-        ]
+        crate::kinds::BUILT_IN
+            .iter()
+            .map(|k| (*k).to_string())
+            .collect()
     }
     fn validate_plugin_status(&self, _kind: &str, _status: &Value) -> Result<(), StoreError> {
         Err(StoreError::Unsupported("plugin status".into()))
@@ -148,7 +161,9 @@ pub trait Store {
     fn get(&self, kind: &str, name: &str) -> Observation<Option<Object>>;
     /// Every object of a kind, or Unknown as a whole: never a partial list.
     fn list(&self, kind: &str) -> Observation<Vec<Object>>;
-    /// Exclusive: a second create of the same name is `AlreadyExists`.
+    /// Exclusive: a second create of the same name is `AlreadyExists`. `by`
+    /// is `Apply`, or `listener/<account>` for a Conversation or a Listener
+    /// the receive verb creates.
     fn create(&self, obj: Object, by: FieldManager) -> Result<Object, StoreError>;
     /// Replace spec (and labels); bumps generation when spec changed.
     fn update_spec(
@@ -226,6 +241,61 @@ pub trait Store {
         by: FieldManager,
         lease: &LeaseToken,
     ) -> Result<Object, StoreError>;
+    /// Spool one delivery on a Conversation's `status.received`, as
+    /// `listener/<account>` for the account its spec names, compare-and-swap
+    /// on resourceVersion. A delivery id already spooled or numbered is
+    /// `Duplicate` and changes nothing; the spool past
+    /// `conversation::RECEIVED_CAP` and a deleting Conversation are refused.
+    /// No other status field changes.
+    fn receive_event(
+        &self,
+        _name: &str,
+        _delivery: crate::gateway::Delivery,
+        _expected: u64,
+        _by: FieldManager,
+    ) -> Result<(Object, crate::conversation::Spooled), StoreError> {
+        Err(StoreError::Unsupported("receive_event".into()))
+    }
+    /// ConversationController's status write: `status` is checked for
+    /// ownership as in `update_status`, except that `received`, which nobody
+    /// owns, may have lost the entries the controller numbered and gained
+    /// nothing, in the same compare-and-swap write under the lease.
+    fn record_received(
+        &self,
+        _name: &str,
+        _status: Value,
+        _expected: u64,
+        _by: FieldManager,
+        _lease: &LeaseToken,
+    ) -> Result<Object, StoreError> {
+        Err(StoreError::Unsupported("record_received".into()))
+    }
+    /// Record one heartbeat on a Listener as `listener/<account>` for the
+    /// account its spec names: the instance's `beats` entry replaced and
+    /// `beatRevision` moved, nothing else.
+    fn record_beat(
+        &self,
+        _name: &str,
+        _instance: &str,
+        _beat: crate::listener::Beat,
+        _expected: u64,
+        _by: FieldManager,
+    ) -> Result<Object, StoreError> {
+        Err(StoreError::Unsupported("record_beat".into()))
+    }
+    /// Count one refused or unreadable envelope on a Listener as
+    /// `listener/<account>`: `refused` and `beatRevision` move, nothing else.
+    fn record_refusal(
+        &self,
+        _name: &str,
+        _reason: &str,
+        _fault: bool,
+        _at: Millis,
+        _expected: u64,
+        _by: FieldManager,
+    ) -> Result<Object, StoreError> {
+        Err(StoreError::Unsupported("record_refusal".into()))
+    }
     /// Only the kind's controller, holding the lease, removes a finalizer.
     fn remove_finalizer(
         &self,

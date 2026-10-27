@@ -1,9 +1,11 @@
 # Conversation resource
 
-Design, not implemented; the store refuses this kind today as an unknown
-kind. A Conversation
+A Conversation
 mirrors one chat thread, or one chat where the platform has no threads, for
-the [Gateway controller](../controllers/gateway/README.md). It numbers every
+the [Gateway controller](../controllers/gateway/README.md). The kind, the
+receive verb and the mirror are implemented; the tie a thread makes to a
+new Task, the refusals and the `effects` they record are design, not
+implemented, so `task`, `refusals` and `effects` stay empty today. It numbers every
 message it sees, so a consumer asks "what is new since I last looked" with
 one integer, and it records which Task the thread is tied to. It is the
 chat counterpart of a [ChangeRequest](change-request.md): one per thread,

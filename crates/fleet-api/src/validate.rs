@@ -5,7 +5,10 @@ use serde_json::Value;
 
 use crate::change_request::{self, ChangeRequestSpec};
 use crate::config::{ENV_PROVIDER, EnvProviderSpec, EnvSource, TASK_CONFIG, TaskConfigSpec};
+use crate::conversation::{self, ConversationSpec};
+use crate::gateway::ConversationRef;
 use crate::kinds::is_served;
+use crate::listener::{self, ListenerSpec};
 use crate::meta::{API_VERSION, Object};
 use crate::store::StoreError;
 use crate::task::{self, TaskSpec};
@@ -97,6 +100,11 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
             return Ok(());
         }
         change_request::KIND => return validate_change_request_spec(spec),
+        conversation::KIND => return validate_conversation_spec(spec),
+        listener::KIND => {
+            let s: ListenerSpec = typed(kind, spec)?;
+            return validate_name(&s.account);
+        }
         _ => {}
     }
     let s: TaskSpec = typed(kind, spec)?;
@@ -134,7 +142,8 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
 }
 
 /// A Task's spec is fixed once created, like a Pod's: only `dispatch` and
-/// `forge` may change. A different brief is a different Task.
+/// `forge` may change. A different brief is a different Task. A
+/// ChangeRequest, a Conversation and a Listener are fixed whole.
 pub fn validate_spec_update(kind: &str, old: &Value, new: &Value) -> Result<(), StoreError> {
     validate_spec(kind, new)?;
     if kind == change_request::KIND {
@@ -145,6 +154,14 @@ pub fn validate_spec_update(kind: &str, old: &Value, new: &Value) -> Result<(), 
                 "ChangeRequest spec is immutable; a different change is a different ChangeRequest"
                     .into(),
             ));
+        }
+        return Ok(());
+    }
+    if kind == conversation::KIND || kind == listener::KIND {
+        if old != new {
+            return Err(StoreError::Invalid(format!(
+                "{kind} spec is immutable; a different thread or account is a different {kind}"
+            )));
         }
         return Ok(());
     }
@@ -196,6 +213,14 @@ pub fn validate_status(kind: &str, status: &Value) -> Result<(), StoreError> {
                 .map(|_| ())
                 .map_err(|e| StoreError::Invalid(format!("ChangeRequest status: {e}")))
         }
+        conversation::KIND => {
+            serde_json::from_value::<conversation::ConversationStatus>(status.clone())
+                .map(|_| ())
+                .map_err(|e| StoreError::Invalid(format!("Conversation status: {e}")))
+        }
+        listener::KIND => serde_json::from_value::<listener::ListenerStatus>(status.clone())
+            .map(|_| ())
+            .map_err(|e| StoreError::Invalid(format!("Listener status: {e}"))),
         _ => Err(StoreError::Invalid(
             "passive configuration has no status".into(),
         )),
@@ -216,6 +241,24 @@ fn validate_change_request_spec(spec: &Value) -> Result<(), StoreError> {
         return Err(StoreError::Invalid(
             "spec.url must be an http(s) URL naming a forge host".into(),
         ));
+    }
+    if s.poll_ms == Some(0) {
+        return Err(StoreError::Invalid("spec.pollMs must be at least 1".into()));
+    }
+    Ok(())
+}
+
+/// A Conversation names an account, a route and one thread by address; the
+/// adapter judges the address's parts, the structure is checked here.
+fn validate_conversation_spec(spec: &Value) -> Result<(), StoreError> {
+    let s: ConversationSpec = typed(conversation::KIND, spec)?;
+    validate_name(&s.account).map_err(|e| StoreError::Invalid(format!("spec.account: {e}")))?;
+    validate_name(&s.route).map_err(|e| StoreError::Invalid(format!("spec.route: {e}")))?;
+    if ConversationRef::split(&s.address).is_none() || s.address.contains('\0') {
+        return Err(StoreError::Invalid(format!(
+            "spec.address {:?} is not <platform>:<chat>[:<thread>]",
+            s.address
+        )));
     }
     if s.poll_ms == Some(0) {
         return Err(StoreError::Invalid("spec.pollMs must be at least 1".into()));

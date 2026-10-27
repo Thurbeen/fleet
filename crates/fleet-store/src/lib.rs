@@ -27,9 +27,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use fleet_api::conversation::{self, ConversationStatus, Spooled};
 use fleet_api::follow::ForgeStatus;
+use fleet_api::gateway::Delivery;
 use fleet_api::inbox::{DeliveryReceipt, InboxEntry};
 use fleet_api::kinds;
+use fleet_api::listener::{self, Beat, ListenerStatus};
 use fleet_api::task::{self, TaskStatus};
 use fleet_api::validate::{
     validate_kind, validate_name, validate_object, validate_spec_update, validate_status,
@@ -413,6 +416,30 @@ fn encode_status(st: &TaskStatus) -> Result<Value, StoreError> {
     serde_json::to_value(st).map_err(|e| StoreError::Invalid(format!("Task status: {e}")))
 }
 
+fn conversation_status(obj: &Object) -> Result<ConversationStatus, StoreError> {
+    if obj.status.is_null() {
+        return Ok(ConversationStatus::default());
+    }
+    serde_json::from_value(obj.status.clone())
+        .map_err(|e| StoreError::Invalid(format!("{}: status: {e}", obj.key())))
+}
+
+fn encode_conversation(st: &ConversationStatus) -> Result<Value, StoreError> {
+    serde_json::to_value(st).map_err(|e| StoreError::Invalid(format!("Conversation status: {e}")))
+}
+
+fn listener_status(obj: &Object) -> Result<ListenerStatus, StoreError> {
+    if obj.status.is_null() {
+        return Ok(ListenerStatus::default());
+    }
+    serde_json::from_value(obj.status.clone())
+        .map_err(|e| StoreError::Invalid(format!("{}: status: {e}", obj.key())))
+}
+
+fn encode_listener(st: &ListenerStatus) -> Result<Value, StoreError> {
+    serde_json::to_value(st).map_err(|e| StoreError::Invalid(format!("Listener status: {e}")))
+}
+
 /// Each inbox appender names its source with its own prefix: `cli/<user>`
 /// for `fleet send`, `forge/<change>` for the Forge controller.
 fn check_source(by: FieldManager, entry: &InboxEntry) -> Result<(), StoreError> {
@@ -460,12 +487,7 @@ impl Store for FileStore {
     }
 
     fn served_kinds(&self) -> Vec<String> {
-        let mut kinds = vec![
-            "Task".into(),
-            "TaskConfig".into(),
-            "EnvProvider".into(),
-            "ChangeRequest".into(),
-        ];
+        let mut kinds: Vec<String> = kinds::BUILT_IN.iter().map(|k| (*k).to_string()).collect();
         kinds.extend(self.plugins.keys().cloned());
         if let Ok(entries) = fs::read_dir(self.root.join("objects")) {
             for entry in entries.flatten() {
@@ -641,10 +663,11 @@ impl Store for FileStore {
     }
 
     fn create(&self, obj: Object, by: FieldManager) -> Result<Object, StoreError> {
-        if by != FieldManager::Apply {
+        if !kinds::may_create(&obj.kind, &by) {
             return Err(StoreError::Forbidden(format!(
-                "{} does not create objects",
-                by.name()
+                "{} does not create {} objects",
+                by.name(),
+                obj.kind
             )));
         }
         let _guard = self.lock()?;
@@ -960,6 +983,151 @@ impl Store for FileStore {
         self.mark_deleted(obj)
     }
 
+    fn receive_event(
+        &self,
+        name: &str,
+        delivery: Delivery,
+        expected: u64,
+        by: FieldManager,
+    ) -> Result<(Object, Spooled), StoreError> {
+        let _guard = self.lock()?;
+        let mut obj = self.read_existing(conversation::KIND, name)?;
+        self.check_listener_of(&obj, &by)?;
+        expect_rv(&obj, expected)?;
+        if obj.is_deleting() {
+            return Err(StoreError::Forbidden(format!(
+                "{} is being deleted; nothing would number the event",
+                obj.key()
+            )));
+        }
+        let mut st = conversation_status(&obj)?;
+        if st.has_seen(&delivery.id) {
+            return Ok((obj, Spooled::Duplicate));
+        }
+        if st.received.len() >= conversation::RECEIVED_CAP {
+            return Err(StoreError::Forbidden(format!(
+                "{} holds {} unread events; its controller has not numbered them yet",
+                obj.key(),
+                conversation::RECEIVED_CAP
+            )));
+        }
+        st.received.push(delivery);
+        obj.status = encode_conversation(&st)?;
+        obj.metadata.resource_version = self.next_rv()?;
+        self.write(&obj)?;
+        Ok((obj, Spooled::Written))
+    }
+
+    fn record_received(
+        &self,
+        name: &str,
+        status: Value,
+        expected: u64,
+        by: FieldManager,
+        lease: &LeaseToken,
+    ) -> Result<Object, StoreError> {
+        if !kinds::may_record_received(&by) {
+            return Err(StoreError::Forbidden(format!(
+                "{} does not drain a Conversation's spool; only its controller does",
+                by.name()
+            )));
+        }
+        if !status.is_object() {
+            return Err(StoreError::Invalid("status must be an object".into()));
+        }
+        validate_status(conversation::KIND, &status)?;
+        let _guard = self.lock()?;
+        self.check_lease(lease)?;
+        let mut obj = self.read_existing(conversation::KIND, name)?;
+        expect_rv(&obj, expected)?;
+        // The controller's own fields change as in update_status; the
+        // spool, having no owner, may only have been drained.
+        let before = conversation_status(&obj)?;
+        let after: ConversationStatus = serde_json::from_value(status.clone())
+            .map_err(|e| StoreError::Invalid(format!("Conversation status: {e}")))?;
+        let mut old = obj.status.clone();
+        let mut new = status;
+        for v in [&mut old, &mut new] {
+            if let Some(m) = v.as_object_mut() {
+                m.remove("received");
+            }
+        }
+        check_owned(conversation::KIND, &old, &new, by)?;
+        conversation::check_drained(&before.received, &after.received)
+            .map_err(|why| StoreError::Forbidden(format!("{}: {why}", obj.key())))?;
+        let status = encode_conversation(&after)?;
+        if obj.status == status {
+            return Ok(obj);
+        }
+        obj.status = status;
+        obj.metadata.resource_version = self.next_rv()?;
+        self.write(&obj)?;
+        Ok(obj)
+    }
+
+    fn record_beat(
+        &self,
+        name: &str,
+        instance: &str,
+        beat: Beat,
+        expected: u64,
+        by: FieldManager,
+    ) -> Result<Object, StoreError> {
+        if instance.trim().is_empty() || instance.len() > 64 {
+            return Err(StoreError::Invalid(
+                "a beat names its instance in at most 64 characters".into(),
+            ));
+        }
+        let _guard = self.lock()?;
+        let mut obj = self.read_existing(listener::KIND, name)?;
+        self.check_listener_of(&obj, &by)?;
+        expect_rv(&obj, expected)?;
+        if obj.is_deleting() {
+            return Err(StoreError::Forbidden(format!(
+                "{} is being deleted",
+                obj.key()
+            )));
+        }
+        let mut st = listener_status(&obj)?;
+        st.record_beat(instance, beat);
+        obj.status = encode_listener(&st)?;
+        obj.metadata.resource_version = self.next_rv()?;
+        self.write(&obj)?;
+        Ok(obj)
+    }
+
+    fn record_refusal(
+        &self,
+        name: &str,
+        reason: &str,
+        fault: bool,
+        at: Millis,
+        expected: u64,
+        by: FieldManager,
+    ) -> Result<Object, StoreError> {
+        if reason.trim().is_empty() || reason.len() > 64 {
+            return Err(StoreError::Invalid(
+                "a refusal names its reason in at most 64 characters".into(),
+            ));
+        }
+        let _guard = self.lock()?;
+        let mut obj = self.read_existing(listener::KIND, name)?;
+        self.check_listener_of(&obj, &by)?;
+        expect_rv(&obj, expected)?;
+        if obj.is_deleting() {
+            return Err(StoreError::Forbidden(format!(
+                "{} is being deleted",
+                obj.key()
+            )));
+        }
+        let mut st = listener_status(&obj)?;
+        st.record_refusal(reason, fault, at);
+        obj.status = encode_listener(&st)?;
+        obj.metadata.resource_version = self.next_rv()?;
+        self.write(&obj)?;
+        Ok(obj)
+    }
+
     fn remove_finalizer(
         &self,
         kind: &str,
@@ -1048,6 +1216,19 @@ impl Store for FileStore {
 }
 
 impl FileStore {
+    /// The writer is the listener of the account the object's spec names.
+    fn check_listener_of(&self, obj: &Object, by: &FieldManager) -> Result<(), StoreError> {
+        let account = obj.spec["account"].as_str().unwrap_or_default();
+        if !kinds::is_listener_of(by, account) {
+            return Err(StoreError::Forbidden(format!(
+                "{} does not write {}; only listener/{account} does",
+                by.name(),
+                obj.key()
+            )));
+        }
+        Ok(())
+    }
+
     /// Create under the store lock the caller holds: validation, exclusive
     /// name, live owners, then the store's own metadata.
     fn insert(&self, mut obj: Object, creator: Option<&str>) -> Result<Object, StoreError> {

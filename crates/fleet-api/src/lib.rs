@@ -49,11 +49,13 @@
 pub mod change_request;
 pub mod condition;
 pub mod config;
+pub mod conversation;
 pub mod follow;
 pub mod forge;
 pub mod gateway;
 pub mod inbox;
 pub mod kinds;
+pub mod listener;
 pub mod meta;
 pub mod observation;
 pub mod plan;
