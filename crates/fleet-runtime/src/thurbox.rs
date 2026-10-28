@@ -54,6 +54,17 @@ pub struct ThurboxConfig {
     /// Each repository URL a Task may name, and its source checkout: an
     /// absolute path on every host thurbox creates worktrees on.
     pub repositories: BTreeMap<String, String>,
+    /// What deleting a session does to its workspace.
+    pub cleanup: Cleanup,
+}
+
+/// What deleting a session does to the worktrees thurbox created for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Cleanup {
+    /// `session delete --force`: the window and the worktrees go now.
+    Delete,
+    /// `session delete --soft`: the worktrees stay, restorable in thurbox.
+    Keep,
 }
 
 impl ThurboxConfig {
@@ -67,6 +78,7 @@ impl ThurboxConfig {
                 ("claude-code".into(), "ANTHROPIC_MODEL".into()),
             ]),
             repositories: BTreeMap::new(),
+            cleanup: Cleanup::Delete,
         }
     }
 }
@@ -132,9 +144,8 @@ impl ThurboxRuntime {
 
     /// A repositories workspace as thurbox's own worktree create: the first
     /// repository's source is `--repo-path`, each other one an `--add-repo`,
-    /// all on one branch the adapter names after the session key. Thurbox
-    /// removes the worktrees it created when the session is deleted, unless
-    /// its own `soft_delete` keeps them.
+    /// all on one branch the adapter names after the session key. `release`
+    /// removes them, or keeps them, as `cleanup` says.
     fn worktree_args(&self, key: &str, w: &RepositoriesWorkspace) -> Result<Vec<String>, String> {
         let source = |r: &Repository| -> Result<String, String> {
             let path =
@@ -163,7 +174,8 @@ impl ThurboxRuntime {
         }
         for r in rest {
             let path = source(r)?;
-            // thurbox reads `PATH@BASE`: an `@` in either would be split wrongly.
+            // thurbox reads `PATH@BASE`: keep both sides free of `@` so the
+            // split can never be ambiguous.
             let arg = match &r.reference {
                 Some(base) if !base.contains('@') && !path.contains('@') => {
                     format!("{path}@{base}")
@@ -639,7 +651,11 @@ impl Runtime for ThurboxRuntime {
             }
             Observation::Unknown { why } => return Observation::Unknown { why },
         }
-        match self.call(&["session", "delete", &session.id]) {
+        let cleanup = match self.cfg.cleanup {
+            Cleanup::Delete => "--force",
+            Cleanup::Keep => "--soft",
+        };
+        match self.call(&["session", "delete", &session.id, cleanup]) {
             Answer::Ok(_) => Observation::Known(EffectOutcome::Released),
             Answer::No(why) => Observation::Known(EffectOutcome::Failed { why }),
             Answer::Unknown(why) => Observation::unknown(why),

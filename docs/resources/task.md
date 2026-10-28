@@ -61,16 +61,17 @@ A Task names its repositories. The runtime decides how they become files.
 ]}}
 ```
 
-- Each `name` is unique in the Task. Each `url` and `ref` is non-empty, has
-  no whitespace and does not start with `-`.
+- Each `name` and each `url` is unique in the Task. Each `url` and `ref` is
+  non-empty, has no whitespace and does not start with `-`.
 - A workspace has `dir` or `repositories`, never both.
 - Fleet has no branch, base, worktree or cleanup field. The runtime chooses
   them. The worker reports the change it opened through `fleet declare`.
 - The thurbox runtime creates one worktree per repository, on the branch
   `<keyPrefix>/<session key>`. `runtime.repositories` in `fleet.toml` maps
   each URL to its source checkout. An unmapped URL fails the spawn.
-- Deleting the session cleans the workspace. With thurbox, the worktrees it
-  created go with the session, unless thurbox's `soft_delete` keeps them.
+- Deleting the session cleans the workspace. With thurbox, the worktrees go
+  with the session by default. `runtime.workspaceCleanup = "keep"` keeps
+  them instead.
 
 ## Status
 

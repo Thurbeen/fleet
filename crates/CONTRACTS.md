@@ -149,8 +149,9 @@ runtime makes it.
 
 - `{dir}` is a directory that exists before the Task. It may not be empty.
 - `{repositories}` names one or more repositories by identity. Each `name`
-  is unique in the Task. Each `url` and optional `ref` is non-empty, has no
-  whitespace and does not start with `-`. Fleet does not interpret `ref`.
+  and each `url` is unique in the Task. Each `url` and optional `ref` is
+  non-empty, has no whitespace and does not start with `-`. Fleet does not
+  interpret `ref`.
 - A workspace has exactly one of the two forms. Unknown fields are refused.
 
 See [execution configuration](../docs/resources/task-config.md) for
@@ -523,12 +524,17 @@ worktree create:
 - The first repository's source is `--repo-path`, and its `ref` is
   `--base-branch`.
 - Each other repository is `--add-repo PATH[@REF]`.
-- Every worktree is on the branch `<keyPrefix>/<session key>`.
-- `runtime.repositories` maps each URL to its source checkout on the host. An
-  unmapped URL, a relative source or an `@` that `PATH@REF` cannot carry is
-  refused.
-- Deleting the session removes the worktrees thurbox created, unless
-  thurbox's own `soft_delete` keeps them.
+- Every worktree is on the branch `<keyPrefix>/<session key>`. A source
+  repository with a branch named exactly `<keyPrefix>` cannot hold these
+  branches, so its spawns fail.
+- `runtime.repositories` maps each URL to its source checkout on the host. A
+  relative source is refused when the config loads. An unmapped URL, or an
+  `@` that `PATH@REF` cannot carry, fails the spawn.
+- `release` runs `session delete --force` by default. Thurbox then removes
+  the window and the worktrees it created.
+- With `runtime.workspaceCleanup = "keep"`, `release` runs
+  `session delete --soft`. The worktrees stay, and thurbox can restore the
+  session.
 
 ## Forge contract
 

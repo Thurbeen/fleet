@@ -297,6 +297,7 @@ pub fn validate_workspace(workspace: &task::Workspace) -> Result<(), String> {
                 return Err(".repositories must name at least one repository".into());
             }
             let mut names = BTreeSet::new();
+            let mut urls = BTreeSet::new();
             for (i, r) in w.repositories.iter().enumerate() {
                 let at = format!(".repositories[{i}]");
                 if let Err(StoreError::Invalid(e)) = validate_name(&r.name) {
@@ -304,6 +305,9 @@ pub fn validate_workspace(workspace: &task::Workspace) -> Result<(), String> {
                 }
                 if !names.insert(r.name.as_str()) {
                     return Err(format!("{at}.name {:?} is repeated", r.name));
+                }
+                if !urls.insert(r.url.as_str()) {
+                    return Err(format!("{at}.url {:?} is repeated", r.url));
                 }
                 // Both reach the runtime as arguments: never as a flag.
                 for (field, value) in [("url", Some(&r.url)), ("ref", r.reference.as_ref())] {
@@ -391,9 +395,10 @@ mod tests {
     #[test]
     fn a_workspace_names_something_usable() {
         let url = "https://example.invalid/app";
+        let docs = "https://example.invalid/docs";
         assert!(validate_workspace(&Workspace::at("/w")).is_ok());
         assert!(
-            validate_workspace(&repos(&[("app", url, Some("main")), ("docs", url, None)])).is_ok()
+            validate_workspace(&repos(&[("app", url, Some("main")), ("docs", docs, None)])).is_ok()
         );
         for (workspace, want) in [
             (Workspace::at(" "), ".dir must not be empty"),
@@ -408,6 +413,10 @@ mod tests {
             (
                 repos(&[("a", url, None), ("a", url, None)]),
                 ".repositories[1].name \"a\" is repeated",
+            ),
+            (
+                repos(&[("a", url, None), ("b", url, None)]),
+                ".repositories[1].url \"https://example.invalid/app\" is repeated",
             ),
             (
                 repos(&[("a", "--upload-pack=x", None)]),

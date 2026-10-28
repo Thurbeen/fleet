@@ -69,7 +69,8 @@ Fleet installation talking to the same Thurbox hosts needs a distinct
 | `runtime.callTimeoutMs` | Thurbox: `15000` | Bound for each Thurbox call; manager lease must outlast the runtime's reported worst case. |
 | `runtime.keyPrefix` | Thurbox: `fleet` | Session identity prefix; at most 32 lowercase letters/digits/`-`, starting/ending with letter/digit. |
 | `runtime.modelEnv` | Thurbox: Claude mappings below | Harness name to supported model environment-variable name. |
-| `runtime.repositories` | Thurbox: empty | Repository URL to its source checkout, an absolute path on the hosts thurbox creates worktrees on. A Task whose `workspace.repositories` names an unmapped URL fails to spawn. |
+| `runtime.repositories` | Thurbox: empty | Repository URL to its source checkout, an absolute path on the hosts thurbox creates worktrees on. A relative path is refused at load. A Task whose `workspace.repositories` names an unmapped URL fails to spawn. |
+| `runtime.workspaceCleanup` | Thurbox: `delete` | What deleting a session does to its worktrees. `delete` removes them with the session (`session delete --force`). `keep` leaves them, restorable in thurbox (`session delete --soft`). |
 | `runtime.dir` | Required for `fake` | Isolated fake-host persistence, relative to this config file. |
 | `starter.workspace` | Required for `up` | Initialized VEGA workspace, relative to this config file. |
 

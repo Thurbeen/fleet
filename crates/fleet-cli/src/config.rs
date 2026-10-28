@@ -114,6 +114,9 @@ pub struct RuntimeConfig {
     /// an absolute path on the hosts thurbox creates worktrees on.
     #[serde(default)]
     pub repositories: BTreeMap<String, String>,
+    /// thurbox: `delete` (the default) removes a session's worktrees with it;
+    /// `keep` leaves them, restorable in thurbox.
+    pub workspace_cleanup: Option<String>,
 }
 
 impl Config {
