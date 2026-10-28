@@ -535,6 +535,8 @@ worktree create:
 - With `runtime.workspaceCleanup = "keep"`, `release` runs
   `session delete --soft`. The worktrees stay, and thurbox can restore the
   session.
+- Cleanup is best effort. Fleet reads a delete that exits 0 as released,
+  even when thurbox reports a worktree or remote teardown error.
 
 ## Forge contract
 
