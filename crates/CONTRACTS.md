@@ -694,7 +694,7 @@ raised to twice the longest operation of the runtime or the forge port.
 `fleet init` installs the pinned embedded VEGA starter offline and creates
 native per-user config; `--update` advances unedited managed workspace files
 and writes conflict candidates for customizations. Config is never replaced.
-The [README](../README.md#configuration-and-customization) specifies precedence,
+The [initialization guide](../docs/configuration/init.md#configuration-and-customization) specifies precedence,
 paths, provenance and recovery. Bootstrap does not read v1 data.
 
 `fleet up` ensures one ordinary `Task/vega` through the manager, then retains

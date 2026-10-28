@@ -23,7 +23,7 @@ Fleet does not search the current directory or parents. Explicit config paths
 must exist, except `fleet init --config PATH`, which creates an isolated
 instance without replacing an existing config. `fleet init` creates the
 native config and bundled workspace; see
-[initialization/customization](../../README.md#configuration-and-customization)
+[initialization/customization](init.md#configuration-and-customization)
 for data roots, managed files, conflict handling and per-instance paths.
 
 Relative `data.dir`, `runtime.dir` and `starter.workspace` resolve beside the
