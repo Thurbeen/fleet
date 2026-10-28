@@ -47,9 +47,7 @@ fn route() -> RouteConfig {
         allow_bots: vec!["B0123ABCD".into()],
         task_config: "conversation".into(),
         brief: "/etc/fleet/briefs/conversation.md".into(),
-        workspace: Workspace {
-            dir: "/work/conversations".into(),
-        },
+        workspace: Workspace::at("/work/conversations"),
         refusal: None,
     }
 }
