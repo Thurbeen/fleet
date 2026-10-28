@@ -114,28 +114,7 @@ fn plan(reference: Option<&str>, forced: Option<&str>, dry: bool) -> Result {
         .map(|(_, s)| format!("{s}..HEAD"))
         .unwrap_or("HEAD".into());
     let mut reason = "no releasable commit".to_string();
-    let tag = reference.and_then(|r| r.strip_prefix("refs/tags/"));
-    let proposed = if let Some(tag) = tag {
-        let v = version(tag)?;
-        if tag != format!("v{v}") {
-            return Err("release tag must use canonical v-prefixed SemVer".into());
-        }
-        let commit = git(&["rev-parse", &format!("refs/tags/{tag}^{{commit}}")])?;
-        if commit.trim() != git(&["rev-parse", "HEAD"])?.trim() {
-            return Err("release tag does not name HEAD".into());
-        }
-        git(&["merge-base", "--is-ancestor", "HEAD", "origin/main"])
-            .map_err(|_| "release tag must name a commit merged into origin/main")?;
-        let manifest: toml::Value = toml::from_str(&fs::read_to_string("Cargo.toml")?)?;
-        if manifest["workspace"]["package"]["version"].as_str() != Some(v.to_string().as_str()) {
-            return Err("release tag differs from workspace manifest version".into());
-        }
-        if forced.is_some_and(|f| version(f).ok().as_ref() != Some(&v)) {
-            return Err("forced version differs from release tag".into());
-        }
-        reason = "checked tag on main".into();
-        Some(v)
-    } else if let Some(v) = forced {
+    let proposed = if let Some(v) = forced {
         reason = "forced by dispatch".into();
         Some(version(v)?)
     } else {
@@ -196,7 +175,6 @@ fn plan(reference: Option<&str>, forced: Option<&str>, dry: bool) -> Result {
         }
     };
     if let Some(v) = &proposed
-        && tag.is_none()
         && all.iter().any(|(t, _)| t == v)
     {
         return Err(format!("v{v} is already a tag; a tag never moves").into());
@@ -206,11 +184,10 @@ fn plan(reference: Option<&str>, forced: Option<&str>, dry: bool) -> Result {
         .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
         .is_some_and(|v| v.get("ready").and_then(toml::Value::as_bool) == Some(true));
     let release = proposed.is_some();
-    let publish =
-        release && ready && (tag.is_some() || reference == Some("refs/heads/main")) && !dry;
-    let newest = proposed.as_ref().is_some_and(|v| {
-        v.pre.is_empty() && all.iter().all(|(t, _)| v > t || tag.is_some() && v == t)
-    });
+    let publish = release && ready && reference == Some("refs/heads/main") && !dry;
+    let newest = proposed
+        .as_ref()
+        .is_some_and(|v| v.pre.is_empty() && all.iter().all(|(t, _)| v > t));
     let prerelease = proposed.as_ref().is_some_and(|v| !v.pre.is_empty());
     let v = if let Some(v) = proposed {
         format!("v{v}")

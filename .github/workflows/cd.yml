@@ -1,13 +1,14 @@
-# Publish immutable version tags only after native tests and installer acceptance.
+# Every push to main releases its conventional commits, after native tests and
+# installer acceptance; the publish job tags the exact commit it tested.
 name: Release
 
 on:
   push:
-    tags: ["v2.*"]
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
-        description: "Version for a dry run on main (e.g. 2.0.0); publish by pushing its checked tag."
+        description: "Exact version to release from main (e.g. 3.0.0). Empty = from the commits since the last tag."
         required: false
         default: ""
         type: string
@@ -60,9 +61,8 @@ jobs:
         run: |
           args=()
           if [ -n "$FORCED" ]; then args+=(--version "$FORCED"); fi
-          # Dispatch from a branch is always non-publishing. Production uses
-          # an existing immutable tag, checked against origin/main by the plan.
-          if [ "$GITHUB_REF_TYPE" != tag ] || [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          # Only main publishes, and a dispatch can ask for a dry run there.
+          if [ "$GITHUB_REF" != refs/heads/main ] || [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           cargo xtask release plan --ref "$GITHUB_REF" "${args[@]}" | tee -a "$GITHUB_OUTPUT" "$GITHUB_STEP_SUMMARY"
 
   build:
@@ -125,7 +125,6 @@ jobs:
           tool: cargo-nextest@0.9.149
       - name: Test the commit being released
         run: cargo xtask check rust-test
-      # The tag and workspace manifest version must agree before this build.
       - name: Use the static Windows CRT
         if: runner.os == 'Windows'
         run: echo 'RUSTFLAGS=-C target-feature=+crt-static' >> "$GITHUB_ENV"
@@ -211,7 +210,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write      # create the release on an existing tag
+      contents: write      # create the release and its tag
       id-token: write      # sign the provenance attestation
       attestations: write  # store it
     env:
@@ -228,15 +227,15 @@ jobs:
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/*
-      # Never create or move a tag here. The plan checked the pushed tag's
-      # exact commit and main ancestry before any artifact was built.
-      - name: Publish the checked tag
+      # The tag is created here, at the commit every runner tested. The plan
+      # refused a version that is already a tag, so a tag never moves.
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$VERSION" dist/* \
             --repo "$GITHUB_REPOSITORY" \
-            --verify-tag \
+            --target "$GITHUB_SHA" \
             --title "fleet $VERSION" \
             --generate-notes \
             --latest="$NEWEST" \

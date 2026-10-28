@@ -83,16 +83,18 @@ restore no pull-request caches.
 version without publishing. Conventional `feat`, `fix`, `perf` and breaking
 changes trigger bumps only when shipped files changed. An existing version
 tag is refused. Prereleases are marked as such and never marked latest.
-Production publishes only pushed `v2.*` tags whose commit is merged into
-`origin/main` and whose SemVer matches `workspace.package.version`. The tag
-must already name HEAD; the workflow never creates or moves it. The readiness
-file must explicitly enable publication. Branch dispatches are always dry runs.
-Before the coordinator merges a release prerequisite, require the full local
-gate, independent exact-head review and native CI. After merge, push the
-version tag at that checked commit. Every release runner tests, builds,
+Every push to `main` runs the release workflow. The squash-merged pull request
+title is the conventional commit that decides the bump. A dispatch on `main`
+with an explicit `version` cuts that version; this is the only way to cross a
+major line. Dispatches from other branches are always dry runs. The readiness
+file must explicitly enable publication. Every release runner tests, builds,
 packages, installs its archive and runs offline first-run acceptance before
-publication. The protected release environment and provenance attestation
-remain required. No release step installs onto an existing deployment.
+publication. The publish job then creates the version tag at the tested
+commit. No person pushes a version tag, and no tag moves.
+`workspace.package.version` stays `0.0.0-dev`; the build stamps the planned
+version into the binary. The protected release environment and provenance
+attestation remain required. No release step installs onto an existing
+deployment.
 
 ```sh
 cargo xtask release title 'feat: resource orchestration' 123

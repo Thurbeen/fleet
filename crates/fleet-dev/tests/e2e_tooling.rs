@@ -1037,50 +1037,6 @@ fn the_tree_declares_fleet_major_2() {
 }
 
 #[test]
-fn stable_tag_release_requires_main_ancestry_version_and_readiness() {
-    let e = Env::new();
-    e.repo();
-    e.write("Cargo.toml", "[workspace.package]\nversion = '2.0.0'\n");
-    e.write(".github/release-readiness.toml", "ready = true\n");
-    e.commit("feat: stable release");
-    e.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
-    e.git(&["tag", "v2.0.0"]);
-    let args = ["release", "plan", "--ref", "refs/tags/v2.0.0"];
-    let (ok, out) = e.call(&args, &[]);
-    assert!(
-        ok && out.contains("publish=true") && out.contains("version=v2.0.0"),
-        "{out}"
-    );
-    assert!(
-        out.contains("newest=true"),
-        "first stable tag is latest: {out}"
-    );
-    let (ok, out) = e.call(
-        &["release", "plan", "--ref", "refs/tags/v2.0.0", "--dry-run"],
-        &[],
-    );
-    assert!(
-        ok && out.contains("publish=false") && out.contains("build=true"),
-        "{out}"
-    );
-    e.write(".github/release-readiness.toml", "ready = false\n");
-    let (ok, out) = e.call(&args, &[]);
-    assert!(ok && out.contains("publish=false"), "{out}");
-    e.write(".github/release-readiness.toml", "ready = true\n");
-    e.write("Cargo.toml", "[workspace.package]\nversion = '2.0.1'\n");
-    let (ok, out) = e.call(&args, &[]);
-    assert!(!ok && out.contains("manifest version"), "{out}");
-    e.write("Cargo.toml", "[workspace.package]\nversion = '2.0.0'\n");
-    e.write("crates/demo.rs", "pub fn unmerged() {}\n");
-    e.commit("fix: unmerged candidate");
-    let (ok, out) = e.call(&args, &[]);
-    assert!(!ok && out.contains("tag does not name HEAD"), "{out}");
-    e.git(&["tag", "v2.0.1"]);
-    let (ok, out) = e.call(&["release", "plan", "--ref", "refs/tags/v2.0.1"], &[]);
-    assert!(!ok && out.contains("main"), "unmerged tag: {out}");
-}
-
-#[test]
 fn installed_binary_has_path_guidance() {
     let e = Env::new();
     install_fixture(&e);
@@ -1218,4 +1174,172 @@ fn native_release_fixture_installs_with_binary_mode_checksum_tools() {
     .unwrap();
     let (ok, out) = installer(&e, &[]);
     assert!(ok, "native release checksum fixture: {out}");
+}
+
+/// Runs one `run:` step of the repository's own cd.yml under bash, the way
+/// the runner does, with `cargo xtask` and `gh` replaced by local fakes.
+#[cfg(unix)]
+fn release_step(e: &Env, job: &str, step: &str, env: &[(&str, &str)]) -> (bool, String) {
+    use std::os::unix::fs::PermissionsExt;
+    let cd = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/cd.yml");
+    let doc: serde_json::Value = serde_saphyr::from_str(&fs::read_to_string(cd).unwrap()).unwrap();
+    let script = doc["jobs"][job]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == step)
+        .and_then(|s| s["run"].as_str())
+        .unwrap_or_else(|| panic!("cd.yml has no {job}/{step} step"))
+        .to_string();
+    // The fake forge behaves like `gh release create`: --verify-tag needs an
+    // existing tag; otherwise the tag is created at --target.
+    e.write(
+        "fakes/cargo",
+        &format!(
+            "#!/bin/sh\nshift\nexec '{}' \"$@\"\n",
+            env!("CARGO_BIN_EXE_fleet-dev")
+        ),
+    );
+    e.write(
+        "fakes/gh",
+        "#!/bin/sh\nv=$3; target=\nwhile [ $# -gt 0 ]; do\n  case $1 in\n    --verify-tag) git rev-parse -q --verify \"refs/tags/$v\" >/dev/null || { echo \"tag $v does not exist\" >&2; exit 1; } ;;\n    --target) target=$2 ;;\n  esac\n  shift\ndone\nif ! git rev-parse -q --verify \"refs/tags/$v\" >/dev/null; then\n  [ -n \"$target\" ] || { echo 'no --target for a new tag' >&2; exit 1; }\n  git tag \"$v\" \"$target\"\nfi\necho \"released $v\"\n",
+    );
+    for f in ["fakes/cargo", "fakes/gh"] {
+        fs::set_permissions(e.0.join(f), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    e.write("output", "");
+    let mut paths = vec![e.0.join("fakes")];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let mut s =
+        Spec::new("bash", Duration::from_secs(120)).args(["-eo", "pipefail", "-c", &script]);
+    s.cwd = Some(e.0.clone());
+    s.env = [
+        (
+            "PATH",
+            std::env::join_paths(paths)
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+        ),
+        (
+            "GIT_CONFIG_GLOBAL",
+            e.0.join("no-config").to_string_lossy().to_string(),
+        ),
+        ("GIT_CONFIG_NOSYSTEM", "1".into()),
+        (
+            "GITHUB_OUTPUT",
+            e.0.join("output").to_string_lossy().to_string(),
+        ),
+        (
+            "GITHUB_STEP_SUMMARY",
+            e.0.join("summary").to_string_lossy().to_string(),
+        ),
+        ("GITHUB_REPOSITORY", "owner/fleet".into()),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .chain(env.iter().map(|(k, v)| (k.to_string(), v.to_string())))
+    .collect();
+    match run(&s) {
+        Outcome::Exited {
+            code,
+            stdout,
+            stderr,
+        } => (
+            code == Some(0),
+            format!(
+                "{}{}{}",
+                fs::read_to_string(e.0.join("output")).unwrap(),
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            ),
+        ),
+        o => panic!("{o:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_push_to_main_releases_its_conventional_commits_and_tags_the_tested_commit() {
+    let cd = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/cd.yml");
+    let doc: serde_json::Value = serde_saphyr::from_str(&fs::read_to_string(cd).unwrap()).unwrap();
+    assert!(
+        doc["on"]["push"]["branches"]
+            .as_array()
+            .is_some_and(|b| b.iter().any(|b| b == "main")),
+        "cd.yml must run on every push to main: {}",
+        doc["on"]
+    );
+    let e = Env::new();
+    e.repo();
+    e.write(".github/release-readiness.toml", "ready = true\n");
+    e.commit("chore: ready");
+    e.git(&["tag", "v2.1.0"]);
+    e.write("crates/demo.rs", "pub fn shipped() {}\npub fn more() {}\n");
+    e.commit("feat: more");
+    let push = [
+        ("GITHUB_REF", "refs/heads/main"),
+        ("GITHUB_REF_TYPE", "branch"),
+        ("FORCED", ""),
+        ("DRY_RUN", ""),
+    ];
+    let (ok, out) = release_step(&e, "plan", "Plan", &push);
+    assert!(
+        ok && out.contains("publish=true") && out.contains("version=v2.2.0"),
+        "push to main: {out}"
+    );
+    // A dispatch from a branch, or a dry run on main, never publishes.
+    for (reference, dry) in [("refs/heads/feature", "false"), ("refs/heads/main", "true")] {
+        let (ok, out) = release_step(
+            &e,
+            "plan",
+            "Plan",
+            &[
+                ("GITHUB_REF", reference),
+                ("GITHUB_REF_TYPE", "branch"),
+                ("FORCED", ""),
+                ("DRY_RUN", dry),
+            ],
+        );
+        assert!(
+            ok && out.contains("publish=false"),
+            "{reference} dry={dry}: {out}"
+        );
+    }
+    let head = {
+        let s = Spec::new("git", Duration::from_secs(10)).args([
+            "-C",
+            e.0.to_str().unwrap(),
+            "rev-parse",
+            "HEAD",
+        ]);
+        run(&s).success_text().unwrap().trim().to_string()
+    };
+    e.write("dist/fleet-v2.2.0-checksums.txt", "");
+    let (ok, out) = release_step(
+        &e,
+        "publish",
+        "Publish the release",
+        &[
+            ("GITHUB_SHA", &head),
+            ("VERSION", "v2.2.0"),
+            ("NEWEST", "true"),
+            ("PRERELEASE", "false"),
+            ("GH_TOKEN", "fake"),
+        ],
+    );
+    assert!(ok, "publish: {out}");
+    let tagged = Spec::new("git", Duration::from_secs(10)).args([
+        "-C",
+        e.0.to_str().unwrap(),
+        "rev-parse",
+        "v2.2.0^{commit}",
+    ]);
+    assert_eq!(
+        run(&tagged).success_text().map(|s| s.trim().to_string()),
+        Some(head)
+    );
+    // The next push sees that tag, so it neither moves it nor releases twice.
+    let (ok, out) = release_step(&e, "plan", "Plan", &push);
+    assert!(ok && out.contains("release=false"), "after release: {out}");
 }
