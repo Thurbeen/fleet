@@ -1,12 +1,13 @@
 # Gateway controller
 
-Design, not implemented in full. The installed binary has step 1 below: the
-`[gateway]` key, the Gateway port, the `fleet-gateway` crate with its fake
-adapter, the `Conversation` and `Listener` kinds, ConversationController's
-mirror (numbering, the history backstop, orphaning and retention),
-ListenerController, and the `fleet gateway receive`, `account` and `status`
-verbs. Admission, Task creation, the refusal post and GatewayController are
-design, not implemented: a mention is mirrored, and starts nothing yet.
+Design, not implemented in full. The installed binary has steps 1 and 5
+below: the `[gateway]` key, the Gateway port, the `fleet-gateway` crate with
+its fake and Slack adapters, the `Conversation` and `Listener` kinds,
+ConversationController's mirror (numbering, the history backstop, orphaning
+and retention), ListenerController, and the `fleet gateway receive`, `account`
+and `status` verbs. Admission, Task creation, the refusal post and
+GatewayController are design, not implemented: a mention is mirrored, and
+starts nothing yet.
 
 The Gateway ties chat threads to Tasks:
 

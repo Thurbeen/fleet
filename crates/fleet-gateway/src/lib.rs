@@ -1,5 +1,7 @@
 //! Implementations of the gateway contract ([`fleet_api::gateway::Gateway`]).
 //!
+//! - [`SlackGateway`]: Slack's Web API through an externally authenticated
+//!   `curl`, one bounded process per call.
 //! - [`FakeGateway`]: a file-backed chat platform for tests and trials. It
 //!   runs no process and reaches no network, and it models every
 //!   `capabilities` combination a real platform can present.
@@ -8,14 +10,15 @@
 //! - [`listener_account`]: what a listener needs to connect to an account,
 //!   with the digest its heartbeats carry.
 //!
-//! This is the only crate that will know a chat platform's client exists.
-//! A platform adapter makes bounded calls, each one process through
+//! This is the only crate that knows a chat platform's client exists. A
+//! platform adapter makes bounded calls, each one process through
 //! fleet-exec with its tree killed past the bound: no WebSocket, no resident
 //! connection, no background thread. The listener outside Fleet holds the
 //! connection. Credentials stay with the external client's own
 //! configuration: Fleet passes none and stores none.
 
 pub mod fake;
+pub mod slack;
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -29,17 +32,20 @@ use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+pub use slack::SlackGateway;
 
 /// Which adapter serves a platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
     Fake,
+    Slack,
 }
 
 impl Platform {
     pub fn parse(name: &str) -> Option<Platform> {
         match name {
             fake::KIND => Some(Platform::Fake),
+            slack::KIND => Some(Platform::Slack),
             _ => None,
         }
     }
@@ -47,11 +53,12 @@ impl Platform {
     pub fn name(self) -> &'static str {
         match self {
             Platform::Fake => fake::KIND,
+            Platform::Slack => slack::KIND,
         }
     }
 
     /// The platforms this build has, in the words `fleet version` prints.
-    pub const ALL: &[&str] = &[fake::KIND];
+    pub const ALL: &[&str] = &[fake::KIND, slack::KIND];
 }
 
 /// The configured accounts, one adapter each.
@@ -73,7 +80,8 @@ impl GatewayAccounts {
     /// Build one adapter per account. `call_timeout` bounds every platform
     /// call. The checks here are the platform's own: a platform this build
     /// lacks, an `inbound` its listener cannot deliver by, a fake without a
-    /// dir. The pure rules ran at config load.
+    /// dir, a Slack account without a curl config. The pure rules ran at
+    /// config load. Opening an adapter calls no platform.
     pub fn new(
         accounts: BTreeMap<String, AccountConfig>,
         call_timeout: Duration,
@@ -105,6 +113,10 @@ impl GatewayAccounts {
                             .map_err(|e| format!("{at}: fake gateway {}: {e}", dir.display()))?,
                     )
                 }
+                Platform::Slack => Box::new(
+                    SlackGateway::new(&name, &cfg, call_timeout)
+                        .map_err(|e| format!("{at}: {e}"))?,
+                ),
             };
             out.insert(name, (cfg, adapter));
         }
@@ -361,13 +373,54 @@ mod tests {
     #[test]
     fn an_account_on_a_platform_this_build_lacks_is_refused_with_the_list() {
         let err = GatewayAccounts::new(
+            BTreeMap::from([("tg-main".to_string(), account("telegram"))]),
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            "gateway.accounts.tg-main: unknown platform \"telegram\"; this build has fake, slack"
+        );
+        let accounts = GatewayAccounts::new(
+            BTreeMap::from([(
+                "slack-main".to_string(),
+                AccountConfig {
+                    inbound: Inbound::SocketMode,
+                    ..account("slack")
+                },
+            )]),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert_eq!(accounts.names().collect::<Vec<_>>(), ["slack-main"]);
+        assert!(
+            accounts.operation_bound() > 0,
+            "the Slack adapter reports its bound"
+        );
+        let err = GatewayAccounts::new(
+            BTreeMap::from([(
+                "slack-main".to_string(),
+                AccountConfig {
+                    inbound: Inbound::SocketMode,
+                    curl_config: None,
+                    ..account("slack")
+                },
+            )]),
+            Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            "gateway.accounts.slack-main: a slack account needs a curlConfig"
+        );
+        let err = GatewayAccounts::new(
             BTreeMap::from([("slack-main".to_string(), account("slack"))]),
             Duration::from_secs(1),
         )
         .unwrap_err();
         assert_eq!(
             err,
-            "gateway.accounts.slack-main: unknown platform \"slack\"; this build has fake"
+            "gateway.accounts.slack-main: inbound \"connection\" is not how a Slack listener delivers; use \"socket-mode\" or \"events-api\""
         );
         let err = GatewayAccounts::new(
             BTreeMap::from([("fake-main".to_string(), account("fake"))]),
@@ -392,6 +445,8 @@ mod tests {
         .unwrap_err();
         assert!(err.contains("inbound \"events-api\" is not how a fake listener delivers"));
         assert_eq!(Platform::parse("fake"), Some(Platform::Fake));
-        assert_eq!(Platform::parse("slack"), None);
+        assert_eq!(Platform::parse("slack"), Some(Platform::Slack));
+        assert_eq!(Platform::parse("telegram"), None);
+        assert_eq!(Platform::ALL, ["fake", "slack"]);
     }
 }

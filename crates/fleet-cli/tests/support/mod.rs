@@ -368,6 +368,12 @@ impl Env {
         env
     }
 
+    /// Children get `dir` as their whole PATH: a test that wants a program
+    /// found by name finds only what it put there.
+    pub fn only_on_path(&mut self, dir: &Path) {
+        self.path = Some(dir.to_path_buf());
+    }
+
     pub fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_fleet"));
         cmd.arg("--config").arg(&self.config).args(args);
