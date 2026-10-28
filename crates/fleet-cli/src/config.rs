@@ -110,6 +110,13 @@ pub struct RuntimeConfig {
     /// thurbox: the variable each harness reads `Task.spec.model` from.
     #[serde(default)]
     pub model_env: BTreeMap<String, String>,
+    /// thurbox: each repository URL a Task may name, and its source checkout,
+    /// an absolute path on the hosts thurbox creates worktrees on.
+    #[serde(default)]
+    pub repositories: BTreeMap<String, String>,
+    /// thurbox: `delete` (the default) removes a session's worktrees with it;
+    /// `keep` leaves them, restorable in thurbox.
+    pub workspace_cleanup: Option<String>,
 }
 
 impl Config {

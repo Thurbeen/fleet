@@ -298,7 +298,7 @@ impl Pass<'_, '_> {
             host: self.spec.host.clone(),
             key: session_key(self.input.task),
             harness: self.spec.harness.clone(),
-            dir: self.spec.workspace.dir.clone(),
+            workspace: self.spec.workspace.clone(),
             model: self.spec.model.clone(),
             env: self.spec.env.clone(),
             environment_frozen: false,

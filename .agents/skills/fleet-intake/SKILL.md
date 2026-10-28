@@ -11,7 +11,8 @@ Use the config and data directory the requester supplies; never probe a live
 queue or create a fresh operational deployment by guessing a path.
 
 Represent one session as a Task with `harness`, `host`, optional `model`,
-`brief`, `workspace.dir`, optional `outputs` and explicit `dispatch` (see
+`brief`, `workspace` (`dir`, or `repositories` for the runtime to check out),
+optional `outputs` and explicit `dispatch` (see
 docs/task-controller/resource.md). Apply it with `fleet apply -f FILE`. Record its name
 and returned generation. Inspect it with `fleet get task NAME` and
 `fleet status task NAME --json`. Check supported kinds with

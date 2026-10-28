@@ -134,7 +134,7 @@ spec.harness        the agent harness, explicit or inherited
 spec.host           the runtime host (default "local")
 spec.model          optional; reaches the harness through its model variable
 spec.brief          the brief, sent once
-spec.workspace.dir  the session's working directory
+spec.workspace      {dir} or {repositories: [{name, url, ref?}]}
 spec.dispatch       nothing spawns while false
 spec.outputs        optional: the structured outputs a result must carry
 spec.forge          optional: relay and draft overrides for declared changes
@@ -143,6 +143,16 @@ spec.forge          optional: relay and draft overrides for declared changes
 The spec is immutable once created, except `dispatch` and `forge`; a
 different brief is a different Task. `harness` and `host` may not start
 with `-`, since both reach the runtime as arguments.
+
+`spec.workspace` names what the session works in. It never says how the
+runtime makes it.
+
+- `{dir}` is a directory that exists before the Task. It may not be empty.
+- `{repositories}` names one or more repositories by identity. Each `name`
+  and each `url` is unique in the Task. Each `url` and optional `ref` is
+  non-empty, has no whitespace and does not start with `-`. Fleet does not
+  interpret `ref`.
+- A workspace has exactly one of the two forms. Unknown fields are refused.
 
 See [execution configuration](../docs/resources/task-config.md) for
 reference validation, deterministic precedence and private launch freezing.
@@ -493,6 +503,40 @@ Each adapter reports its longest single operation (`operation_bound`), and
   reconnect, busy/dialog/cursor guards and unchanged deletion safety.
 - **fake:** a file-backed host for tests and trials, with injectable faults
   (lost answers, refusals, delays, hangs). It runs no process.
+
+The runtime owns the workspace. Fleet passes `spec.workspace` in the spawn
+and deletes the session; every adapter keeps these rules:
+
+- **Materialization.** The adapter decides how a workspace becomes files:
+  a worktree, a clone, a copy or a restored snapshot. Branches, bases,
+  source checkouts and credentials are the adapter's. Fleet sends none.
+- **Whole or nothing.** If a spawn stops partway, the adapter rolls back or
+  completes its own partial state. Fleet acts on `find` alone.
+- **Cleanup.** `release` deletes the session. The runtime then cleans the
+  workspace as it is configured to. Fleet never inspects or deletes a
+  workspace.
+- **Refusal.** A workspace the adapter cannot make, or may not make, is
+  `Known(Failed)` at spawn, never Unknown.
+
+Thurbox maps a `{dir}` to `--repo-path`. It maps `{repositories}` to one
+worktree create:
+
+- The first repository's source is `--repo-path`, and its `ref` is
+  `--base-branch`.
+- Each other repository is `--add-repo PATH[@REF]`.
+- Every worktree is on the branch `<keyPrefix>/<session key>`. A source
+  repository with a branch named exactly `<keyPrefix>` cannot hold these
+  branches, so its spawns fail.
+- `runtime.repositories` maps each URL to its source checkout on the host. A
+  relative source is refused when the config loads. An unmapped URL, or an
+  `@` that `PATH@REF` cannot carry, fails the spawn.
+- `release` runs `session delete --force` by default. Thurbox then removes
+  the window and the worktrees it created.
+- With `runtime.workspaceCleanup = "keep"`, `release` runs
+  `session delete --soft`. The worktrees stay, and thurbox can restore the
+  session.
+- Cleanup is best effort. Fleet reads a delete that exits 0 as released,
+  even when thurbox reports a worktree or remote teardown error.
 
 ## Forge contract
 

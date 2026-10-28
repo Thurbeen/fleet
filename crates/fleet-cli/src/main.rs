@@ -25,7 +25,7 @@ use fleet_manager::{
     apply_conversation, beat, declare, declare_change_request, delete, receive, record_result,
     send,
 };
-use fleet_runtime::{FakeHost, FakeRuntime, ThurboxConfig, ThurboxRuntime};
+use fleet_runtime::{Cleanup, FakeHost, FakeRuntime, ThurboxConfig, ThurboxRuntime};
 use fleet_store::{FileStore, SystemClock};
 use serde_json::{Value, json};
 
@@ -849,6 +849,23 @@ fn open_runtime(config: &Config) -> Result<Box<dyn Runtime>, Failure> {
                 cfg.key_prefix = p.clone();
             }
             cfg.model_env.extend(rt.model_env.clone());
+            for (url, source) in &rt.repositories {
+                if !fleet_api::validate::is_absolute_path(source) {
+                    return Err(fail(format!(
+                        "runtime.repositories: the source {source:?} of {url} must be an absolute path"
+                    )));
+                }
+            }
+            cfg.repositories = rt.repositories.clone();
+            cfg.cleanup = match rt.workspace_cleanup.as_deref() {
+                None | Some("delete") => Cleanup::Delete,
+                Some("keep") => Cleanup::Keep,
+                Some(other) => {
+                    return Err(fail(format!(
+                        "runtime.workspaceCleanup {other:?}: use delete or keep"
+                    )));
+                }
+            };
             Ok(Box::new(ThurboxRuntime::new(cfg)))
         }
         other => Err(fail(format!(

@@ -570,3 +570,145 @@ fn uncertain_or_occupied_codex_startup_never_receives_a_brief() {
     env.reconcile().ok();
     assert_eq!(argv_of(&env, "send").len(), 0);
 }
+
+/// A Task that names repositories instead of a directory: the runtime config
+/// maps each repository to its source checkout on the host.
+fn repositories_task(name: &str) -> Value {
+    let mut t = support::task(name, true);
+    t["spec"]["workspace"] = json!({"repositories": [
+        {"name": "fleet", "url": "https://example.invalid/org/fleet", "ref": "main"},
+        {"name": "docs", "url": "https://example.invalid/org/docs"}
+    ]});
+    t
+}
+
+fn map_repositories(env: &Env) {
+    let (fleet, docs) = if cfg!(windows) {
+        ("C:\\\\src\\\\fleet", "C:\\\\src\\\\docs")
+    } else {
+        ("/src/fleet", "/src/docs")
+    };
+    let mut cfg = std::fs::read_to_string(&env.config).expect("config");
+    cfg.push_str(&format!(
+        "\n[runtime.repositories]\n\"https://example.invalid/org/fleet\" = \"{fleet}\"\n\"https://example.invalid/org/docs\" = \"{docs}\"\n"
+    ));
+    std::fs::write(&env.config, cfg).expect("config");
+}
+
+#[test]
+fn a_repositories_workspace_becomes_thurbox_worktrees_the_adapter_names() {
+    let env = Env::thurbox("thurbox-repositories");
+    map_repositories(&env);
+    let mut items = runtime_config();
+    items.as_array_mut().unwrap().push(repositories_task("r1"));
+    env.apply(items).ok();
+    env.reconcile().ok();
+
+    assert_eq!(
+        env.status("r1")["phase"],
+        "Briefed",
+        "{:#}",
+        full_status(&env, "r1")
+    );
+    let uid = env.get("r1")["metadata"]["uid"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let create = &argv_of(&env, "create")[0];
+    let after = |flag: &str| {
+        create
+            .iter()
+            .position(|a| a == flag)
+            .map(|i| create[i + 1].clone())
+    };
+    let (fleet, docs) = if cfg!(windows) {
+        ("C:\\src\\fleet", "C:\\src\\docs")
+    } else {
+        ("/src/fleet", "/src/docs")
+    };
+    assert_eq!(after("--repo-path").as_deref(), Some(fleet), "{create:?}");
+    assert_eq!(
+        after("--worktree-branch"),
+        Some(format!("fleet/r1.{uid}")),
+        "{create:?}"
+    );
+    assert_eq!(
+        after("--base-branch").as_deref(),
+        Some("main"),
+        "{create:?}"
+    );
+    assert_eq!(after("--add-repo").as_deref(), Some(docs), "{create:?}");
+
+    // Deleting the Task deletes the session; by default the runtime tears its
+    // worktrees down with it (`--force`). Fleet never names a worktree.
+    env.fleet(&result_args("r1", "1")).ok();
+    env.reconcile().ok();
+    env.fleet(&["delete", "task", "r1"]).ok();
+    set_session_state(&env, &thurbox_key(&env, "r1"), "idle");
+    env.reconcile().ok();
+    assert!(env.stub_sessions().is_empty(), "{:#?}", env.stub_sessions());
+    let delete = &argv_of(&env, "delete")[0];
+    assert!(delete.iter().any(|a| a == "--force"), "{delete:?}");
+    assert!(
+        !delete
+            .iter()
+            .any(|a| a.contains("src") || a.contains("worktree")),
+        "{delete:?}"
+    );
+    env.fleet(&["get", "task", "r1"]).code(3);
+}
+
+#[test]
+fn a_runtime_configured_to_keep_workspaces_deletes_the_session_softly() {
+    let env = Env::thurbox("thurbox-keep");
+    let cfg = std::fs::read_to_string(&env.config).expect("config");
+    let cfg = cfg.replace("[runtime]\n", "[runtime]\nworkspaceCleanup = \"keep\"\n");
+    std::fs::write(&env.config, cfg).expect("config");
+    let mut items = runtime_config();
+    items.as_array_mut().unwrap().push(task("k1", true));
+    env.apply(items).ok();
+    env.reconcile().ok();
+    env.fleet(&result_args("k1", "1")).ok();
+    env.reconcile().ok();
+    env.fleet(&["delete", "task", "k1"]).ok();
+    set_session_state(&env, &thurbox_key(&env, "k1"), "idle");
+    env.reconcile().ok();
+    let delete = &argv_of(&env, "delete")[0];
+    assert!(delete.iter().any(|a| a == "--soft"), "{delete:?}");
+    assert!(!delete.iter().any(|a| a == "--force"), "{delete:?}");
+}
+
+#[test]
+fn a_runtime_workspace_setting_that_cannot_work_is_refused_at_load() {
+    for (extra, want) in [
+        ("workspaceCleanup = \"later\"\n", "runtime.workspaceCleanup"),
+        (
+            "[runtime.repositories]\n\"https://example.invalid/a\" = \"src/a\"\n",
+            "runtime.repositories",
+        ),
+    ] {
+        let env = Env::thurbox("thurbox-bad-workspace-config");
+        let cfg = std::fs::read_to_string(&env.config).expect("config");
+        let cfg = if extra.starts_with('[') {
+            format!("{cfg}\n{extra}")
+        } else {
+            cfg.replace("[runtime]\n", &format!("[runtime]\n{extra}"))
+        };
+        std::fs::write(&env.config, cfg).expect("config");
+        env.fleet(&["reconcile"]).code(1).stderr_has(want);
+    }
+}
+
+#[test]
+fn a_repository_the_runtime_does_not_map_is_refused_at_spawn() {
+    let env = setup("thurbox-unmapped", vec![repositories_task("r2")]);
+    env.reconcile().ok();
+
+    assert!(argv_of(&env, "create").is_empty(), "{:?}", env.stub_calls());
+    let full = full_status(&env, "r2");
+    assert!(
+        full.to_string()
+            .contains("https://example.invalid/org/fleet is not in runtime.repositories"),
+        "{full:#}"
+    );
+}

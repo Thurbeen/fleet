@@ -121,15 +121,13 @@ pub fn validate_spec(kind: &str, spec: &Value) -> Result<(), StoreError> {
         Some(&s.host),
         s.model.as_deref(),
     )?;
-    for (field, value) in [
-        ("spec.host", &s.host),
-        ("spec.brief", &s.brief),
-        ("spec.workspace.dir", &s.workspace.dir),
-    ] {
+    for (field, value) in [("spec.host", &s.host), ("spec.brief", &s.brief)] {
         if value.trim().is_empty() {
             return Err(StoreError::Invalid(format!("{field} must not be empty")));
         }
     }
+    validate_workspace(&s.workspace)
+        .map_err(|e| StoreError::Invalid(format!("spec.workspace{e}")))?;
     // Both reach the runtime as arguments: never as a flag.
     for (field, value) in [("spec.harness", &s.harness), ("spec.host", &s.host)] {
         if value.starts_with('-') {
@@ -284,6 +282,51 @@ pub fn validate_execution(
     Ok(())
 }
 
+/// A workspace names a directory or repositories, never both and never
+/// nothing. The error starts with the path inside the workspace, such as
+/// `.dir must not be empty`, so a caller prefixes its own field.
+pub fn validate_workspace(workspace: &task::Workspace) -> Result<(), String> {
+    match workspace {
+        task::Workspace::Dir(w) => {
+            if w.dir.trim().is_empty() {
+                return Err(".dir must not be empty".into());
+            }
+        }
+        task::Workspace::Repositories(w) => {
+            if w.repositories.is_empty() {
+                return Err(".repositories must name at least one repository".into());
+            }
+            let mut names = BTreeSet::new();
+            let mut urls = BTreeSet::new();
+            for (i, r) in w.repositories.iter().enumerate() {
+                let at = format!(".repositories[{i}]");
+                if let Err(StoreError::Invalid(e)) = validate_name(&r.name) {
+                    return Err(format!("{at}.name: {e}"));
+                }
+                if !names.insert(r.name.as_str()) {
+                    return Err(format!("{at}.name {:?} is repeated", r.name));
+                }
+                if !urls.insert(r.url.as_str()) {
+                    return Err(format!("{at}.url {:?} is repeated", r.url));
+                }
+                // Both reach the runtime as arguments: never as a flag.
+                for (field, value) in [("url", Some(&r.url)), ("ref", r.reference.as_ref())] {
+                    let Some(value) = value else { continue };
+                    if value.trim().is_empty()
+                        || value.starts_with('-')
+                        || value.chars().any(char::is_whitespace)
+                    {
+                        return Err(format!(
+                            "{at}.{field} must be non-empty, without whitespace, and not start with '-'"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_env(env: &BTreeMap<String, String>) -> Result<(), StoreError> {
     let mut names = BTreeSet::new();
     let mut bytes = 0;
@@ -329,4 +372,67 @@ pub fn is_absolute_path(path: &str) -> bool {
                 && bytes[0].is_ascii_alphabetic()
                 && bytes[1] == b':'
                 && matches!(bytes[2], b'/' | b'\\')))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::task::{RepositoriesWorkspace, Repository, Workspace};
+
+    fn repos(list: &[(&str, &str, Option<&str>)]) -> Workspace {
+        Workspace::Repositories(RepositoriesWorkspace {
+            repositories: list
+                .iter()
+                .map(|(name, url, reference)| Repository {
+                    name: name.to_string(),
+                    url: url.to_string(),
+                    reference: reference.map(str::to_string),
+                })
+                .collect(),
+        })
+    }
+
+    #[test]
+    fn a_workspace_names_something_usable() {
+        let url = "https://example.invalid/app";
+        let docs = "https://example.invalid/docs";
+        assert!(validate_workspace(&Workspace::at("/w")).is_ok());
+        assert!(
+            validate_workspace(&repos(&[("app", url, Some("main")), ("docs", docs, None)])).is_ok()
+        );
+        for (workspace, want) in [
+            (Workspace::at(" "), ".dir must not be empty"),
+            (
+                repos(&[]),
+                ".repositories must name at least one repository",
+            ),
+            (
+                repos(&[("App", url, None)]),
+                ".repositories[0].name: name \"App\"",
+            ),
+            (
+                repos(&[("a", url, None), ("a", url, None)]),
+                ".repositories[1].name \"a\" is repeated",
+            ),
+            (
+                repos(&[("a", url, None), ("b", url, None)]),
+                ".repositories[1].url \"https://example.invalid/app\" is repeated",
+            ),
+            (
+                repos(&[("a", "--upload-pack=x", None)]),
+                ".repositories[0].url must be",
+            ),
+            (
+                repos(&[("a", url, Some("-x"))]),
+                ".repositories[0].ref must be",
+            ),
+            (
+                repos(&[("a", url, Some("my branch"))]),
+                ".repositories[0].ref must be",
+            ),
+        ] {
+            let err = validate_workspace(&workspace).unwrap_err();
+            assert!(err.starts_with(want), "{workspace:?}: {err}");
+        }
+    }
 }

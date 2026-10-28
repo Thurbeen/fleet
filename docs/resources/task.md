@@ -40,7 +40,7 @@ except `dispatch` and `forge`.
 | `configRef` | no | `{"name":"config"}` references passive execution defaults. |
 | `env` | no | Explicit string environment map; overrides inherited values. |
 | `brief` | yes | The brief, sent once to the ready session. |
-| `workspace.dir` | yes | The session's working directory. The thurbox runtime needs an absolute path on the host. |
+| `workspace` | yes | What the session works in: `{"dir": PATH}`, a directory that exists before the Task (the thurbox runtime needs an absolute path on the host), or `{"repositories": [{"name", "url", "ref"?}]}`, repositories the runtime materializes for this Task. The first repository is the primary, where the agent starts. Fleet never interprets `ref`; the runtime decides what it means. Deleting the session cleans the workspace up as the runtime is configured to. See [Workspaces](#workspaces). |
 | `dispatch` | no | Nothing spawns while `false` (the default). |
 | `outputs` | no | The structured outputs a result must carry, by name: each `{"type": T, "required": bool}`, where T is `string`, `integer`, `number`, `boolean`, `object` or `array`. |
 | `forge` | no | Overrides of the `[forge]` defaults for the changes this Task's worker declares: `relay.notes`, `relay.checks`, `draft.policy` (a name under `[forge.readyPolicies]`, refused at apply when the config does not define it; `null` disables mark-ready). Field-level: absent fields inherit. Mutable like `dispatch`. |
@@ -49,6 +49,29 @@ except `dispatch` and `forge`.
 
 See [TaskConfig](task-config.md) and [EnvProvider](env-provider.md) for provider sources,
 precedence, validation and private launch snapshots.
+
+### Workspaces
+
+A Task names its repositories. The runtime decides how they become files.
+
+```json
+{"workspace": {"repositories": [
+  {"name": "app", "url": "https://github.com/example/app", "ref": "main"},
+  {"name": "docs", "url": "https://github.com/example/docs"}
+]}}
+```
+
+- Each `name` and each `url` is unique in the Task. Each `url` and `ref` is
+  non-empty, has no whitespace and does not start with `-`.
+- A workspace has `dir` or `repositories`, never both.
+- Fleet has no branch, base, worktree or cleanup field. The runtime chooses
+  them. The worker reports the change it opened through `fleet declare`.
+- The thurbox runtime creates one worktree per repository, on the branch
+  `<keyPrefix>/<session key>`. `runtime.repositories` in `fleet.toml` maps
+  each URL to its source checkout. An unmapped URL fails the spawn.
+- Deleting the session cleans the workspace. With thurbox, the worktrees go
+  with the session by default. `runtime.workspaceCleanup = "keep"` keeps
+  them instead.
 
 ## Status
 

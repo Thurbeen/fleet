@@ -31,7 +31,7 @@ Behaviour in every phase:
 - A Conversation never leaves Tied because its Task is Unknown. Only a
   readably absent Task orphans it.
 - A message seen twice, from the listener and from history, is one message.
-- When the route's workspace is busy, the thread stays where it is, says so
+- When the route's `dir` workspace is busy, the thread stays where it is, says so
   once, and starts its Task when the workspace is free. A waiting thread is
   never deleted by retention.
 - A thread Fleet opened for a Question starts no Task from a mention while

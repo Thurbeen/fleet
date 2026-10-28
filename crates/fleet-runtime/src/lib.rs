@@ -9,7 +9,7 @@ pub mod fake;
 pub mod thurbox;
 
 pub use fake::{FakeHost, FakeRuntime, Fault};
-pub use thurbox::{ThurboxConfig, ThurboxRuntime};
+pub use thurbox::{Cleanup, ThurboxConfig, ThurboxRuntime};
 
 /// Resolve manager-local explicit sources, never an implicit shell. Errors
 /// deliberately omit child output, paths and parser text (all may contain values).

@@ -129,9 +129,11 @@ These rules hold across all flows:
 - **A thread Fleet opened belongs to its Question's Task.** While that Task
   exists, a mention there starts no other Task. If Fleet cannot tell which
   Task opened the thread, the thread ignores mentions rather than guess.
-- **A route runs one conversation Task at a time.** The route's workspace
-  is a shared directory, so a second thread waits, says so once, and starts
-  when the workspace is free.
+- **A route with a directory workspace runs one conversation Task at a
+  time.** The route's workspace is a shared directory, so a second thread
+  waits, says so once, and starts when the workspace is free. A route with a
+  `repositories` workspace gives each Task its own workspace, so no thread
+  waits for another.
 - **Every problem is a visible condition.** The Conversation, the Task and
   the Listener each report `NeedsAttention` with a reason. Nothing fails
   silently.
@@ -225,7 +227,7 @@ Out of scope, deliberately:
 | --- | --- |
 | Where does the earlier history go when a mention lands partway through a thread? | In the first inbox entry, not in the brief. The brief stays the route's brief, the same for every conversation Task. |
 | What brief and workspace does a conversation Task get? | The route's. TaskConfig holds execution defaults only. So a route names a TaskConfig, and carries the brief and the workspace itself. |
-| How can a route run several conversations at once? | With a provisioned workspace per Task, such as a worktree from the route's repository. That is a separate change. Until then a route runs one conversation Task at a time. |
+| How can a route run several conversations at once? | With a `repositories` workspace. The runtime materializes it for each Task, for example as thurbox worktrees, and cleans it up when the session is deleted. A `dir` route runs one conversation Task at a time. |
 | Who deletes a conversation Task? | A person or a conductor, as for any Task. A later change can add a route policy that deletes a Concluded Task after it is idle. |
 | How long is a Conversation kept? | While its Task exists. When Untied or Orphaned, `gateway.retainMs` after the later of its last message and its orphaning, thirty days by default. A thread waiting for a busy workspace is kept. |
 | How large can a conversation Task's declarations grow? | `status.declared` has no cap today. Recommendation: a store cap per Task, past which the store refuses with `NeedsAttention/DeclaredFull`. |
