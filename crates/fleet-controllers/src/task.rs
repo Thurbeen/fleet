@@ -546,8 +546,9 @@ impl Pass<'_, '_> {
     }
 
     /// Whether the session's agent trusts its workspace on this pass. A
-    /// known gap asks a person and is looked at again after a wait; Unknown
-    /// only waits, since it proves nothing either way.
+    /// known gap asks a person and is looked at again after a wait. Unknown
+    /// proves nothing either way: like readiness, it is asked again on the
+    /// next pass, so a starting agent is not held back.
     fn workspace_trusted(&mut self) -> bool {
         match self.input.observations.workspace_trust.clone() {
             Some(Observation::Known(WorkspaceTrust::Trusted { how })) => {
@@ -573,7 +574,6 @@ impl Pass<'_, '_> {
                     "TrustUnknown",
                     why,
                 );
-                self.wait_from(self.now());
                 false
             }
             None => false,

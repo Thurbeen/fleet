@@ -299,7 +299,7 @@ impl ThurboxRuntime {
     /// this machine, as the agent resolves its cwd. A filesystem root or this
     /// machine's home is refused: trusting it would trust what it contains.
     fn trust_root(&self, host: &str, workspace: &Workspace) -> Result<String, String> {
-        let named = self.named_root(workspace)?;
+        let named = lexical(&self.named_root(workspace)?)?;
         let root = if host == LOCAL {
             canonical(&named)
         } else {
@@ -343,7 +343,7 @@ impl ThurboxRuntime {
         };
         if args.len() != 2 || args[0] != "-c" || args[1] != expected.as_str() {
             return mismatch(format!(
-                "the session was not started with Fleet's trust in {root}; delete it, or the Task, so the runtime starts one that is"
+                "the session was not started with Fleet's trust in {root}; delete the Task and apply it again, so the runtime starts one that is"
             ));
         }
         let Some(cwd) = row["cwd"].as_str() else {
@@ -370,8 +370,28 @@ impl ThurboxRuntime {
         };
         if !member {
             return mismatch(format!(
-                "the session runs in {cwd}, which is not the Task's workspace"
+                "the session runs in {cwd}, which is not the Task's workspace; delete the Task and apply it again"
             ));
+        }
+        // Before its first hook, Codex may still draw its trust dialog: it
+        // keys its cwd on another spelling of the root, through a symlink
+        // the runtime cannot see. The dialog's default trusts; never brief it.
+        if row["hook_reported"] != true {
+            let capture =
+                match self.json(&["session", "capture", &session.id, "--lines", "0", "--json"]) {
+                    Ok(Some(v)) => v,
+                    Ok(None) => return Observation::unknown("startup capture refused"),
+                    Err(why) => return Observation::unknown(why),
+                };
+            let dialog = match codex_trust_dialog(session, &capture) {
+                Ok(dialog) => dialog,
+                Err(why) => return Observation::unknown(why),
+            };
+            if dialog {
+                return mismatch(format!(
+                    "Codex asks whether to trust {cwd}: it did not take Fleet's trust in {root}, so a symlink or another spelling names that directory. Name the workspace by its resolved path, then delete the Task and apply it again"
+                ));
+            }
         }
         Observation::Known(WorkspaceTrust::Trusted {
             how: format!("Codex was launched trusting {root} for this session only"),
@@ -493,6 +513,10 @@ impl ThurboxRuntime {
         let Some(output) = capture["output"].as_str() else {
             return Observation::unknown("initial composer capture has no output");
         };
+        // The trust dialog can follow the composer: never ready under it.
+        if codex_trust_dialog(session, &capture) != Ok(false) {
+            return Observation::unknown("Codex shows its trust dialog over the composer");
+        }
         let cursor_line = capture["cursor_row"]
             .as_u64()
             .and_then(|n| usize::try_from(n).ok())
@@ -573,6 +597,24 @@ fn codex_override(root: &str) -> Result<String, String> {
     ))
 }
 
+/// The path as an agent spells its cwd: no trailing separator. A `.` or
+/// `..` component, or an empty one, is refused: only the host's filesystem
+/// can resolve it, and a remote host's is out of reach.
+fn lexical(path: &str) -> Result<String, String> {
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    let body = trimmed.strip_prefix("\\\\").unwrap_or(trimmed);
+    if body
+        .split(['/', '\\'])
+        .skip(1)
+        .any(|c| c.is_empty() || c == "." || c == "..")
+    {
+        return Err(format!(
+            "cannot trust {path}: name it without `.`, `..` or repeated separators, which only its host can resolve"
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
 /// The path through its symlinks, when this machine can resolve it. Windows
 /// keeps the spelling given: its resolved form is a verbatim path agents
 /// do not key trust on.
@@ -622,6 +664,23 @@ fn claude_trust_dialog(session: &SessionRef, capture: &Value) -> bool {
     usize::try_from(cursor).is_ok_and(|c| c > header && c < footer)
         && choice("No, exit")
         && choice("Yes, I trust this folder")
+}
+
+/// Whether Codex 0.164's trust dialog is on the visible screen: its question
+/// and its trusting default. It can follow the composer, so it is looked for
+/// on the whole screen, not only at the cursor. Err when the capture is not
+/// this session's plain visible screen: that proves neither answer.
+fn codex_trust_dialog(session: &SessionRef, capture: &Value) -> Result<bool, &'static str> {
+    let output = capture["output"].as_str();
+    let (true, Some(output)) = (
+        capture["session_id"] == session.id && capture["ansi"] == false && capture["lines"] == 0,
+        output,
+    ) else {
+        return Err("the capture is not this session's visible screen");
+    };
+    let lines: Vec<&str> = output.lines().map(str::trim).collect();
+    Ok(lines.iter().any(|l| l.starts_with("Trust this folder?"))
+        && lines.iter().any(|l| l.contains("Trust and continue")))
 }
 
 /// Absolute on the host the path is for: a POSIX path, or a Windows drive
@@ -1128,6 +1187,42 @@ mod tests {
             ("https://example.invalid/b", None),
         ]));
         assert_eq!(rt.trust_root("remote", &repos).unwrap(), "/src/a");
+    }
+
+    #[test]
+    fn only_a_readable_codex_screen_answers_for_its_trust_dialog() {
+        let s = SessionRef {
+            id: "s1".into(),
+            host: "local".into(),
+            key: "t.u1".into(),
+        };
+        let screen = |output: &str| serde_json::json!({"session_id": "s1", "ansi": false, "lines": 0, "output": output});
+        let dialog = "  Trust this folder? Codex can read.\n› 1. Trust and continue\n";
+        assert_eq!(codex_trust_dialog(&s, &screen(dialog)), Ok(true));
+        assert_eq!(
+            codex_trust_dialog(&s, &screen("› Ask Codex to do anything\n")),
+            Ok(false)
+        );
+        for (field, value) in [
+            ("output", Value::Null),
+            ("session_id", "s2".into()),
+            ("lines", 200.into()),
+            ("ansi", true.into()),
+        ] {
+            let mut c = screen(dialog);
+            c[field] = value;
+            assert!(codex_trust_dialog(&s, &c).is_err(), "{field}");
+        }
+    }
+
+    #[test]
+    fn a_trust_root_is_named_as_an_agent_spells_its_cwd() {
+        assert_eq!(lexical("/work/t/").unwrap(), "/work/t");
+        assert_eq!(lexical("C:\\work\\t\\").unwrap(), "C:\\work\\t");
+        assert_eq!(lexical("\\\\host\\share\\t").unwrap(), "\\\\host\\share\\t");
+        for bad in ["/work/../t", "/work/./t", "/work//t", "C:\\a\\..\\t"] {
+            assert!(lexical(bad).is_err(), "{bad}");
+        }
     }
 
     /// Claude Code 2.1.312's dialog, as `session capture --lines 0` read it.

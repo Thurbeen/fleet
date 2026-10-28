@@ -1319,7 +1319,9 @@ fn answer(
         "capture" => {
             let id = args.get(2).cloned().unwrap_or_default();
             let mut capture = state["capture"].clone();
-            capture["session_id"] = json!(id);
+            if capture["session_id"].is_null() {
+                capture["session_id"] = json!(id);
+            }
             ok(capture)
         }
         "send" => {

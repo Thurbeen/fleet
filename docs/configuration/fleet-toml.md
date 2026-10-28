@@ -103,7 +103,10 @@ over the same environment key from providers or Task overrides. For configured
 Tasks, both variable selection and value freeze with the private launch
 snapshot; later TOML mapping changes do not alter that execution.
 
-`runtime.workspaceTrust` extends/overrides the built-in entries. Set `none`
+`runtime.workspaceTrust` extends/overrides the built-in entries. Map `codex`
+only to a harness that runs Codex: the interface puts Codex's `-c` option on
+the harness's command line, and another harness reads `-c` differently.
+Claude Code reads it as `--continue`. Set `none`
 only for a harness that has no workspace-trust gate. `none` approves nothing
 for a harness that has one: that harness can then receive its brief inside a
 trust prompt.

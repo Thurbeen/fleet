@@ -248,7 +248,91 @@ fn a_codex_session_without_fleets_trust_is_never_briefed_and_says_why() {
             1,
             "{name}: adopted, never twinned"
         );
+        // The way out it names is one the controller allows: deleting only
+        // the session would leave the Task WorkerGone, never respawned.
+        let message = condition(&st, "WorkspaceTrusted")["message"].to_string();
+        assert!(message.contains("delete the Task"), "{name}: {message}");
+        assert!(!message.contains("delete it,"), "{name}: {message}");
     }
+}
+
+#[test]
+fn codex_showing_its_own_trust_dialog_is_never_trusted() {
+    // The override reached Codex, yet Codex keys its cwd on another path
+    // (a symlink on a remote host, say) and draws its dialog over the
+    // composer. The dialog's default trusts; a brief's Enter would answer it.
+    let env = env("trust-codex-overlay", "");
+    initial_codex(&env);
+    env.edit_stub(|s| {
+        s["capture"]["output"] = json!(concat!(
+            "  >_ OpenAI Codex (v0.164.0)\n",
+            "\n",
+            "› Ask Codex to do anything\n",
+            "  Folder access\n",
+            "  /work/t1\n",
+            "  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.\n",
+            "› 1. Trust and continue\n",
+            "  2. Back to Agent Command Center\n",
+            "  enter continue · esc back\n"
+        ));
+        s["capture"]["cursor_row"] = json!(2);
+    });
+    env.apply(task("t1", "codex")).ok();
+    env.reconcile().ok();
+    let st = env.status("t1");
+    assert_eq!(argv_of(&env, "send").len(), 0, "{st:#}");
+    assert_condition(&st, "WorkspaceTrusted", "False", "Mismatch");
+    assert_condition(&st, "NeedsAttention", "True", "WorkspaceUntrusted");
+}
+
+#[test]
+fn a_codex_screen_that_cannot_be_read_is_unknown_not_trusted() {
+    for (name, field, value) in [
+        ("no-output", "output", Value::Null),
+        ("other-session", "session_id", json!("someone-else")),
+        ("scrollback", "lines", json!(200)),
+    ] {
+        let env = env(&format!("trust-codex-unreadable-{name}"), "");
+        initial_codex(&env);
+        env.edit_stub(|s| s["capture"][field] = value);
+        env.apply(task("t1", "codex")).ok();
+        env.reconcile().ok();
+        let st = env.status("t1");
+        assert_eq!(argv_of(&env, "send").len(), 0, "{name}: {st:#}");
+        assert_condition(&st, "WorkspaceTrusted", "Unknown", "TrustUnknown");
+    }
+}
+
+#[test]
+fn a_remote_trust_root_is_normalised_or_refused() {
+    let env = env("trust-codex-remote", "");
+    env.edit_stub(|s| s["hosts"] = json!({"remote": "up"}));
+    initial_codex(&env);
+    // A trailing separator is the same directory: the override names it the
+    // way Codex spells its cwd.
+    let mut t = task("r1", "codex");
+    t["spec"]["host"] = json!("remote");
+    t["spec"]["workspace"]["dir"] = json!(path("/work/r1/"));
+    env.apply(t).ok();
+    env.reconcile().ok();
+    let create = &argv_of(&env, "create")[0];
+    assert_eq!(
+        agent_args(create),
+        ["-c".to_string(), codex_trust(&path("/work/r1"))],
+        "{create:?}"
+    );
+    // `..` needs the host's filesystem to resolve: the spawn is refused.
+    let mut t = task("r2", "codex");
+    t["spec"]["host"] = json!("remote");
+    t["spec"]["workspace"]["dir"] = json!(path("/work/x/../r2"));
+    env.apply(t).ok();
+    env.reconcile().ok();
+    assert_eq!(argv_of(&env, "create").len(), 1, "{:?}", env.stub_calls());
+    assert!(
+        env.get("r2")["status"].to_string().contains("resolve"),
+        "{:#}",
+        env.get("r2")["status"]
+    );
 }
 
 #[test]
@@ -306,6 +390,10 @@ fn trust_that_cannot_be_read_is_unknown_never_a_brief_and_recovers() {
     let st = env.status("u1");
     assert_eq!(argv_of(&env, "send").len(), 0);
     assert_condition(&st, "WorkspaceTrusted", "Unknown", "TrustUnknown");
+    assert!(
+        env.get("u1")["status"]["notBefore"].is_null(),
+        "Unknown is probed again on the next pass, without a retry wait"
+    );
     assert_ne!(
         condition(&st, "NeedsAttention")["reason"],
         "WorkspaceUntrusted",

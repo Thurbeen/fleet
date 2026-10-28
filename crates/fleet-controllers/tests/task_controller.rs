@@ -1177,6 +1177,7 @@ fn the_brief_waits_for_the_agent_to_trust_its_workspace() {
         cond(&st, "WorkspaceTrusted").status,
         ConditionStatus::Unknown
     );
+    assert_eq!(st.not_before, None, "asked again on the next pass");
     assert!(st.conditions.iter().all(|c| c.type_ != "NeedsAttention"));
 
     // Not asked is not trusted.

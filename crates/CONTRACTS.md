@@ -191,8 +191,9 @@ Guarantees, each with its test:
 - **Trust before the brief.** The brief is sent only after the runtime
   reports that the session's agent trusts its workspace. A known gap sets
   `WorkspaceTrusted=False`, raises `NeedsAttention/WorkspaceUntrusted` and
-  is probed again after each wait. Unknown waits and raises nothing. A held
-  brief spends no send, and no inbox entry goes out before the brief.
+  is probed again after each wait. Unknown holds the brief, raises nothing
+  and is probed again on the next pass. A held brief spends no send, and no
+  inbox entry goes out before the brief.
 - **Retries.** Spawns and brief sends are tried at most `MAX_ATTEMPTS` (3)
   times before `Stalled` and `NeedsAttention`. Failed attempts wait
   `RETRY_DELAY_MS` (30 seconds), persisted as `status.notBefore` across manager
@@ -579,7 +580,7 @@ The trust root is the directory the agent keys the session's trust on:
 
 | Interface | Default harnesses | At spawn | `workspace_trust` answers |
 | --- | --- | --- | --- |
-| `codex` | `codex` | Adds `--agent-arg=-c --agent-arg=projects={"<root>"={trust_level="trusted"}}`. | `Trusted` when the row's `agent_args` are exactly that pair and the row's cwd and worktrees are the Task's workspace. `Mismatch` otherwise. Unknown when thurbox does not report them. |
+| `codex` | `codex` | Adds `--agent-arg=-c --agent-arg=projects={"<root>"={trust_level="trusted"}}`. | `Trusted` when the row's `agent_args` are exactly that pair, the row's cwd and worktrees are the Task's workspace, and a readable screen shows no Codex trust dialog before its first hook. `Mismatch` otherwise. Unknown when thurbox does not report them or the screen cannot be read. Readiness also refuses a screen showing that dialog. |
 | `claude` | `claude`, `claude-code` | Adds nothing. | `Trusted` once Claude reported a hook. `Unsupported` while Claude's trust dialog is current at the cursor. Unknown otherwise. |
 | `none` | none | Adds nothing. | `Trusted`. |
 | not listed | any other | Adds nothing. | `Unsupported`, naming `runtime.workspaceTrust`. |
@@ -594,8 +595,14 @@ These rules hold for every interface:
   configuration file.
 - An adopted session is checked like any other. A session without the exact
   override, or in another directory, is `Mismatch` and never gets a brief.
+  The way out is to delete the Task and apply it again. Deleting only the
+  session makes the Task `WorkerGone`, which is never respawned.
+- A trust root loses any trailing separator. A root with a `.`, `..` or
+  empty component is refused, because only its host can resolve it.
 - On the local host, the trust root is resolved through symlinks, as Codex
-  resolves its cwd. A remote host gets the path as configured.
+  resolves its cwd. A remote host gets the path as configured. A remote
+  symlink makes Codex show its dialog, which the probe reports as
+  `Mismatch`.
 - A filesystem root, or the local user's home, is never a trust root. A
   `codex` spawn there fails.
 - Fleet never sends a key to a dialog. Claude Code has no per-session trust
