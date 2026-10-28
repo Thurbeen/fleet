@@ -685,15 +685,35 @@ impl Store for FileStore {
     }
 
     fn create(&self, obj: Object, by: FieldManager) -> Result<Object, StoreError> {
-        if !kinds::may_create(&obj.kind, &by) {
+        if by.is_controller() || !kinds::may_create(&obj.kind, &by) {
             return Err(StoreError::Forbidden(format!(
                 "{} does not create {} objects",
                 by.name(),
                 obj.kind
             )));
         }
+        check_conversation_labels(&obj, &by)?;
         let _guard = self.lock()?;
         self.check_parent(&obj, &by)?;
+        self.insert(obj, None)
+    }
+
+    fn create_fenced(
+        &self,
+        obj: Object,
+        by: FieldManager,
+        lease: &LeaseToken,
+    ) -> Result<Object, StoreError> {
+        if !by.is_controller() || !kinds::may_create(&obj.kind, &by) {
+            return Err(StoreError::Forbidden(format!(
+                "{} does not create {} objects",
+                by.name(),
+                obj.kind
+            )));
+        }
+        check_conversation_labels(&obj, &by)?;
+        let _guard = self.lock()?;
+        self.check_lease(lease)?;
         self.insert(obj, None)
     }
 
@@ -734,6 +754,18 @@ impl Store for FileStore {
                 return Err(StoreError::Forbidden(
                     "plugin creator label is assigned by the host".into(),
                 ));
+            }
+            // The conversation labels are set by the one create that may,
+            // and never change afterwards.
+            for label in [
+                conversation::CONVERSATION_LABEL,
+                conversation::CONVERSATION_UID_LABEL,
+            ] {
+                if labels.get(label) != obj.metadata.labels.get(label) {
+                    return Err(StoreError::Forbidden(format!(
+                        "the label {label} is set only by the Conversation's controller when it creates the Task, and never changes"
+                    )));
+                }
             }
             if kind == task::KIND {
                 talk::check_parent_unchanged(&obj.metadata.labels, &labels)
@@ -1376,6 +1408,20 @@ impl FileStore {
         }
         Ok(obj)
     }
+}
+
+/// The `gateway.fleet.dev/conversation` labels name the thread a Task was
+/// created for, so only that thread's controller may set them.
+fn check_conversation_labels(obj: &Object, by: &FieldManager) -> Result<(), StoreError> {
+    for label in obj.metadata.labels.keys() {
+        if conversation::is_controller_label(label) && !kinds::may_set_conversation_labels(by) {
+            return Err(StoreError::Forbidden(format!(
+                "{}: the label {label} is set only by the Conversation's controller when it creates the Task",
+                obj.key()
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Unique beyond this store: the sequence number orders, the random part keeps

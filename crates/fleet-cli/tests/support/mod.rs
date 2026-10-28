@@ -33,6 +33,8 @@ pub const GATEWAY_ROUTE: &str = "eng";
 pub const GATEWAY_CHANNEL: &str = "C0123ABCD";
 pub const ALEX_ID: &str = "U0123ABCD";
 pub const SAM_ID: &str = "U0456EFGH";
+/// The route's brief, as `Env::gateway` writes it under `root/briefs`.
+pub const GATEWAY_BRIEF: &str = "Answer the thread. Declare what you want said.\n";
 /// The hosts the stub forge CLIs answer for.
 pub const GITHUB_HOST: &str = "github.test";
 pub const GITLAB_HOST: &str = "gitlab.test";
@@ -220,7 +222,17 @@ impl Env {
         let mut cfg = fs::read_to_string(&env.config).expect("config");
         cfg.push_str(&gateway_section(&env.root));
         fs::write(&env.config, cfg).expect("config");
+        fs::create_dir_all(env.root.join("briefs")).expect("briefs dir");
+        fs::write(env.root.join("briefs/conversation.md"), GATEWAY_BRIEF).expect("brief");
         env
+    }
+
+    /// The directory the gateway route's Tasks share.
+    pub fn gateway_workspace(&self) -> String {
+        format!(
+            "{}/work/conversations",
+            self.root.to_string_lossy().replace('\\', "/")
+        )
     }
 
     /// Replace the config's `[gateway]` section with `section`.

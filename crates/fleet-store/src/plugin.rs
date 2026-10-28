@@ -25,6 +25,7 @@ impl FileStore {
             if obj.kind != "Task" && !self.plugins.get(&obj.kind).is_some_and(|(p, _)| p == &name) {
                 return Err(StoreError::Forbidden("foreign create kind".into()));
             }
+            check_conversation_labels(&obj, &by)?;
             match self.read(&obj.kind, &obj.metadata.name) {
                 Observation::Known(Some(current))
                     if current.metadata.labels.get(CREATOR) == Some(&name) =>

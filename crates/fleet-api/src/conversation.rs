@@ -38,6 +38,45 @@ pub const EFFECTS_CAP: usize = 100;
 /// refuses both.
 pub const CONVERSATION_LABEL: &str = "gateway.fleet.dev/conversation";
 pub const CONVERSATION_UID_LABEL: &str = "gateway.fleet.dev/conversation-uid";
+/// The route a Task's Questions open their thread in; an ordinary label,
+/// which the conversation Task carries too.
+pub const ROUTE_LABEL: &str = "gateway.fleet.dev/route";
+
+/// Whether a label is one only the Conversation's controller sets.
+pub fn is_controller_label(label: &str) -> bool {
+    label == CONVERSATION_LABEL || label == CONVERSATION_UID_LABEL
+}
+
+/// `conversation/<conv uid>/task/<n>`: the key of the thread's `n`th Task
+/// creation.
+pub fn task_key(conversation_uid: &str, n: u64) -> String {
+    format!("conversation/{conversation_uid}/task/{n}")
+}
+
+/// `conversation/<conv uid>/busy/<n>`: the key of the one busy notice for
+/// the `n`th Task.
+pub fn busy_key(conversation_uid: &str, n: u64) -> String {
+    format!("conversation/{conversation_uid}/busy/{n}")
+}
+
+/// `conversation/<conv uid>/refuse/<author id>`: the key of the one
+/// refusal an author gets in a thread.
+pub fn refusal_key(conversation_uid: &str, author: &str) -> String {
+    format!("conversation/{conversation_uid}/refuse/{author}")
+}
+
+/// The name of the thread's `n`th Task: the Conversation's name and the
+/// number.
+pub fn task_name(conversation: &str, n: u64) -> String {
+    format!("{conversation}-{n}")
+}
+
+/// The text of the one busy notice: the request is queued behind `task`.
+pub fn busy_notice(task: &str) -> String {
+    format!(
+        "Your request is queued: this channel's workspace is busy with Task/{task}. It starts when the workspace is free."
+    )
+}
 
 /// What a Conversation mirrors. Fixed once created: a different thread is a
 /// different Conversation.
@@ -185,6 +224,11 @@ pub struct ConversationStatus {
     /// The newest [`SEEN_EVENTS_CAP`] delivery ids numbered.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub seen_events: Vec<String>,
+    /// The `revision` through which the messages were judged for admission.
+    /// Messages numbered above it wait: for the thread's starter, where the
+    /// account has history, or for the route to return to the config.
+    #[serde(default)]
+    pub judged: u64,
     /// Every author id refused, at most [`REFUSALS_CAP`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refusals: Vec<String>,
@@ -292,7 +336,7 @@ mod tests {
         assert_eq!(st.phase, Phase::Untied);
         assert_eq!(
             serde_json::to_value(&st).unwrap(),
-            json!({"phase": "Untied", "revision": 0, "droppedBefore": 0})
+            json!({"phase": "Untied", "revision": 0, "droppedBefore": 0, "judged": 0})
         );
         assert_eq!(serde_json::to_value(TieState::Gone).unwrap(), "gone");
     }

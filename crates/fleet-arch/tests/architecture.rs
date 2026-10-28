@@ -1277,12 +1277,36 @@ fn the_rules_keep_the_mirrors_writes_with_the_controllers_and_the_receive_verb()
         "record_received",
         "record_beat",
         "record_refusal",
+        // The conversation Task's create, fenced by the lease: the
+        // manager's, performing ConversationController's plan.
+        "create_fenced",
     ] {
         assert!(
             cli.forbidden_methods.iter().any(|m| m == method),
             "the CLI may not call {method}"
         );
     }
+}
+
+/// The fenced create is a store write like the typed mutations: a CLI that
+/// calls it is caught by the method rule, with the real rules' spelling.
+#[test]
+fn the_cli_may_not_create_fenced() {
+    let rules = RULES.replace(
+        "forbidden_methods = [\"update_status\", \"append_inbox\"]",
+        "forbidden_methods = [\"update_status\", \"append_inbox\", \"create_fenced\"]",
+    );
+    expect(
+        "cli-create-fenced",
+        &[
+            ("architecture.toml", &rules),
+            (
+                "crates/fx-cli/src/main.rs",
+                "fn main() { let s = fx_store::S; s.create_fenced(); fx_mgr::run(); }\n",
+            ),
+        ],
+        &[("cli-method", "fx-cli")],
+    );
 }
 
 /// A listener-shaped writer, one the manager's verb speaks as without a

@@ -608,14 +608,17 @@ pub struct GatewayDefaults {
     /// For a Conversation: the route its spec names, while the config has
     /// it. `None`: the route left the config.
     pub route: Option<RouteConfig>,
+    /// For a Conversation: the route's brief, as the manager read the file
+    /// when it loaded the config. `None` while the route is.
+    pub brief: Option<String>,
+    /// The people table, for admission.
+    pub people: BTreeMap<String, Person>,
     /// For a Listener: the account its spec names, while the config has it.
     /// `None`: the account left the config.
     pub account: Option<ListenerAccount>,
     /// For a Task: every route by name, so the controller finds the one
-    /// its Conversation's spec names, and the people table admission
-    /// sorts by.
+    /// its Conversation's spec names.
     pub routes: BTreeMap<String, RouteConfig>,
-    pub people: BTreeMap<String, Person>,
 }
 
 /// The account a Listener reports on, as the loaded config has it.
@@ -638,17 +641,20 @@ impl Default for GatewayDefaults {
             retain_ms: 2_592_000_000,
             beat_ms: 60_000,
             route: None,
+            brief: None,
+            people: BTreeMap::new(),
             account: None,
             routes: BTreeMap::new(),
-            people: BTreeMap::new(),
         }
     }
 }
 
 impl GatewayDefaults {
-    /// The same timings, for the Conversation whose spec names `route`.
-    pub fn for_route(&self, route: Option<RouteConfig>) -> GatewayDefaults {
+    /// The same timings and people, for the Conversation whose spec names
+    /// `route`, with the route's brief text.
+    pub fn for_route(&self, route: Option<RouteConfig>, brief: Option<String>) -> GatewayDefaults {
         GatewayDefaults {
+            brief: brief.filter(|_| route.is_some()),
             route,
             account: None,
             ..self.clone()
@@ -659,6 +665,7 @@ impl GatewayDefaults {
     pub fn for_account(&self, account: Option<ListenerAccount>) -> GatewayDefaults {
         GatewayDefaults {
             route: None,
+            brief: None,
             account,
             ..self.clone()
         }
@@ -676,9 +683,10 @@ impl GatewayConfig {
             retain_ms: self.retain_ms.unwrap_or(base.retain_ms),
             beat_ms: self.beat_ms.unwrap_or(base.beat_ms),
             route: None,
+            brief: None,
+            people: self.people.clone(),
             account: None,
             routes: self.routes.clone(),
-            people: self.people.clone(),
         }
     }
 

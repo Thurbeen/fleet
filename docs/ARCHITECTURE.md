@@ -214,10 +214,9 @@ into the inbox under a cursor through `record_relay`, and posts what the
 Task declares as keyed effects through a `Gateway` port, with adapters in
 the `fleet-gateway` crate, Slack first. The port, the crate with its fake
 adapter, the `[gateway]` section, the two kinds, the receive verb,
-ConversationController's mirror, ListenerController, and
-GatewayController's tie, join and relay, with `status.answered` and the
-parent labels, are built; admission, Task creation and GatewayController's
-posting are not. ListenerController
+ConversationController, ListenerController, and GatewayController's tie,
+join and relay, with `status.answered` and the parent labels, are built;
+GatewayController's posting is not. ListenerController
 reports each account's inbound health from the listener's own beats, on a
 [Listener](resources/listener.md). The purity and process rules
 above are unchanged: the Gateway runs no model, every adapter call is

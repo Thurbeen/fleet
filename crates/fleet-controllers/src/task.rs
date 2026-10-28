@@ -169,6 +169,7 @@ impl TaskController {
             delete: false,
             delivery: r.delivery,
             appends: Vec::new(),
+            creates: Vec::new(),
         })
     }
 }

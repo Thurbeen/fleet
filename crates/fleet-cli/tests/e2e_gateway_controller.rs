@@ -58,8 +58,9 @@ fn write_record(env: &Env, kind: &str, name: &str, obj: &Value) {
 }
 
 /// A gateway environment with one mirrored thread (Sam's message, then
-/// Alex's mention) and one briefed Task tied to it, as step 2 would leave
-/// them. Returns the environment, the Conversation's name and the Task's.
+/// Alex's mention) and the Task that mention started, tied to it by step
+/// 2's create. Returns the environment, the Conversation's name and the
+/// Task's.
 fn tied(name: &str) -> (Env, String, String) {
     let mut env = Env::gateway(name);
     env.set_var("USER", "tester");
@@ -69,31 +70,22 @@ fn tied(name: &str) -> (Env, String, String) {
             vec![person(SAM_ID, T0, "The nightly export failed again.")],
         )
         .unwrap();
+    env.apply(support::object(
+        "TaskConfig",
+        "conversation",
+        json!({"harness": "claude-code", "host": "local"}),
+    ))
+    .ok();
     let conv = conversation_name(GATEWAY_ACCOUNT, THREAD);
     env.receive("Ev01", mention("1730000300000", T0 + 300_000))
         .ok();
     env.reconcile().ok();
     let task_name = format!("{conv}-1");
-    env.apply(support::task(&task_name, true)).ok();
-    let uid = env.get(&task_name)["metadata"]["uid"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    let conv_uid = env.fleet(&["get", "conversation", &conv]).ok().json()["metadata"]["uid"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    // The labels only the Conversation's controller sets, written into the
-    // record as that controller's create would.
-    let mut task = read_record(&env, "Task", &task_name);
-    task["metadata"]["labels"]["gateway.fleet.dev/conversation"] = json!(conv);
-    task["metadata"]["labels"]["gateway.fleet.dev/conversation-uid"] = json!(conv_uid);
-    write_record(&env, "Task", &task_name, &task);
-    let mut obj = read_record(&env, "Conversation", &conv);
-    obj["status"]["phase"] = json!("Tied");
-    obj["status"]["task"] = json!({"name": task_name, "uid": uid, "n": 1, "state": "created"});
-    obj["status"]["notBefore"] = json!(0);
-    write_record(&env, "Conversation", &conv, &obj);
+    assert_eq!(
+        env.conversation_status(&conv)["task"]["state"],
+        "created",
+        "step 2 started the Task"
+    );
     (env, conv, task_name)
 }
 
@@ -373,39 +365,46 @@ fn a_deleted_conversation_raises_conversation_gone_and_the_task_keeps_running() 
 #[test]
 fn a_task_waits_for_its_conversation_to_name_it() {
     let (env, conv, task) = tied("waiting");
+    let joined = texts(&env, &task).len();
     env.apply(support::task("other", false)).ok();
     let other_uid = uid_of(&env, "task", "other");
     // The Conversation names another Task: gone, not waiting.
     let mut obj = read_record(&env, "Conversation", &conv);
     obj["status"]["task"]["uid"] = json!(other_uid);
     obj["status"]["task"]["name"] = json!("other");
+    // A tied Task looks again when its Conversation moves.
+    obj["status"]["revision"] = json!(obj["status"]["revision"].as_u64().unwrap() + 1);
     write_record(&env, "Conversation", &conv, &obj);
     env.reconcile().ok();
     let gw = gateway(&env, &task);
     assert_condition(&gw, "Tied", "False", "ConversationGone");
-    assert_eq!(texts(&env, &task).len(), 1, "nothing joined");
-    // No tie recorded yet on the Conversation: waiting.
+    assert_eq!(texts(&env, &task).len(), joined, "nothing relayed");
+    // No tie recorded on the Conversation: waiting.
     let mut obj = read_record(&env, "Conversation", &conv);
     obj["status"]["task"] = Value::Null;
     obj["status"]["phase"] = json!("Untied");
+    // A tied Task looks again when its Conversation moves.
+    obj["status"]["revision"] = json!(obj["status"]["revision"].as_u64().unwrap() + 1);
     write_record(&env, "Conversation", &conv, &obj);
     env.reconcile().ok();
     let gw = gateway(&env, &task);
     assert_eq!(gw["conversation"]["state"], "waiting", "{gw:#}");
     assert_condition(&gw, "Tied", "False", "Waiting");
     assert_condition(&gw, "NeedsAttention", "False", "Resolved");
-    assert_eq!(texts(&env, &task).len(), 1);
-    // Then it names this Task: tied, and the join goes out.
+    assert_eq!(texts(&env, &task).len(), joined);
+    // Then it names this Task again: tied, under the cursor it kept.
     let uid = uid_of(&env, "task", &task);
     let mut obj = read_record(&env, "Conversation", &conv);
     obj["status"]["task"] = json!({"name": task, "uid": uid, "n": 1, "state": "created"});
     obj["status"]["phase"] = json!("Tied");
+    // A tied Task looks again when its Conversation moves.
+    obj["status"]["revision"] = json!(obj["status"]["revision"].as_u64().unwrap() + 1);
     write_record(&env, "Conversation", &conv, &obj);
     env.reconcile().ok();
     let gw = gateway(&env, &task);
     assert_eq!(gw["conversation"]["state"], "tied", "{gw:#}");
     assert_eq!(gw["cursor"], 1);
-    assert_eq!(texts(&env, &task).len(), 2);
+    assert_eq!(texts(&env, &task).len(), joined);
 }
 
 fn with_plugin(name: &str, tasks: &str) -> Env {

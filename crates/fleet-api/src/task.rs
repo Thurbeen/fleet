@@ -99,6 +99,31 @@ impl Workspace {
             Workspace::Repositories(_) => None,
         }
     }
+
+    /// The directory of a `{dir}` workspace as text, normalised so two
+    /// spellings of one directory compare equal: `\\` as `/`, repeated and
+    /// trailing separators dropped, `.` segments dropped. Nothing is
+    /// resolved against a filesystem, so a symlink or `..` is another
+    /// spelling. A `repositories` workspace has no shared directory.
+    pub fn normalised(&self) -> Option<String> {
+        self.dir().map(normalise_dir)
+    }
+}
+
+/// See [`Workspace::normalised`].
+pub fn normalise_dir(dir: &str) -> String {
+    let text = dir.trim().replace('\\', "/");
+    let absolute = text.starts_with('/');
+    let parts: Vec<&str> = text
+        .split('/')
+        .filter(|p| !p.is_empty() && *p != ".")
+        .collect();
+    let joined = parts.join("/");
+    if absolute {
+        format!("/{joined}")
+    } else {
+        joined
+    }
 }
 
 /// A repository a Task works on: its identity, never how it is provisioned.
@@ -303,6 +328,29 @@ mod tests {
             let err = parse(refused.clone()).unwrap_err().to_string();
             assert!(err.contains("a workspace:"), "{refused}: {err}");
         }
+    }
+
+    #[test]
+    fn a_workspace_normalises_its_spelling() {
+        for (a, b) in [
+            ("/work/conversations", "/work/conversations/"),
+            ("/work/conversations", "/work//conversations"),
+            ("/work/conversations", "/work/./conversations"),
+            ("/work/conversations", " /work/conversations "),
+            ("C:/work/x", "C:\\work\\x\\"),
+            ("work/x", "work/x/"),
+        ] {
+            assert_eq!(normalise_dir(a), normalise_dir(b), "{a} vs {b}");
+        }
+        assert_ne!(normalise_dir("/work/a"), normalise_dir("/work/a/b"));
+        assert_ne!(normalise_dir("/work/a"), normalise_dir("work/a"));
+        assert_eq!(normalise_dir("/"), "/");
+        assert_eq!(Workspace::at("/w/").normalised().as_deref(), Some("/w"));
+        let repos: Workspace = serde_json::from_value(serde_json::json!({"repositories": [
+            {"name": "app", "url": "https://example.invalid/app"}
+        ]}))
+        .unwrap();
+        assert_eq!(repos.normalised(), None);
     }
 
     #[test]

@@ -170,6 +170,18 @@ pub trait Store {
     /// is `Apply`, or `listener/<account>` for a Conversation or a Listener
     /// the receive verb creates.
     fn create(&self, obj: Object, by: FieldManager) -> Result<Object, StoreError>;
+    /// A controller's exclusive create, fenced by the lease: how
+    /// ConversationController's plan creates the Task a thread starts, the
+    /// one create that may carry the `gateway.fleet.dev/conversation`
+    /// labels. The same create as `create` otherwise.
+    fn create_fenced(
+        &self,
+        _obj: Object,
+        _by: FieldManager,
+        _lease: &LeaseToken,
+    ) -> Result<Object, StoreError> {
+        Err(StoreError::Unsupported("create_fenced".into()))
+    }
     /// Replace spec (and labels); bumps generation when spec changed.
     fn update_spec(
         &self,
