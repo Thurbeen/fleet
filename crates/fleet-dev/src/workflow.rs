@@ -217,15 +217,14 @@ pub fn check() -> Result {
             coverage.entry(r).or_default().extend(covered.clone());
         }
     }
-    for required in ["ubuntu-latest", "windows-latest"] {
-        if !coverage.keys().any(|r| r.split('+').any(|s| s == required)) {
-            errors.push(format!("missing full gate runner {required}"));
-        }
+    if !coverage
+        .keys()
+        .any(|r| r.split('+').any(|s| s == "ubuntu-latest"))
+    {
+        errors.push("missing full gate runner ubuntu-latest".into());
     }
     for (runner, covered) in &coverage {
-        let full = runner.contains("windows")
-            || runner == "ubuntu-latest"
-            || covered.iter().any(|s| !s.starts_with("rust-"));
+        let full = runner == "ubuntu-latest" || covered.iter().any(|s| !s.starts_with("rust-"));
         for &area in gate::AREAS {
             if (full || area.starts_with("rust-")) && !covered.contains(area) {
                 errors.push(format!("missing {area} on {runner}"));

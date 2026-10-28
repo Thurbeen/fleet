@@ -14,16 +14,7 @@ Required gate tools:
 - cargo-nextest, cargo-deny and rumdl at the versions CI pins.
 - cocogitto (`cog`) at the version the pinned `cocogitto-action` installs; the
   release tooling tests run it.
-- PowerShell 7 (`pwsh`) on Linux for the Windows installer's pure path test;
-  Windows PowerShell (`powershell.exe`) on Windows for installer acceptance.
-- Git for tracked-file checks (Git for Windows with its Bash on Windows),
-  and `prek` for the commit hooks.
-
-PowerShell must be on PATH; a missing runtime fails with setup guidance and
-never silently skips its tests. Hosted Ubuntu x64 and arm64 images include
-PowerShell 7; the workflow verifies it before the native gate. Windows runs
-its install-then-default-apply test natively. The Linux path-policy test is
-not native Windows filesystem evidence.
+- Git for tracked-file checks, and `prek` for the commit hooks.
 
 Install hooks with `prek install`. Hooks invoke focused areas of the same
 gate; publish runs the full gate. Missing tools or a missing workspace fail
@@ -49,9 +40,9 @@ rule detects a forbidden edge. Tooling's E2E suite runs the actual gate against
 a tiny workspace with deleted, ignored and filtered suites, failing tests,
 failing doctests, malformed formatting and warning-denied lint/docs.
 
-Native CI runs the full gate on Linux x86_64, Linux aarch64 and Windows x86_64.
-A Unix simulation or cross build is not native Windows evidence. Every release
-runner must have its Rust checks in CI. Do not duplicate a full gate for a
+Native CI runs the full gate on Linux x86_64 and Linux aarch64. Windows and
+macOS are not supported, tested or released. Every release runner must have
+its Rust checks in CI. Do not duplicate a full gate for a
 reviewer when exact-tree evidence is already available.
 
 ## Review rules
@@ -118,7 +109,7 @@ cargo xtask release checksums --version v1.2.3 dist
 
 Packaging writes deterministic archives with the binary and LICENSE; the
 pinned VEGA starter, its license and provenance are embedded in that binary.
-Release assets also include both installers and the VEGA manifest/provenance.
+Release assets also include the installer and the VEGA manifest/provenance.
 Checksums require every supported target and cover those metadata assets.
 Smoke requires the exact binary version; `--first-run-dir NEW_DIRECTORY` also
 runs `init` with an empty PATH and isolated native config/data homes, then

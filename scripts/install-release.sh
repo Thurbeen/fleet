@@ -11,7 +11,7 @@
 # The archive is verified against the release's checksum file before anything
 # is replaced, and the binary moves into place with one rename, so a failed or
 # tampered download leaves the installed binary as it was. Linux on x86_64 and
-# aarch64 only, the targets the release builds; Windows has install-release.ps1.
+# aarch64 only, the targets the release builds.
 set -eu
 
 repo=Thurbeen/fleet
@@ -25,7 +25,7 @@ fail() {
 
 system=$(uname -s)
 machine=$(uname -m)
-unsupported="unsupported platform: $system $machine. The release builds x86_64-unknown-linux-musl, aarch64-unknown-linux-musl and x86_64-pc-windows-msvc"
+unsupported="unsupported platform: $system $machine. The release builds x86_64-unknown-linux-musl and aarch64-unknown-linux-musl"
 [ "$system" = Linux ] || fail "$unsupported"
 case "$machine" in
     x86_64 | amd64) target=x86_64-unknown-linux-musl ;;

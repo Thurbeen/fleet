@@ -207,8 +207,6 @@ jobs:
             os: ubuntu-latest
           - target: aarch64-unknown-linux-musl
             os: ubuntu-26.04-arm
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
@@ -239,15 +237,6 @@ jobs:
       # A push to main can arrive without a pull request, and CI runs only on
       # pull requests. So the tagged commit is tested here, on the runner that
       # builds it, before any binary of it is packaged.
-      - name: Verify PowerShell gate prerequisite (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          if ! command -v pwsh >/dev/null 2>&1; then
-            echo '::error::PowerShell 7 (pwsh) is required for the Windows installer path-policy test; install it and add pwsh to PATH (see CONTRIBUTING.md).'
-            exit 1
-          fi
-          pwsh -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()'
       - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         with:
           tool: cargo-nextest@0.9.149
@@ -255,17 +244,8 @@ jobs:
       - uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
         with:
           install-only: true
-      # The action adds a POSIX path to GITHUB_PATH, which Windows cannot
-      # resolve; add the native form of the same directory.
-      - name: Put cog on PATH (Windows)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: cygpath -w "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Test the commit being released
         run: cargo xtask check rust-test
-      - name: Use the static Windows CRT
-        if: runner.os == 'Windows'
-        run: echo 'RUSTFLAGS=-C target-feature=+crt-static' >> "$GITHUB_ENV"
       - name: Build
         env:
           FLEET_RELEASE_VERSION: ${{ needs.check-release.outputs.semver }}
@@ -273,29 +253,18 @@ jobs:
       - name: Check the binary reports its version, then package it
         run: |
           bin="target/$TARGET/release/fleet"
-          if [ "$RUNNER_OS" = "Windows" ]; then bin="$bin.exe"; fi
           cargo xtask release smoke --binary "$bin" --version "$VERSION"
           cargo xtask release package --target "$TARGET" --version "$VERSION" --binary "$bin" --out dist
       - name: Install the archive and bootstrap offline as a clean user
         run: |
           mkdir -p "installer-fixture/$VERSION"
           cp dist/* "installer-fixture/$VERSION/"
-          # Hash binary bytes on Windows too, then normalize the binary '*'
-          # marker to the two-space format the Rust release catalog writes.
-          (cd "installer-fixture/$VERSION" && sha256sum --binary fleet-* | sed 's/ \*/  /' > "fleet-$VERSION-checksums.txt")
+          (cd "installer-fixture/$VERSION" && sha256sum fleet-* > "fleet-$VERSION-checksums.txt")
           export FLEET_VERSION="$VERSION"
           export FLEET_RELEASE_BASE="$PWD/installer-fixture"
           export FLEET_INSTALL_DIR="$PWD/installed/bin"
-          if [ "$RUNNER_OS" = Windows ]; then
-            export FLEET_RELEASE_BASE="$(cygpath -w "$FLEET_RELEASE_BASE")"
-            export FLEET_INSTALL_DIR="$(cygpath -w "$FLEET_INSTALL_DIR")"
-            powershell -NoProfile -File scripts/install-release.ps1
-            installed="$FLEET_INSTALL_DIR/fleet.exe"
-          else
-            sh scripts/install-release.sh
-            installed="$FLEET_INSTALL_DIR/fleet"
-          fi
-          cargo xtask release smoke --binary "$installed" --version "$VERSION" --first-run-dir installed/clean-user
+          sh scripts/install-release.sh
+          cargo xtask release smoke --binary "$FLEET_INSTALL_DIR/fleet" --version "$VERSION" --first-run-dir installed/clean-user
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-${{ matrix.target }}
@@ -324,7 +293,7 @@ jobs:
           merge-multiple: true
       - name: Checksums over every target and pinned installers
         run: |
-          cp scripts/install-release.sh scripts/install-release.ps1 dist/
+          cp scripts/install-release.sh dist/
           cp crates/fleet-cli/bundle/vega/provenance.json dist/vega-provenance.json
           cp crates/fleet-cli/bundle/vega/starter.toml dist/vega-starter.toml
           cargo xtask release checksums --version "$VERSION" dist

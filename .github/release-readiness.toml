@@ -1,5 +1,5 @@
 # Stable v2 is explicitly authorized. This does not authorize a live cutover.
-# Publication from a push to main still requires native tests on all three
+# Publication from a push to main still requires native tests on both Linux
 # runners, archive install/offline bootstrap smoke, checksums and the protected
 # release environment. A false/missing/invalid file fails closed.
 ready = true
