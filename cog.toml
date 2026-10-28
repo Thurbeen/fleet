@@ -1,0 +1,29 @@
+#:schema https://docs.cocogitto.io/cog-schema.json
+
+# Cocogitto decides each release from the conventional commits since the last
+# tag. `cargo xtask release plan` runs `cog bump --auto --dry-run`; the publish
+# job tags the tested commit, so cog never creates a bump commit or a tag.
+# No branch_whitelist: dry runs plan on any branch, and only the plan's
+# refs/heads/main check lets a release publish.
+ignore_merge_commits = true
+tag_prefix = "v"
+
+# The types `cargo xtask release title` accepts.
+[commit_types]
+feat = { changelog_title = "Features", bump_minor = true, order = 0 }
+fix = { changelog_title = "Bug Fixes", bump_patch = true, order = 1 }
+perf = { changelog_title = "Performance Improvements", bump_patch = true, order = 2 }
+refactor = { changelog_title = "Refactoring", order = 3 }
+docs = { changelog_title = "Documentation", order = 4 }
+build = { changelog_title = "Build System", order = 5 }
+revert = { changelog_title = "Reverts", order = 6 }
+style = { omit_from_changelog = true }
+test = { omit_from_changelog = true }
+chore = { omit_from_changelog = true }
+ci = { omit_from_changelog = true }
+
+[changelog]
+template = "remote"
+remote = "github.com"
+owner = "Thurbeen"
+repository = "fleet"

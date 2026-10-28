@@ -64,6 +64,10 @@ impl Env {
         self.git(&["config", "user.name", "Fixture"]);
         self.git(&["config", "user.email", "fixture@example.invalid"]);
         self.git(&["config", "commit.gpgsign", "false"]);
+        // The release decision is cocogitto's, read from the repository's own
+        // configuration.
+        let cog = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cog.toml");
+        self.write("cog.toml", &fs::read_to_string(cog).unwrap());
         self.write("crates/demo.rs", "pub fn shipped() {}\n");
         self.commit("feat: first release");
         self.write(
@@ -1288,7 +1292,25 @@ fn a_push_to_main_releases_its_conventional_commits_and_tags_the_tested_commit()
         ok && out.contains("publish=true") && out.contains("version=v2.2.0"),
         "push to main: {out}"
     );
-    // A dispatch from a branch, or a dry run on main, never publishes.
+    // A dispatch from a branch, or a dry run on main, never publishes. The
+    // branch dispatch runs on that branch's checkout.
+    e.git(&["checkout", "-q", "-b", "feature"]);
+    let (ok, out) = release_step(
+        &e,
+        "plan",
+        "Plan",
+        &[
+            ("GITHUB_REF", "refs/heads/feature"),
+            ("GITHUB_REF_TYPE", "branch"),
+            ("FORCED", ""),
+            ("DRY_RUN", "true"),
+        ],
+    );
+    assert!(
+        ok && out.contains("version=v2.2.0") && out.contains("publish=false"),
+        "branch dry run: {out}"
+    );
+    e.git(&["checkout", "-q", "main"]);
     for (reference, dry) in [("refs/heads/feature", "false"), ("refs/heads/main", "true")] {
         let (ok, out) = release_step(
             &e,
@@ -1315,6 +1337,17 @@ fn a_push_to_main_releases_its_conventional_commits_and_tags_the_tested_commit()
         ]);
         run(&s).success_text().unwrap().trim().to_string()
     };
+    let (ok, out) = release_step(
+        &e,
+        "publish",
+        "Write the release notes",
+        &[("GITHUB_SHA", &head), ("VERSION", "v2.2.0")],
+    );
+    let notes = fs::read_to_string(e.0.join("notes.md")).unwrap_or_default();
+    assert!(
+        ok && notes.contains("v2.2.0") && notes.contains("more"),
+        "release notes: {out}\n{notes}"
+    );
     e.write("dist/fleet-v2.2.0-checksums.txt", "");
     let (ok, out) = release_step(
         &e,
@@ -1342,4 +1375,25 @@ fn a_push_to_main_releases_its_conventional_commits_and_tags_the_tested_commit()
     // The next push sees that tag, so it neither moves it nor releases twice.
     let (ok, out) = release_step(&e, "plan", "Plan", &push);
     assert!(ok && out.contains("release=false"), "after release: {out}");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_release_plan_fails_closed_without_cocogitto() {
+    let e = Env::new();
+    e.repo();
+    let git = run(&Spec::new("sh", Duration::from_secs(10)).args(["-c", "command -v git"]))
+        .success_text()
+        .unwrap();
+    fs::create_dir_all(e.0.join("only-git")).unwrap();
+    std::os::unix::fs::symlink(git.trim(), e.0.join("only-git/git")).unwrap();
+    let path = e.0.join("only-git").to_string_lossy().to_string();
+    let (ok, out) = e.call(
+        &["release", "plan", "--ref", "refs/heads/main"],
+        &[("PATH", &path)],
+    );
+    assert!(
+        !ok && out.contains("cog"),
+        "a missing cog is never 'no release': {out}"
+    );
 }

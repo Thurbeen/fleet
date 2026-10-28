@@ -51,6 +51,10 @@ jobs:
         with:
           fetch-depth: 0  # every commit and tag since the last release
       - run: rustup toolchain install
+      # cog decides the release from the conventional commits (cog.toml).
+      - uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
+        with:
+          install-only: true
       # Inputs reach the command through the environment, never `${{ }}` in
       # the script. On a push both are empty: no forced version, no dry run.
       - name: Plan
@@ -123,6 +127,10 @@ jobs:
       - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         with:
           tool: cargo-nextest@0.9.149
+      # The release tooling tests run the real cog.
+      - uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
+        with:
+          install-only: true
       - name: Test the commit being released
         run: cargo xtask check rust-test
       - name: Use the static Windows CRT
@@ -218,6 +226,20 @@ jobs:
       NEWEST: ${{ needs.plan.outputs.newest }}
       PRERELEASE: ${{ needs.plan.outputs.prerelease }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0  # cog reads every commit since the last release
+      - uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
+        with:
+          install-only: true
+      # The local tag names the section; only the release below creates the
+      # tag on the forge.
+      - name: Write the release notes
+        run: |
+          git tag "$VERSION" "$GITHUB_SHA"
+          cog changelog --at "$VERSION" > notes.md
+          git tag -d "$VERSION"
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dist
@@ -237,6 +259,6 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "fleet $VERSION" \
-            --generate-notes \
+            --notes-file notes.md \
             --latest="$NEWEST" \
             --prerelease="$PRERELEASE"

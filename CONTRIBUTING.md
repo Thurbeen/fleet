@@ -12,6 +12,8 @@ Required gate tools:
 
 - Rustup and the exact toolchain in `rust-toolchain.toml`.
 - cargo-nextest, cargo-deny and rumdl at the versions CI pins.
+- cocogitto (`cog`) at the version the pinned `cocogitto-action` installs; the
+  release tooling tests run it.
 - PowerShell 7 (`pwsh`) on Linux for the Windows installer's pure path test;
   Windows PowerShell (`powershell.exe`) on Windows for installer acceptance.
 - Git for tracked-file checks (Git for Windows with its Bash on Windows),
@@ -80,17 +82,19 @@ environment, and tests the exact commit before packaging it. Release jobs
 restore no pull-request caches.
 
 `cargo xtask release plan --ref refs/heads/main --dry-run` computes the next
-version without publishing. Conventional `feat`, `fix`, `perf` and breaking
-changes trigger bumps only when shipped files changed. An existing version
-tag is refused. Prereleases are marked as such and never marked latest.
+version without publishing. Cocogitto computes the bump from the conventional
+commits since the last tag, as `cog.toml` configures it: `feat`, `fix`, `perf`
+and breaking changes bump. The plan releases that bump only when shipped files
+changed. A missing or failing `cog` fails the plan. An existing version tag is
+refused. Prereleases are marked as such and never marked latest.
 Every push to `main` runs the release workflow. The squash-merged pull request
 title is the conventional commit that decides the bump. A dispatch on `main`
-with an explicit `version` cuts that version; this is the only way to cross a
-major line. Dispatches from other branches are always dry runs. The readiness
-file must explicitly enable publication. Every release runner tests, builds,
-packages, installs its archive and runs offline first-run acceptance before
-publication. The publish job then creates the version tag at the tested
-commit. No person pushes a version tag, and no tag moves.
+with an explicit `version` cuts that version. Dispatches from other branches
+are always dry runs. The readiness file must explicitly enable publication.
+Every release runner tests, builds, packages, installs its archive and runs
+offline first-run acceptance before publication. The publish job then writes
+the release notes with `cog changelog` and creates the version tag at the
+tested commit. No person pushes a version tag, and no tag moves.
 `workspace.package.version` stays `0.0.0-dev`; the build stamps the planned
 version into the binary. The protected release environment and provenance
 attestation remain required. No release step installs onto an existing

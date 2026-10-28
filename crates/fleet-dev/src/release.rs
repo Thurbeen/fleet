@@ -118,60 +118,37 @@ fn plan(reference: Option<&str>, forced: Option<&str>, dry: bool) -> Result {
         reason = "forced by dispatch".into();
         Some(version(v)?)
     } else {
-        let messages = git(&["log", "--format=%B%x1e", &span])?;
-        let mut bump = 0;
-        for m in messages.split('\x1e') {
-            let mut lines = m.trim().lines();
-            let Some(subject) = lines.next() else {
-                continue;
-            };
-            if let Some((kind, breaking)) = conventional(subject) {
-                let breaks = breaking
-                    || lines.any(|l| {
-                        l.starts_with("BREAKING CHANGE: ") || l.starts_with("BREAKING-CHANGE: ")
-                    });
-                bump = bump.max(if breaks {
-                    3
-                } else if kind == "feat" {
-                    2
-                } else if ["fix", "perf"].contains(&kind) {
-                    1
-                } else {
-                    0
-                });
-            }
-        }
+        // A dry run reads committed history only, so untracked files are
+        // irrelevant. On success cog prints the next tag when a bump is due and
+        // nothing on stdout when none is. Anything else is an error, never
+        // "no release".
+        let out = exec(
+            "cog",
+            &[
+                "bump",
+                "--auto",
+                "--disable-bump-commit",
+                "--dry-run",
+                "--skip-untracked",
+            ],
+            &[],
+        )?;
+        let next = match out.lines().map(str::trim).find(|l| !l.is_empty()) {
+            None => None,
+            Some(l) if l.starts_with('v') => Some(version(l)?),
+            _ => return Err(format!("unexpected cog bump output: {out}").into()),
+        };
         let changed = if last.is_some() {
             git(&["diff", "--name-only", &span])?
         } else {
             git(&["ls-tree", "-r", "--name-only", "HEAD"])?
         };
-        if bump == 0 || !changed.lines().any(shipped) {
-            None
-        } else {
-            let mut v = last
-                .as_ref()
-                .map(|(v, _)| v.clone())
-                .unwrap_or(Version::new(0, 0, 0));
-            if bump == 3 && v.major == 0 {
-                bump = 2;
+        match next {
+            Some(v) if changed.lines().any(shipped) => {
+                reason = "releasable shipped changes".into();
+                Some(v)
             }
-            match bump {
-                3 => {
-                    v.major += 1;
-                    v.minor = 0;
-                    v.patch = 0;
-                }
-                2 => {
-                    v.minor += 1;
-                    v.patch = 0;
-                }
-                _ => v.patch += 1,
-            }
-            v.pre = semver::Prerelease::EMPTY;
-            v.build = semver::BuildMetadata::EMPTY;
-            reason = "releasable shipped changes".into();
-            Some(v)
+            _ => None,
         }
     };
     if let Some(v) = &proposed
