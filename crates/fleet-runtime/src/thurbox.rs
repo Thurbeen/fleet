@@ -20,6 +20,7 @@
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use fleet_api::Observation;
@@ -53,9 +54,37 @@ pub struct ThurboxConfig {
     pub model_env: BTreeMap<String, String>,
     /// Each repository URL a Task may name, and its source checkout: an
     /// absolute path on every host thurbox creates worktrees on.
-    pub repositories: BTreeMap<String, String>,
+    pub repositories: Repositories,
     /// What deleting a session does to its workspace.
     pub cleanup: Cleanup,
+}
+
+/// The repository map, shared: whoever holds a clone may replace it while
+/// the runtime runs, and the next spawn reads the new map. `fleet up` does
+/// so when its config file changes.
+#[derive(Debug, Clone, Default)]
+pub struct Repositories(Arc<RwLock<BTreeMap<String, String>>>);
+
+impl Repositories {
+    pub fn new(map: BTreeMap<String, String>) -> Repositories {
+        Repositories(Arc::new(RwLock::new(map)))
+    }
+
+    fn source(&self, url: &str) -> Option<String> {
+        self.0
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(url)
+            .cloned()
+    }
+
+    /// Replace the whole map; true when it changed.
+    pub fn replace(&self, map: BTreeMap<String, String>) -> bool {
+        let mut current = self.0.write().unwrap_or_else(|e| e.into_inner());
+        let changed = *current != map;
+        *current = map;
+        changed
+    }
 }
 
 /// What deleting a session does to the worktrees thurbox created for it.
@@ -77,7 +106,7 @@ impl ThurboxConfig {
                 ("claude".into(), "ANTHROPIC_MODEL".into()),
                 ("claude-code".into(), "ANTHROPIC_MODEL".into()),
             ]),
-            repositories: BTreeMap::new(),
+            repositories: Repositories::default(),
             cleanup: Cleanup::Delete,
         }
     }
@@ -146,22 +175,28 @@ impl ThurboxRuntime {
     /// repository's source is `--repo-path`, each other one an `--add-repo`,
     /// all on one branch the adapter names after the session key. `release`
     /// removes them, or keeps them, as `cleanup` says.
-    fn worktree_args(&self, key: &str, w: &RepositoriesWorkspace) -> Result<Vec<String>, String> {
-        let source = |r: &Repository| -> Result<String, String> {
-            let path =
-                self.cfg.repositories.get(&r.url).ok_or_else(|| {
-                    format!("repository {} is not in runtime.repositories", r.url)
-                })?;
-            if !is_absolute(path) {
-                return Err(format!(
+    fn worktree_args(
+        &self,
+        key: &str,
+        w: &RepositoriesWorkspace,
+    ) -> Result<Vec<String>, EffectOutcome> {
+        let failed = |why: String| EffectOutcome::Failed { why };
+        let source = |r: &Repository| -> Result<String, EffectOutcome> {
+            let path = self
+                .cfg
+                .repositories
+                .source(&r.url)
+                .ok_or_else(|| EffectOutcome::Unmapped { url: r.url.clone() })?;
+            if !is_absolute(&path) {
+                return Err(failed(format!(
                     "runtime.repositories: the source {path:?} of {} must be an absolute path on the host",
                     r.url
-                ));
+                )));
             }
-            Ok(path.clone())
+            Ok(path)
         };
         let Some((primary, rest)) = w.repositories.split_first() else {
-            return Err("the workspace names no repository".into());
+            return Err(failed("the workspace names no repository".into()));
         };
         let mut args = vec![
             "--repo-path".to_string(),
@@ -182,10 +217,10 @@ impl ThurboxRuntime {
                 }
                 None if !path.contains('@') => path,
                 _ => {
-                    return Err(format!(
+                    return Err(failed(format!(
                         "thurbox cannot take repository {}: its source or ref contains '@'",
                         r.url
-                    ));
+                    )));
                 }
             };
             args.extend(["--add-repo".to_string(), arg]);
@@ -435,7 +470,7 @@ impl Runtime for ThurboxRuntime {
             Workspace::Dir(w) => vec!["--repo-path".to_string(), w.dir.clone()],
             Workspace::Repositories(w) => match self.worktree_args(&spec.key, w) {
                 Ok(args) => args,
-                Err(why) => return Observation::Known(EffectOutcome::Failed { why }),
+                Err(outcome) => return Observation::Known(outcome),
             },
         };
         let key = self.thurbox_key(&spec.key);
@@ -682,12 +717,12 @@ mod tests {
 
     fn runtime() -> ThurboxRuntime {
         let mut cfg = ThurboxConfig::new("thurbox-cli");
-        cfg.repositories = BTreeMap::from([
+        cfg.repositories = Repositories::new(BTreeMap::from([
             ("https://example.invalid/a".into(), "/src/a".into()),
             ("https://example.invalid/b".into(), "/src/b".into()),
             ("https://example.invalid/at".into(), "/src/at@x".into()),
             ("https://example.invalid/rel".into(), "src/rel".into()),
-        ]);
+        ]));
         ThurboxRuntime::new(cfg)
     }
 
@@ -716,13 +751,27 @@ mod tests {
     }
 
     #[test]
+    fn an_unmapped_repository_is_its_own_answer_and_a_replaced_map_is_read_next() {
+        let rt = runtime();
+        let ws = workspace(&[("https://example.invalid/x", None)]);
+        assert_eq!(
+            rt.worktree_args("t.u1", &ws).unwrap_err(),
+            EffectOutcome::Unmapped {
+                url: "https://example.invalid/x".into()
+            }
+        );
+        let handle = rt.cfg.repositories.clone();
+        let map = BTreeMap::from([("https://example.invalid/x".into(), "/src/x".into())]);
+        assert!(handle.replace(map.clone()));
+        assert!(!handle.replace(map), "the same map is no change");
+        let args = rt.worktree_args("t.u1", &ws).unwrap();
+        assert_eq!(args[..2], ["--repo-path", "/src/x"]);
+    }
+
+    #[test]
     fn a_source_thurbox_cannot_encode_is_refused() {
         let rt = runtime();
         for (list, want) in [
-            (
-                vec![("https://example.invalid/x", None)],
-                "is not in runtime.repositories",
-            ),
             (
                 vec![("https://example.invalid/rel", None)],
                 "must be an absolute path",
@@ -743,7 +792,10 @@ mod tests {
             ),
         ] {
             let err = rt.worktree_args("t.u1", &workspace(&list)).unwrap_err();
-            assert!(err.contains(want), "{list:?}: {err}");
+            let EffectOutcome::Failed { why } = &err else {
+                panic!("{list:?}: {err:?}");
+            };
+            assert!(why.contains(want), "{list:?}: {why}");
         }
     }
 }

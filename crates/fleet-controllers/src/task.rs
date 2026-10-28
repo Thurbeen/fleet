@@ -54,6 +54,8 @@ pub mod conditions {
 use conditions::*;
 
 const SPAWN: &str = "spawn";
+/// The reason a spawn waits for the runtime to map a repository.
+const UNMAPPED: &str = "RepositoryUnmapped";
 const BRIEF: &str = "brief";
 const RELEASE: &str = "release";
 
@@ -287,6 +289,8 @@ impl Pass<'_, '_> {
         let key = self.key(SPAWN, Some(attempt));
         self.st.spawn_attempts = attempt;
         self.st.not_before = None;
+        // An attempt given back after an unmapped repository reuses its key.
+        self.st.receipts.remove(&key);
         self.st.phase = Phase::Spawning;
         self.cond(
             SPAWNED,
@@ -313,6 +317,7 @@ impl Pass<'_, '_> {
                 self.adopt(session, "Spawned")
             }
             Some(Observation::Known(EffectOutcome::Failed { why })) => self.spawn_retry(&why),
+            Some(Observation::Known(EffectOutcome::Unmapped { url })) => self.spawn_unmapped(&url),
             Some(Observation::Known(other)) => {
                 self.spawn_retry(&format!("unexpected outcome {other:?}"))
             }
@@ -351,11 +356,26 @@ impl Pass<'_, '_> {
         self.st.session = Some(session);
         self.st.phase = Phase::Spawned;
         self.cond(SPAWNED, ConditionStatus::True, reason, "");
+        self.settle_attention(UNMAPPED);
+    }
+
+    /// A repository the runtime does not map is a configuration gap, not a
+    /// failed attempt: nothing started, so the attempt is given back. The
+    /// spawn is tried again after [`RETRY_DELAY_MS`], without limit, until
+    /// the runtime maps the repository.
+    fn spawn_unmapped(&mut self, url: &str) {
+        self.st.spawn_attempts = self.st.spawn_attempts.saturating_sub(1);
+        self.st.phase = Phase::Pending;
+        self.wait_from(self.now());
+        let why = format!("repository {url} is not in runtime.repositories");
+        self.cond(SPAWNED, ConditionStatus::False, UNMAPPED, why.clone());
+        self.needs_attention(UNMAPPED, why);
     }
 
     /// A spawn proven not to have happened is tried again after
     /// [`RETRY_DELAY_MS`], at most [`MAX_ATTEMPTS`] times in all.
     fn spawn_retry(&mut self, why: &str) {
+        self.settle_attention(UNMAPPED);
         let attempts = self.st.spawn_attempts;
         if attempts >= MAX_ATTEMPTS {
             self.st.phase = Phase::Stalled;

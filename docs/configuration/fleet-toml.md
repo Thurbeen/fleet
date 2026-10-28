@@ -69,7 +69,7 @@ Fleet installation talking to the same Thurbox hosts needs a distinct
 | `runtime.callTimeoutMs` | Thurbox: `15000` | Bound for each Thurbox call; manager lease must outlast the runtime's reported worst case. |
 | `runtime.keyPrefix` | Thurbox: `fleet` | Session identity prefix; at most 32 lowercase letters/digits/`-`, starting/ending with letter/digit. |
 | `runtime.modelEnv` | Thurbox: Claude mappings below | Harness name to supported model environment-variable name. |
-| `runtime.repositories` | Thurbox: empty | Repository URL to its source checkout, an absolute path on the hosts thurbox creates worktrees on. A relative path is refused at load. A Task whose `workspace.repositories` names an unmapped URL fails to spawn. |
+| `runtime.repositories` | Thurbox: empty | Repository URL to its source checkout, an absolute path on the hosts thurbox creates worktrees on. A relative path is refused at load. A Task whose `workspace.repositories` names an unmapped URL waits in Pending with `RepositoryUnmapped`; the refusal spends no spawn attempt. A running `fleet up` reloads this table; see [Reloading](#reloading-runtimerepositories). |
 | `runtime.workspaceCleanup` | Thurbox: `delete` | What deleting a session does to its worktrees. `delete` removes them with the session (`session delete --force`). `keep` leaves them, restorable in thurbox (`session delete --soft`). The setting also applies to `dir` Tasks: `delete` overrides thurbox's own `soft_delete`, so a released session cannot be restored. |
 | `runtime.dir` | Required for `fake` | Isolated fake-host persistence, relative to this config file. |
 | `starter.workspace` | Required for `up` | Initialized VEGA workspace, relative to this config file. |
@@ -78,6 +78,19 @@ Fleet installation talking to the same Thurbox hosts needs a distinct
 override because its workers must share the store selected by the persisted
 config. Persist `data.dir` before using `up` with a different store. All
 resource commands in one workflow should use the same `--config` path.
+
+### Reloading `runtime.repositories`
+
+`fleet up` reads this file again before each sweep. It applies
+`runtime.repositories` only, so a new mapping needs no restart:
+
+- A valid file replaces the map. The next spawn uses it, and a Task waiting
+  with `RepositoryUnmapped` spawns at its next retry.
+- An unreadable, unparsable or invalid file changes nothing. The last valid
+  map stays in force. `fleet up` reports the refusal once on standard error.
+- A change to any other setting is not applied. `fleet up` reports it once
+  and asks for a restart. A running process never switches its store, lease
+  holder, runtime or key prefix.
 
 `runtime.modelEnv` extends/overrides the built-in `claude` and `claude-code`
 entries, both `ANTHROPIC_MODEL`. An explicit/inherited Task model requires a
