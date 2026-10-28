@@ -17,6 +17,14 @@
 //! own metadata (`session meta`): `fleet.brief.pending` before the send,
 //! `fleet.brief` after it. Read back, the pair says delivered, not delivered,
 //! or "sent, unconfirmed", which is Unknown and never a second send.
+//!
+//! Workspace trust. Each harness is trusted in its workspace through the
+//! interface `runtime.workspaceTrust` names for it. Codex takes a project
+//! trust as a launch override, passed with `--agent-arg`: thurbox keeps it
+//! with the session and replays it on restart. It names one directory, the
+//! one Codex keys the session's cwd on, and persists nothing. Claude Code has
+//! no per-session interface: Fleet reads whether Claude passed its trust
+//! dialog, and never answers the dialog or edits Claude's own state.
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -25,7 +33,7 @@ use std::time::Duration;
 
 use fleet_api::Observation;
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
-use fleet_api::runtime::Runtime;
+use fleet_api::runtime::{Runtime, TrustGap, WorkspaceTrust};
 use fleet_api::task::{
     LOCAL_HOST as LOCAL, RepositoriesWorkspace, Repository, SessionRef, Workspace,
     uid_of_session_key,
@@ -57,6 +65,31 @@ pub struct ThurboxConfig {
     pub repositories: Repositories,
     /// What deleting a session does to its workspace.
     pub cleanup: Cleanup,
+    /// How each harness, by thurbox agent name, is trusted in its workspace.
+    /// A harness not listed is never assumed trusted.
+    pub workspace_trust: BTreeMap<String, TrustInterface>,
+}
+
+/// The way a harness is trusted in its workspace (`runtime.workspaceTrust`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustInterface {
+    /// `codex`: a launch override trusting one directory for the session.
+    Codex,
+    /// `claude`: none Fleet may use; a person trusts the repository once.
+    Claude,
+    /// `none`: the harness has no workspace-trust gate.
+    Ungated,
+}
+
+impl TrustInterface {
+    pub fn parse(name: &str) -> Option<TrustInterface> {
+        match name {
+            "codex" => Some(TrustInterface::Codex),
+            "claude" => Some(TrustInterface::Claude),
+            "none" => Some(TrustInterface::Ungated),
+            _ => None,
+        }
+    }
 }
 
 /// The repository map, shared: whoever holds a clone may replace it while
@@ -108,6 +141,11 @@ impl ThurboxConfig {
             ]),
             repositories: Repositories::default(),
             cleanup: Cleanup::Delete,
+            workspace_trust: BTreeMap::from([
+                ("codex".into(), TrustInterface::Codex),
+                ("claude".into(), TrustInterface::Claude),
+                ("claude-code".into(), TrustInterface::Claude),
+            ]),
         }
     }
 }
@@ -226,6 +264,157 @@ impl ThurboxRuntime {
             args.extend(["--add-repo".to_string(), arg]);
         }
         Ok(args)
+    }
+
+    /// The configured source checkout of a repository the Task names.
+    fn source(&self, r: &Repository) -> Result<String, String> {
+        let path = self
+            .cfg
+            .repositories
+            .source(&r.url)
+            .ok_or_else(|| format!("repository {} is not in runtime.repositories", r.url))?;
+        if !is_absolute(&path) {
+            return Err(format!(
+                "runtime.repositories: the source {path:?} of {} must be an absolute path on the host",
+                r.url
+            ));
+        }
+        Ok(path)
+    }
+
+    /// The directory the agent keys the session's trust on, as the Task names
+    /// it: a `{dir}` itself, or the primary repository's source checkout,
+    /// which Codex and Claude Code both use for a worktree of it.
+    fn named_root(&self, workspace: &Workspace) -> Result<String, String> {
+        match workspace {
+            Workspace::Dir(w) => Ok(w.dir.clone()),
+            Workspace::Repositories(w) => match w.repositories.first() {
+                Some(primary) => self.source(primary),
+                None => Err("the workspace names no repository".into()),
+            },
+        }
+    }
+
+    /// The trust root Fleet hands an agent: resolved through symlinks on
+    /// this machine, as the agent resolves its cwd. A filesystem root or this
+    /// machine's home is refused: trusting it would trust what it contains.
+    fn trust_root(&self, host: &str, workspace: &Workspace) -> Result<String, String> {
+        let named = self.named_root(workspace)?;
+        let root = if host == LOCAL {
+            canonical(&named)
+        } else {
+            named
+        };
+        let trimmed = root.trim_end_matches(['/', '\\']);
+        let b = trimmed.as_bytes();
+        let fs_root = trimmed.is_empty() || (b.len() == 2 && b[1] == b':');
+        if fs_root || (host == LOCAL && home().is_some_and(|h| canonical(&h) == root)) {
+            return Err(format!(
+                "refusing to trust {root}: a home directory or filesystem root is never trusted automatically"
+            ));
+        }
+        Ok(root)
+    }
+
+    /// Codex trusts the session only through the override Fleet launched it
+    /// with, and only in the workspace that override names.
+    fn codex_trust(
+        &self,
+        session: &SessionRef,
+        workspace: &Workspace,
+        row: &Value,
+    ) -> Observation<WorkspaceTrust> {
+        let mismatch = |why: String| {
+            Observation::Known(WorkspaceTrust::Untrusted {
+                gap: TrustGap::Mismatch,
+                why,
+            })
+        };
+        let root = match self.trust_root(&session.host, workspace) {
+            Ok(root) => root,
+            Err(why) => return mismatch(why),
+        };
+        let expected = match codex_override(&root) {
+            Ok(o) => o,
+            Err(why) => return mismatch(why),
+        };
+        let Some(args) = row["agent_args"].as_array() else {
+            return Observation::unknown("thurbox does not report the session's agent arguments");
+        };
+        if args.len() != 2 || args[0] != "-c" || args[1] != expected.as_str() {
+            return mismatch(format!(
+                "the session was not started with Fleet's trust in {root}; delete it, or the Task, so the runtime starts one that is"
+            ));
+        }
+        let Some(cwd) = row["cwd"].as_str() else {
+            return Observation::unknown("thurbox does not report the session's directory");
+        };
+        let member = match workspace {
+            Workspace::Dir(w) => cwd == w.dir,
+            Workspace::Repositories(w) => {
+                let Some(trees) = row["worktrees"].as_array() else {
+                    return Observation::unknown("thurbox does not report the session's worktrees");
+                };
+                let sources: Result<Vec<String>, String> =
+                    w.repositories.iter().map(|r| self.source(r)).collect();
+                let Ok(sources) = sources else {
+                    return mismatch("a repository of the Task has no source checkout".into());
+                };
+                trees.len() == sources.len()
+                    && trees
+                        .iter()
+                        .zip(&sources)
+                        .all(|(t, s)| t["repo_path"] == s.as_str())
+                    && trees[0]["worktree_path"] == cwd
+            }
+        };
+        if !member {
+            return mismatch(format!(
+                "the session runs in {cwd}, which is not the Task's workspace"
+            ));
+        }
+        Observation::Known(WorkspaceTrust::Trusted {
+            how: format!("Codex was launched trusting {root} for this session only"),
+        })
+    }
+
+    /// Claude Code passes its workspace-trust dialog before it reports any
+    /// hook. Until it does, its visible screen says whether it waits there.
+    fn claude_trust(
+        &self,
+        session: &SessionRef,
+        workspace: &Workspace,
+        row: &Value,
+    ) -> Observation<WorkspaceTrust> {
+        if row["hook_reported"] == true {
+            return Observation::Known(WorkspaceTrust::Trusted {
+                how: "Claude Code reported its lifecycle, past its workspace-trust dialog".into(),
+            });
+        }
+        let capture =
+            match self.json(&["session", "capture", &session.id, "--lines", "0", "--json"]) {
+                Ok(Some(v)) => v,
+                Ok(None) => return Observation::unknown("startup capture refused"),
+                Err(why) => return Observation::unknown(why),
+            };
+        if !claude_trust_dialog(session, &capture) {
+            return Observation::unknown(
+                "Claude Code has not reported yet and shows no workspace-trust dialog",
+            );
+        }
+        let cwd = row["cwd"].as_str().unwrap_or("its directory");
+        let root = match (workspace, self.named_root(workspace)) {
+            (Workspace::Repositories(_), Ok(source)) => source,
+            (_, Ok(dir)) => format!("the repository root holding {dir}, or {dir} outside one"),
+            (_, Err(why)) => why,
+        };
+        Observation::Known(WorkspaceTrust::Untrusted {
+            gap: TrustGap::Unsupported,
+            why: format!(
+                "Claude Code asks whether to trust {cwd} and has no per-session trust interface, so Fleet neither answers it nor edits Claude's state. Trust {root} once on host {}: accept the dialog in the session, or set projects[<path>].hasTrustDialogAccepted in ~/.claude.json. The brief follows.",
+                session.host
+            ),
+        })
     }
 
     fn json(&self, args: &[&str]) -> Result<Option<Value>, String> {
@@ -371,6 +560,70 @@ fn codex_process(value: &Value) -> bool {
         .is_some_and(|p| matches!(p.rsplit(['/', '\\']).next(), Some("codex" | "codex.exe")))
 }
 
+/// Codex's launch override trusting `root`. One `projects` key with a TOML
+/// inline table: Codex splits a dotted `-c` key on every `.`, and a path has
+/// them.
+fn codex_override(root: &str) -> Result<String, String> {
+    if root.chars().any(char::is_control) {
+        return Err(format!("cannot name {root:?} in a Codex trust override"));
+    }
+    let escaped = root.replace('\\', "\\\\").replace('"', "\\\"");
+    Ok(format!(
+        "projects={{\"{escaped}\"={{trust_level=\"trusted\"}}}}"
+    ))
+}
+
+/// The path through its symlinks, when this machine can resolve it. Windows
+/// keeps the spelling given: its resolved form is a verbatim path agents
+/// do not key trust on.
+fn canonical(path: &str) -> String {
+    #[cfg(unix)]
+    if let Some(p) = std::fs::canonicalize(path)
+        .ok()
+        .and_then(|p| p.to_str().map(str::to_string))
+    {
+        return p;
+    }
+    path.to_string()
+}
+
+fn home() -> Option<String> {
+    let var = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var(var).ok().filter(|h| !h.is_empty())
+}
+
+/// Claude Code's workspace-trust dialog, current at the cursor: its header,
+/// both choices and its footer, the cursor between them. Old text in the
+/// scrollback is not a dialog.
+fn claude_trust_dialog(session: &SessionRef, capture: &Value) -> bool {
+    if capture["session_id"] != session.id || capture["ansi"] != false || capture["lines"] != 0 {
+        return false;
+    }
+    let (Some(output), Some(cursor)) = (capture["output"].as_str(), capture["cursor_row"].as_u64())
+    else {
+        return false;
+    };
+    let lines: Vec<&str> = output.lines().map(str::trim).collect();
+    let Some(header) = lines.iter().rposition(|l| *l == "Accessing workspace:") else {
+        return false;
+    };
+    let Some(footer) = lines[header..]
+        .iter()
+        .position(|l| l.starts_with("Enter to confirm"))
+        .map(|n| header + n)
+    else {
+        return false;
+    };
+    let choice = |want: &str| {
+        lines[header..footer]
+            .iter()
+            .any(|l| l.trim_start_matches('❯').trim() == want)
+    };
+    usize::try_from(cursor).is_ok_and(|c| c > header && c < footer)
+        && choice("No, exit")
+        && choice("Yes, I trust this folder")
+}
+
 /// Absolute on the host the path is for: a POSIX path, or a Windows drive
 /// or UNC path, whatever this machine is.
 fn is_absolute(dir: &str) -> bool {
@@ -501,6 +754,20 @@ impl Runtime for ThurboxRuntime {
         if spec.host != LOCAL {
             args.extend(["--host".to_string(), spec.host.clone()]);
         }
+        if self.cfg.workspace_trust.get(&spec.harness) == Some(&TrustInterface::Codex) {
+            let trust = self
+                .trust_root(&spec.host, &spec.workspace)
+                .and_then(|root| codex_override(&root));
+            match trust {
+                // `=`: thurbox takes a value starting with `-` only joined.
+                Ok(o) => args.extend(["--agent-arg=-c".to_string(), format!("--agent-arg={o}")]),
+                Err(why) => {
+                    return Observation::Known(EffectOutcome::Failed {
+                        why: format!("workspace trust: {why}"),
+                    });
+                }
+            }
+        }
         let mut env = spec.env.clone();
         if let Some(model) = &spec.model
             && !spec.environment_frozen
@@ -592,6 +859,39 @@ impl Runtime for ThurboxRuntime {
                 _ => self.initial_codex_ready(session, &row),
             },
             Observation::Unknown { why } => Observation::Unknown { why },
+        }
+    }
+
+    fn workspace_trust(
+        &self,
+        session: &SessionRef,
+        workspace: &Workspace,
+    ) -> Observation<WorkspaceTrust> {
+        let row = match self.get(session) {
+            Observation::Known(row) => row,
+            Observation::Unknown { why } => return Observation::Unknown { why },
+        };
+        if row["id"] != session.id
+            || row["key"] != self.thurbox_key(&session.key)
+            || row_host(&row) != session.host
+        {
+            return Observation::unknown("the session row is not this session's");
+        }
+        let Some(agent) = row["agent"].as_str() else {
+            return Observation::unknown("thurbox reports no agent for the session");
+        };
+        match self.cfg.workspace_trust.get(agent) {
+            Some(TrustInterface::Codex) => self.codex_trust(session, workspace, &row),
+            Some(TrustInterface::Claude) => self.claude_trust(session, workspace, &row),
+            Some(TrustInterface::Ungated) => Observation::Known(WorkspaceTrust::Trusted {
+                how: format!("runtime.workspaceTrust says harness {agent} has no trust gate"),
+            }),
+            None => Observation::Known(WorkspaceTrust::Untrusted {
+                gap: TrustGap::Unsupported,
+                why: format!(
+                    "Fleet knows no workspace-trust interface for harness {agent}; set runtime.workspaceTrust.{agent} to \"none\" if it has no trust gate"
+                ),
+            }),
         }
     }
 
@@ -797,5 +1097,65 @@ mod tests {
             };
             assert!(why.contains(want), "{list:?}: {why}");
         }
+    }
+
+    #[test]
+    fn a_codex_trust_override_names_one_directory_as_toml() {
+        assert_eq!(
+            codex_override("/home/u/.cache/a b").unwrap(),
+            r#"projects={"/home/u/.cache/a b"={trust_level="trusted"}}"#
+        );
+        assert_eq!(
+            codex_override(r#"C:\work\say "hi""#).unwrap(),
+            r#"projects={"C:\\work\\say \"hi\""={trust_level="trusted"}}"#
+        );
+        assert!(codex_override("/a\nb").is_err());
+    }
+
+    #[test]
+    fn a_filesystem_root_is_never_a_trust_root() {
+        let rt = runtime();
+        for dir in ["/", "C:\\", "C:/"] {
+            let err = rt.trust_root("remote", &Workspace::at(dir)).unwrap_err();
+            assert!(err.contains("never trusted automatically"), "{dir}: {err}");
+        }
+        assert_eq!(
+            rt.trust_root("remote", &Workspace::at("/work/t")).unwrap(),
+            "/work/t"
+        );
+        let repos = Workspace::Repositories(workspace(&[
+            ("https://example.invalid/a", None),
+            ("https://example.invalid/b", None),
+        ]));
+        assert_eq!(rt.trust_root("remote", &repos).unwrap(), "/src/a");
+    }
+
+    /// Claude Code 2.1.312's dialog, as `session capture --lines 0` read it.
+    fn dialog(cursor: u64) -> Value {
+        serde_json::json!({
+            "session_id": "s1", "ansi": false, "lines": 0, "cursor_row": cursor,
+            "output": " Accessing workspace:\n\n /w\n\n Security guide\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel\n"
+        })
+    }
+
+    #[test]
+    fn only_a_cursor_current_claude_trust_dialog_is_one() {
+        let s = SessionRef {
+            id: "s1".into(),
+            host: "local".into(),
+            key: "t.u1".into(),
+        };
+        assert!(claude_trust_dialog(&s, &dialog(5)));
+        assert!(!claude_trust_dialog(&s, &dialog(9)), "cursor below it");
+        assert!(!claude_trust_dialog(&s, &dialog(0)), "cursor on its header");
+        let mut other = dialog(5);
+        other["session_id"] = "s2".into();
+        assert!(!claude_trust_dialog(&s, &other));
+        let mut scrollback = dialog(5);
+        scrollback["lines"] = 200.into();
+        assert!(!claude_trust_dialog(&s, &scrollback));
+        let mut imports = dialog(5);
+        imports["output"] = " External imports:\n ❯ No, disable external imports\n   Yes, allow external imports\n Enter to confirm · Esc to cancel\n".into();
+        assert!(!claude_trust_dialog(&s, &imports), "another dialog");
     }
 }

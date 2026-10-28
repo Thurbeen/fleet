@@ -188,6 +188,11 @@ Guarantees, each with its test:
   recovered receipt, not delivered is one more send under the same key, and
   "cannot tell" is retried after a wait. Three unreadable probes raise
   `NeedsAttention(BriefUnconfirmed)`; probes continue so recovery can settle it.
+- **Trust before the brief.** The brief is sent only after the runtime
+  reports that the session's agent trusts its workspace. A known gap sets
+  `WorkspaceTrusted=False`, raises `NeedsAttention/WorkspaceUntrusted` and
+  is probed again after each wait. Unknown waits and raises nothing. A held
+  brief spends no send, and no inbox entry goes out before the brief.
 - **Retries.** Spawns and brief sends are tried at most `MAX_ATTEMPTS` (3)
   times before `Stalled` and `NeedsAttention`. Failed attempts wait
   `RETRY_DELAY_MS` (30 seconds), persisted as `status.notBefore` across manager
@@ -230,8 +235,8 @@ Guarantees, each with its test:
   changes against what was stored, so a pass that sees nothing new writes
   nothing and the manager goes idle.
 
-Conditions: `HostReachable`, `Spawned`, `Briefed`, `Stalled`, `WorkerGone`,
-`Concluded`, `Released`, `NeedsAttention`.
+Conditions: `HostReachable`, `Spawned`, `WorkspaceTrusted`, `Briefed`,
+`Stalled`, `WorkerGone`, `Concluded`, `Released`, `NeedsAttention`.
 
 ## Following declared changes
 
@@ -495,8 +500,9 @@ refused.
 
 ## Runtime contract
 
-`fleet_api::runtime::Runtime`: `host`, `spawn`, `find`, `ready`, `brief`,
-`brief_delivered`, `at_rest` and `release`, each answering Known or Unknown.
+`fleet_api::runtime::Runtime`: `host`, `spawn`, `find`, `ready`,
+`workspace_trust`, `brief`, `brief_delivered`, `at_rest` and `release`, each
+answering Known or Unknown.
 Each adapter reports its longest single operation (`operation_bound`), and
 `fleet reconcile` refuses a lease that could not outlast it.
 
@@ -552,6 +558,54 @@ worktree create:
   session.
 - Cleanup is best effort. Fleet reads a delete that exits 0 as released,
   even when thurbox reports a worktree or remote teardown error.
+
+### Workspace trust
+
+An agent harness can refuse to load a folder's project settings until a
+person trusts the folder. This document calls that gate workspace trust.
+Workspace trust is not a permission policy. It approves no command, edit or
+tool, and Fleet changes no permission mode or sandbox to obtain it.
+
+The trust root is the directory the agent keys the session's trust on:
+
+- For `{dir}`, the trust root is the directory.
+- For `{repositories}`, the trust root is the primary repository's source
+  checkout. Codex and Claude Code key a worktree's trust on its main
+  checkout, and the primary worktree is the session's cwd.
+- Additional repositories get no trust. Neither agent loads their project
+  settings.
+
+`runtime.workspaceTrust` gives each thurbox harness one interface:
+
+| Interface | Default harnesses | At spawn | `workspace_trust` answers |
+| --- | --- | --- | --- |
+| `codex` | `codex` | Adds `--agent-arg=-c --agent-arg=projects={"<root>"={trust_level="trusted"}}`. | `Trusted` when the row's `agent_args` are exactly that pair and the row's cwd and worktrees are the Task's workspace. `Mismatch` otherwise. Unknown when thurbox does not report them. |
+| `claude` | `claude`, `claude-code` | Adds nothing. | `Trusted` once Claude reported a hook. `Unsupported` while Claude's trust dialog is current at the cursor. Unknown otherwise. |
+| `none` | none | Adds nothing. | `Trusted`. |
+| not listed | any other | Adds nothing. | `Unsupported`, naming `runtime.workspaceTrust`. |
+
+These rules hold for every interface:
+
+- The spawn intent records the harness and workspace. The trust that a spawn
+  adds follows from them alone, so a respawn under the same intent adds the
+  same trust.
+- Codex's override lives in the session's own arguments. Thurbox keeps it
+  and replays it on restart, resume and fork. Fleet writes no Codex
+  configuration file.
+- An adopted session is checked like any other. A session without the exact
+  override, or in another directory, is `Mismatch` and never gets a brief.
+- On the local host, the trust root is resolved through symlinks, as Codex
+  resolves its cwd. A remote host gets the path as configured.
+- A filesystem root, or the local user's home, is never a trust root. A
+  `codex` spawn there fails.
+- Fleet never sends a key to a dialog. Claude Code has no per-session trust
+  interface; its only documented one persists in `~/.claude.json` on the
+  host. A person trusts the repository once, by the dialog or that file.
+  The Task's message names the folder.
+
+`e2e_workspace_trust` covers each interface, adoption, mismatch, Unknown and
+recovery. Its rows and screens come from thurbox-cli 2.76.1, Codex 0.164.0
+and Claude Code 2.1.312.
 
 ## Forge contract
 

@@ -442,6 +442,13 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         fn ready(&self, _: &SessionRef) -> Observation<bool> {
             panic!("already briefed")
         }
+        fn workspace_trust(
+            &self,
+            _: &SessionRef,
+            _: &fleet_api::task::Workspace,
+        ) -> Observation<fleet_api::runtime::WorkspaceTrust> {
+            panic!("already briefed")
+        }
         fn brief_delivered(&self, _: &SessionRef, _: &str) -> Observation<bool> {
             panic!("already briefed")
         }

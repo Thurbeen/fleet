@@ -27,7 +27,8 @@ fn task_config_is_passive_and_launch_defaults_are_frozen_across_restart() {
     let mut t = task("inherited", false);
     t["spec"].as_object_mut().unwrap().remove("harness");
     t["spec"].as_object_mut().unwrap().remove("host");
-    t["spec"]["workspace"]["dir"] = json!(e.root.to_string_lossy());
+    // Below the test's HOME: a home directory is never trusted automatically.
+    t["spec"]["workspace"]["dir"] = json!(e.root.join("work").to_string_lossy());
     t["spec"]["configRef"] = json!({"name":"shared"});
     e.apply(t.clone()).ok();
     e.reconcile().ok();

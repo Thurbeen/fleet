@@ -30,14 +30,16 @@ logic runs.
 | Spawning | Missing/Unknown receipt; session list unreadable | Spawning | Report Unknown; never infer absence or respawn blindly. |
 | Spawned | Readable lookup lacks the recorded session identity | Spawned | Raise WorkerGone and NeedsAttention; do not send. |
 | Spawned | Known Delivered receipt, or journal proves delivered | Briefed | Record brief key and generation; recovered journal answers become receipts. |
-| Spawned | No brief intent yet, or delivery proven absent; fresh readiness true; fewer than 3 sends spent | Spawned | Persist brief intent and plan Brief. A later pass consumes its receipt. |
+| Spawned | Workspace trust Known untrusted | Spawned | Set `WorkspaceTrusted=False` with the gap as reason, raise `NeedsAttention/WorkspaceUntrusted`, wait, then probe again. Do not send. |
+| Spawned | Workspace trust Unknown or unanswered | Spawned | Set `WorkspaceTrusted=Unknown/TrustUnknown` when Unknown, wait, then probe again. Do not send and raise no attention. |
+| Spawned | No brief intent yet, or delivery proven absent; workspace trusted; fresh readiness true; fewer than 3 sends spent | Spawned | Set `WorkspaceTrusted=True/Trusted` and clear its attention. Persist brief intent and plan Brief. A later pass consumes its receipt. |
 | Spawned | Session not ready or readiness Unknown | Spawned | Do not send, including on a retry. Receipt recovery may still proceed. |
 | Spawned | Delivery unreadable after an ambiguous send | Spawned | Wait, then probe again; after 3 unreadable probes raise NeedsAttention. |
 | Spawned | Another send would exceed the 3-send bound | Stalled | Raise `Stalled/BriefAttemptsExhausted` and NeedsAttention. |
 | Briefed | No result; recorded session present or lookup unreadable | Briefed | Wait for result; Unknown does not mean WorkerGone. |
 | Briefed | No result; readable lookup lacks recorded identity | Briefed | Raise WorkerGone and NeedsAttention; never abandon or respawn. |
 | Active phase | Accepted worker result is stored | Concluded | Set `Concluded=True/ResultRecorded`; keep the session. |
-| Spawned, Briefed or Concluded | Oldest inbox entry has no receipt; session ready; nothing else sent this pass | unchanged | Persist the entry's intent and plan `Brief` under its key; one entry per pass. In Spawned the brief goes first: nothing is delivered while a brief send is unconfirmed. |
+| Spawned, Briefed or Concluded | Oldest inbox entry has no receipt; session ready; nothing else sent this pass | unchanged | Persist the entry's intent and plan `Brief` under its key; one entry per pass. In Spawned the brief goes first: nothing is delivered before the brief was sent, or while a brief send is unconfirmed. |
 | Spawned, Briefed or Concluded | Oldest inbox entry; session not ready or Unknown | unchanged | Do not send. Receipt recovery through `BriefDelivered` may still proceed. |
 | Spawned, Briefed or Concluded | Known Delivered receipt, or journal proves delivered | unchanged | Record the receipt in `status.deliveries` and remove the entry, in one write; its intent, receipt and attempt records go with it. |
 | Spawned, Briefed or Concluded | Entry send refused (Known failure) | unchanged | Wait, then send again under the same key to a session observed ready; at most 3 sends. |
@@ -64,6 +66,7 @@ These are controller constants, not extra configuration resources.
 | Situation | Evidence required before proceeding | Wait and exhaustion behavior |
 | --- | --- | --- |
 | Spawn failed or was proven absent | A failure receipt, or readable key lookup after an ambiguous spawn | Wait before the next attempt; after the third failed attempt enter Stalled. |
+| Workspace not trusted | A Trusted answer on a later pass | Wait before each probe. A held brief is not a send and spends no attempt; the Task never stalls on it. |
 | Brief send refused | Known failure before confirmed delivery | Wait before retry; every retry needs fresh readiness; at most 3 sends. |
 | Brief send answer missing/Unknown | Read the session's journal under the original brief key | Delivered recovers without sending; proven not delivered permits a ready-session send; Unknown waits and probes again. |
 | Delivery journal unreadable | A later readable journal answer | After 3 failures raise NeedsAttention, but keep probing after each wait. Recovery clears BriefUnconfirmed attention. |
@@ -100,12 +103,14 @@ are last recorded observations; absence of a condition is not a True value.
 | WorkerGone | A readable lookup no longer shows the recorded identity under its key (`SessionGone`). |
 | Concluded | A worker result was accepted and observed (`ResultRecorded`). |
 | Released | A known release completed, or there was nothing to release. |
-| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, InboxFull or RepositoryUnmapped. |
+| WorkspaceTrusted | The session's agent trusts its workspace (`Trusted`). False reasons are `Unsupported` and `Mismatch`; Unknown is `TrustUnknown`. |
+| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, InboxFull, RepositoryUnmapped or WorkspaceUntrusted. |
 
 WorkerGone clears when the exact recorded session is seen again.
 RepositoryUnmapped clears when a later spawn does not answer Unmapped. A successful
 delivery recovery clears attention whose reason is BriefUnconfirmed or
 DeliveryUnconfirmed; an inbox drained back within its bound clears InboxFull.
+A Trusted answer clears WorkspaceUntrusted.
 DeliveryFailed stays while the failed entry does. A
 successful release removes the Task; a worker result alone is not a general
 reset of previous conditions. NeedsAttention does not universally stop the

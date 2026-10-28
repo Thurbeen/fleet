@@ -7,7 +7,39 @@
 
 use crate::observation::Observation;
 use crate::plan::{EffectOutcome, SpawnSpec};
-use crate::task::SessionRef;
+use crate::task::{SessionRef, Workspace};
+
+/// Whether a session's agent trusts the workspace it runs in. Workspace
+/// trust is the agent's own gate on loading a folder's project settings; it
+/// is not a permission policy and approves no tool action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceTrust {
+    /// The agent trusts its workspace, or its harness has no trust gate;
+    /// `how` says which, for people.
+    Trusted { how: String },
+    /// The agent does not trust its workspace, and only a person can change
+    /// that; `why` says what to do.
+    Untrusted { gap: TrustGap, why: String },
+}
+
+/// Why a workspace is known not to be trusted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TrustGap {
+    /// The harness has no supported way to be trusted for one session.
+    Unsupported,
+    /// The session is not the one the runtime would have started for this
+    /// workspace: another trust, none, or another directory.
+    Mismatch,
+}
+
+impl TrustGap {
+    pub fn reason(self) -> &'static str {
+        match self {
+            TrustGap::Unsupported => "Unsupported",
+            TrustGap::Mismatch => "Mismatch",
+        }
+    }
+}
 
 pub trait Runtime {
     /// Resolve runtime model-variable selection into the frozen private environment.
@@ -41,6 +73,13 @@ pub trait Runtime {
     fn find(&self, host: &str, key: &str) -> Observation<Option<SessionRef>>;
     /// Ready when the agent is running and waiting for input.
     fn ready(&self, session: &SessionRef) -> Observation<bool>;
+    /// Whether the agent in `session` trusts `workspace`, so a brief cannot
+    /// land in a trust prompt. Unknown when the session cannot prove it.
+    fn workspace_trust(
+        &self,
+        session: &SessionRef,
+        workspace: &Workspace,
+    ) -> Observation<WorkspaceTrust>;
     /// Send the brief once under `intent_key`; the session stores the key, so
     /// a second send of the same key is `Delivered { already: true }`.
     fn brief(

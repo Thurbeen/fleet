@@ -211,7 +211,8 @@ fn an_orphan_session_holding_the_key_is_adopted_not_twinned() {
     env.edit_stub(|s| {
         s["sessions"] = json!([{
             "id": "00000000-0000-4000-8000-000000000099", "key": key, "host": "local",
-            "name": key, "state": "idle", "stopped": false, "meta": {}, "sent": [], "env": []
+            "name": key, "agent": "claude-code", "state": "idle", "hook_reported": true,
+            "stopped": false, "meta": {}, "sent": [], "env": []
         }]);
     });
     env.apply(task("t1", true)).ok();

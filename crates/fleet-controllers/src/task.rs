@@ -12,6 +12,7 @@ use fleet_api::plan::{
     Action, Effect, EffectOutcome, Intent, Observations, Plan, Probe, Receipt, SpawnSpec,
     effect_key,
 };
+use fleet_api::runtime::WorkspaceTrust;
 use fleet_api::store::FieldManager;
 use fleet_api::task::{self, BriefRecord, Phase, SessionRef, TaskSpec, TaskStatus};
 use fleet_api::validate::typed;
@@ -47,6 +48,9 @@ pub mod conditions {
     pub const WORKER_GONE: &str = "WorkerGone";
     pub const CONCLUDED: &str = "Concluded";
     pub const RELEASED: &str = "Released";
+    /// Whether the session's agent trusts its workspace; the brief waits
+    /// until it does.
+    pub const WORKSPACE_TRUSTED: &str = "WorkspaceTrusted";
     /// Something only a person can decide: a stall, a vanished worker, a
     /// release that kept failing.
     pub const NEEDS_ATTENTION: &str = "NeedsAttention";
@@ -56,6 +60,8 @@ use conditions::*;
 const SPAWN: &str = "spawn";
 /// The reason a spawn waits for the runtime to map a repository.
 const UNMAPPED: &str = "RepositoryUnmapped";
+/// The NeedsAttention reason while a known trust gap holds the brief.
+const WORKSPACE_UNTRUSTED: &str = "WorkspaceUntrusted";
 const BRIEF: &str = "brief";
 const RELEASE: &str = "release";
 
@@ -88,6 +94,10 @@ impl TaskController {
             Phase::Spawned => {
                 let mut probes = vec![find];
                 if let Some(s) = &st.session {
+                    probes.push(Probe::WorkspaceTrust {
+                        session: s.clone(),
+                        workspace: spec.workspace.clone(),
+                    });
                     probes.push(Probe::Ready { session: s.clone() });
                     let bk = brief_key(input.task);
                     if st.intents.contains_key(&bk) && !known_receipt(&st, &bk) {
@@ -418,9 +428,12 @@ impl Pass<'_, '_> {
             return;
         }
         self.brief_step(session.clone());
-        // The brief comes first: an entry goes out only in a pass that sent
-        // nothing and has no brief send unconfirmed.
-        if matches!(self.st.phase, Phase::Spawned | Phase::Briefed) && !self.brief_pending() {
+        // The brief comes first: an entry goes out only once it was sent, in
+        // a pass that sent nothing and has no brief send unconfirmed. A brief
+        // held for trust or readiness holds the inbox with it.
+        let sent = self.st.intents.contains_key(&brief_key(self.input.task));
+        if matches!(self.st.phase, Phase::Spawned | Phase::Briefed) && sent && !self.brief_pending()
+        {
             self.deliver(session);
         }
     }
@@ -506,7 +519,10 @@ impl Pass<'_, '_> {
             return;
         }
         // Every send, including retries proven not delivered, needs fresh
-        // readiness. Receipt recovery above does not send anything.
+        // trust and readiness. Receipt recovery above sends nothing.
+        if !self.workspace_trusted() {
+            return;
+        }
         match self.input.observations.ready.clone() {
             Some(Observation::Known(true)) => {}
             Some(Observation::Known(false)) => {
@@ -527,6 +543,41 @@ impl Pass<'_, '_> {
         self.cond(BRIEFED, ConditionStatus::Unknown, "Sending", msg);
         let text = self.spec.brief.clone();
         self.intend(key, Action::Brief { session, text });
+    }
+
+    /// Whether the session's agent trusts its workspace on this pass. A
+    /// known gap asks a person and is looked at again after a wait; Unknown
+    /// only waits, since it proves nothing either way.
+    fn workspace_trusted(&mut self) -> bool {
+        match self.input.observations.workspace_trust.clone() {
+            Some(Observation::Known(WorkspaceTrust::Trusted { how })) => {
+                self.cond(WORKSPACE_TRUSTED, ConditionStatus::True, "Trusted", how);
+                self.settle_attention(WORKSPACE_UNTRUSTED);
+                true
+            }
+            Some(Observation::Known(WorkspaceTrust::Untrusted { gap, why })) => {
+                self.cond(
+                    WORKSPACE_TRUSTED,
+                    ConditionStatus::False,
+                    gap.reason(),
+                    why.clone(),
+                );
+                self.needs_attention(WORKSPACE_UNTRUSTED, why);
+                self.wait_from(self.now());
+                false
+            }
+            Some(Observation::Unknown { why }) => {
+                self.cond(
+                    WORKSPACE_TRUSTED,
+                    ConditionStatus::Unknown,
+                    "TrustUnknown",
+                    why,
+                );
+                self.wait_from(self.now());
+                false
+            }
+            None => false,
+        }
     }
 
     fn briefed_now(&mut self, key: String, recovered: bool) {

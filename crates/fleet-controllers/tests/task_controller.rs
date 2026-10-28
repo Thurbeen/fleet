@@ -4,6 +4,7 @@
 
 use fleet_api::condition::ConditionStatus;
 use fleet_api::plan::{Action, EffectOutcome, Observations, Plan, Probe, Receipt};
+use fleet_api::runtime::{TrustGap, WorkspaceTrust};
 use fleet_api::task::{Phase, SessionRef, TaskStatus};
 use fleet_api::{Object, Observation};
 use fleet_controllers::{MAX_ATTEMPTS, RETRY_DELAY_MS, TaskController, TaskInput};
@@ -58,6 +59,13 @@ fn probes(obj: &Object) -> Vec<Probe> {
         now: NOW,
     };
     TaskController.probes(&input).unwrap()
+}
+
+/// What the runtime answers for a session whose agent trusts its workspace.
+fn trusted() -> Option<Observation<WorkspaceTrust>> {
+    Some(Observation::Known(WorkspaceTrust::Trusted {
+        how: "test".into(),
+    }))
 }
 
 fn cond<'a>(st: &'a TaskStatus, t: &str) -> &'a fleet_api::condition::Condition {
@@ -321,6 +329,7 @@ fn the_brief_waits_for_a_ready_session() {
         Observations {
             find: live,
             ready: Some(Observation::Known(true)),
+            workspace_trust: trusted(),
             ..Default::default()
         },
     );
@@ -383,6 +392,7 @@ fn a_brief_without_a_known_receipt_asks_the_session_and_never_resends_blind() {
         Observations {
             find: live,
             ready: Some(Observation::Known(true)),
+            workspace_trust: trusted(),
             brief_delivered: Some(Observation::Known(false)),
             ..Default::default()
         },
@@ -678,6 +688,7 @@ fn the_oldest_inbox_entry_is_sent_to_a_ready_session_under_its_key() {
         Observations {
             find: live(),
             ready: Some(Observation::Known(true)),
+            workspace_trust: trusted(),
             ..Default::default()
         },
     );
@@ -739,6 +750,7 @@ fn a_delivered_receipt_moves_the_entry_into_deliveries_in_one_write() {
         Observations {
             find: live(),
             ready: Some(Observation::Known(true)),
+            workspace_trust: trusted(),
             ..Default::default()
         },
     );
@@ -786,6 +798,7 @@ fn an_inbox_send_without_a_known_receipt_is_read_back_never_resent_blind() {
         Observations {
             find: live(),
             ready: Some(Observation::Known(true)),
+            workspace_trust: trusted(),
             brief_delivered: Some(Observation::Known(true)),
             ..Default::default()
         },
@@ -798,6 +811,7 @@ fn an_inbox_send_without_a_known_receipt_is_read_back_never_resent_blind() {
         Observations {
             find: live(),
             ready: Some(Observation::Known(true)),
+            workspace_trust: trusted(),
             brief_delivered: Some(Observation::Known(false)),
             ..Default::default()
         },
@@ -811,6 +825,7 @@ fn an_inbox_send_without_a_known_receipt_is_read_back_never_resent_blind() {
         Observations {
             find: live(),
             ready: Some(Observation::Known(true)),
+            workspace_trust: trusted(),
             brief_delivered: Some(Observation::unknown("journal unreadable")),
             ..Default::default()
         },
@@ -840,6 +855,7 @@ fn three_unreadable_delivery_probes_ask_for_attention_and_keep_reading() {
         Observations {
             find: live(),
             ready: Some(Observation::Known(true)),
+            workspace_trust: trusted(),
             brief_delivered: Some(Observation::unknown("?")),
             ..Default::default()
         },
@@ -878,6 +894,7 @@ fn a_refused_inbox_send_waits_then_needs_fresh_readiness() {
     let obs = || Observations {
         find: live(),
         ready: Some(Observation::Known(true)),
+        workspace_trust: trusted(),
         ..Default::default()
     };
     let (plan, st) = run(&obj, obs());
@@ -920,6 +937,7 @@ fn an_entry_whose_sends_ran_out_raises_delivery_failed_and_later_entries_still_g
     let obs = || Observations {
         find: live(),
         ready: Some(Observation::Known(true)),
+        workspace_trust: trusted(),
         ..Default::default()
     };
     let (plan, st) = run(&obj, obs());
@@ -970,6 +988,7 @@ fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
         Observations {
             find: live(),
             ready: Some(Observation::Known(true)),
+            workspace_trust: trusted(),
             ..Default::default()
         },
     );
@@ -1025,6 +1044,7 @@ fn a_stalled_or_deleting_task_delivers_nothing() {
         Observations {
             find: live(),
             ready: Some(Observation::Known(true)),
+            workspace_trust: trusted(),
             ..Default::default()
         },
     );
@@ -1043,6 +1063,7 @@ fn a_stalled_or_deleting_task_delivers_nothing() {
         Observations {
             find: live(),
             ready: Some(Observation::Known(true)),
+            workspace_trust: trusted(),
             at_rest: Some(Observation::Known(true)),
             ..Default::default()
         },
@@ -1063,6 +1084,7 @@ fn in_spawned_the_brief_goes_first_and_an_entry_follows_on_a_later_pass() {
     let obs = || Observations {
         find: live(),
         ready: Some(Observation::Known(true)),
+        workspace_trust: trusted(),
         ..Default::default()
     };
     let (plan, st) = run(&obj, obs());
@@ -1116,4 +1138,90 @@ fn more_than_the_bound_queued_is_attention_until_delivered_down() {
         },
     );
     assert_eq!(cond(&st, "NeedsAttention").status, ConditionStatus::False);
+}
+
+#[test]
+fn the_brief_waits_for_the_agent_to_trust_its_workspace() {
+    let obj = spawned(|_| {});
+    assert!(probes(&obj).contains(&Probe::WorkspaceTrust {
+        session: session(),
+        workspace: fleet_api::task::Workspace::at("w"),
+    }));
+    let obs = |trust| Observations {
+        find: live(),
+        ready: Some(Observation::Known(true)),
+        workspace_trust: trust,
+        ..Default::default()
+    };
+
+    // A known gap: no brief, a person is asked, and it is looked at again
+    // after the wait rather than on every sweep.
+    let (plan, st) = run(
+        &obj,
+        obs(Some(Observation::Known(WorkspaceTrust::Untrusted {
+            gap: TrustGap::Unsupported,
+            why: "trust it once".into(),
+        }))),
+    );
+    assert!(plan.effects.is_empty());
+    assert_eq!(cond(&st, "WorkspaceTrusted").status, ConditionStatus::False);
+    assert_eq!(cond(&st, "WorkspaceTrusted").reason, "Unsupported");
+    assert_eq!(cond(&st, "NeedsAttention").reason, "WorkspaceUntrusted");
+    assert_eq!(st.not_before, Some(NOW + RETRY_DELAY_MS));
+    assert_eq!(st.brief_sends, 0, "a held brief is not an attempt");
+
+    // Unknown proves nothing: no brief, and no claim that a person must act.
+    let (plan, st) = run(&obj, obs(Some(Observation::unknown("unreadable"))));
+    assert!(plan.effects.is_empty());
+    assert_eq!(
+        cond(&st, "WorkspaceTrusted").status,
+        ConditionStatus::Unknown
+    );
+    assert!(st.conditions.iter().all(|c| c.type_ != "NeedsAttention"));
+
+    // Not asked is not trusted.
+    let (plan, _) = run(&obj, obs(None));
+    assert!(plan.effects.is_empty());
+
+    // Trust settles the attention it raised; the brief goes out.
+    let (_, held) = run(
+        &obj,
+        obs(Some(Observation::Known(WorkspaceTrust::Untrusted {
+            gap: TrustGap::Mismatch,
+            why: "another session".into(),
+        }))),
+    );
+    let later = task(true, Some(held));
+    let (plan, st) = run_at(&later, obs(trusted()), NOW + RETRY_DELAY_MS);
+    assert_eq!(plan.effects.len(), 1);
+    assert_eq!(plan.effects[0].key, "task/t/u7/brief");
+    assert_eq!(cond(&st, "WorkspaceTrusted").status, ConditionStatus::True);
+    assert_eq!(cond(&st, "NeedsAttention").status, ConditionStatus::False);
+}
+
+#[test]
+fn a_brief_held_for_trust_holds_the_inbox_with_it() {
+    let obj = spawned(|st| st.inbox = vec![entry("task/t/u7/send/1")]);
+    for trust in [
+        None,
+        Some(Observation::unknown("unreadable")),
+        Some(Observation::Known(WorkspaceTrust::Untrusted {
+            gap: TrustGap::Unsupported,
+            why: "trust it once".into(),
+        })),
+    ] {
+        let (plan, _) = run(
+            &obj,
+            Observations {
+                find: live(),
+                ready: Some(Observation::Known(true)),
+                workspace_trust: trust.clone(),
+                ..Default::default()
+            },
+        );
+        assert!(
+            plan.effects.is_empty(),
+            "nothing reaches an untrusted session before its brief: {trust:?}"
+        );
+    }
 }
