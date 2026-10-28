@@ -32,7 +32,7 @@
       "semanticCommitType": "chore"
     },
     {
-      "description": "A crate update changes the binary users install, so it lands as a `fix:` commit (the top-level semanticCommitScope is null, so there is no `(deps)`), a type `cargo xtask release plan` bumps for. A security fix in a dependency then ships with no unrelated feat or fix to carry it. The shipped-path check keeps an Actions or tooling bump, still `chore`, from cutting a release. This rule follows the catch-all above, so it wins.",
+      "description": "A crate update changes the binary users install, so it lands as a `fix:` commit (the top-level semanticCommitScope is null, so there is no `(deps)`), a type cocogitto bumps for. A security fix in a dependency then ships with no unrelated feat or fix to carry it. The shipped-path check keeps an Actions or tooling bump, still `chore`, from cutting a release. This rule follows the catch-all above, so it wins.",
       "matchManagers": [
         "cargo"
       ],

@@ -78,31 +78,39 @@ environment variables, never GitHub expression interpolation in `run`.
 All Checks runs `if: always()` and requires success from every declared job;
 skipped, cancelled, failed or missing results fail. PR Title reruns on edits.
 The release workflow uses bash with pipefail and a protected `release`
-environment, and tests the exact commit before packaging it. Release jobs
+environment, and tests the tagged commit before packaging it. Release jobs
 restore no pull-request caches.
 
-`cargo xtask release plan --ref refs/heads/main --dry-run` computes the next
-version without publishing. Cocogitto computes the bump from the conventional
-commits since the last tag, as `cog.toml` configures it: `feat`, `fix`, `perf`
-and breaking changes bump. The plan releases that bump only when shipped files
-changed. A missing or failing `cog` fails the plan. An existing version tag is
-refused. Prereleases are marked as such and never marked latest.
-Every push to `main` runs the release workflow. The squash-merged pull request
-title is the conventional commit that decides the bump. A dispatch on `main`
-with an explicit `version` cuts that version. Dispatches from other branches
-are always dry runs. The readiness file must explicitly enable publication.
-Every release runner tests, builds, packages, installs its archive and runs
-offline first-run acceptance before publication. The publish job then writes
-the release notes with `cog changelog` and creates the version tag at the
-tested commit. No person pushes a version tag, and no tag moves.
-`workspace.package.version` stays `0.0.0-dev`; the build stamps the planned
-version into the binary. The protected release environment and provenance
-attestation remain required. No release step installs onto an existing
-deployment.
+Releases follow the thurbox pattern, driven by cocogitto and `cog.toml`.
+Every push to `main` runs the release workflow:
+
+1. `check-release` asks `cog bump --auto --dry-run` for the next version.
+   `feat`, `fix`, `perf` and breaking changes bump. The squash-merged pull
+   request title is the commit that decides.
+2. The same job releases that version only when shipped files changed since
+   the last tag, the ref is `main`, and the readiness file says
+   `ready = true`. A false, missing or invalid file holds the release.
+3. `create-tag` runs `cog bump` and pushes the version tag.
+4. Every release runner checks out that tag, tests it, builds, packages,
+   installs its archive and runs offline first-run acceptance.
+5. `generate-changelog` writes the release notes with `cog changelog`.
+6. `publish` attests the artifacts and creates the release on the tag.
+
+A missing or failing `cog` fails the workflow; it never means "no release".
+A commit that already carries a version tag releases nothing. A dispatch on
+`main` with an explicit `version` cuts that version. Prereleases are marked
+as such and never marked latest. No person pushes a version tag, and no tag
+moves. A tag whose build fails stays without a release; the next releasable
+push takes the next version. `workspace.package.version` stays `0.0.0-dev`;
+the build stamps the tag's version into the binary. The protected release
+environment and provenance attestation remain required. No release step
+installs onto an existing deployment.
+
+On a `main` checkout, `cog bump --auto --disable-bump-commit --dry-run` shows
+the next version; `cog.toml` allows bumps on `main` only.
 
 ```sh
 cargo xtask release title 'feat: resource orchestration' 123
-cargo xtask release plan --ref refs/heads/main --dry-run
 cargo xtask release smoke --binary target/release/fleet --version v1.2.3
 cargo xtask release package --target x86_64-unknown-linux-musl --version v1.2.3 --binary target/release/fleet --out dist
 cargo xtask release checksums --version v1.2.3 dist
