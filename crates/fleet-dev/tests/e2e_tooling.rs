@@ -277,9 +277,17 @@ fn windows_is_not_a_release_target_and_no_workflow_runs_on_it() {
         .map(|i| i["target"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(targets, linux);
-    for name in ["ci.yml", "cd.yml", "pr-title.yml"] {
+    for entry in fs::read_dir(&workflows).unwrap() {
+        let path = entry.unwrap().path();
+        if !matches!(
+            path.extension().and_then(|s| s.to_str()),
+            Some("yml" | "yaml")
+        ) {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy();
         let doc: serde_json::Value =
-            serde_saphyr::from_str(&fs::read_to_string(workflows.join(name)).unwrap()).unwrap();
+            serde_saphyr::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         for (job, body) in doc["jobs"].as_object().unwrap() {
             let runners = [&body["runs-on"], &body["strategy"]["matrix"]];
             assert!(

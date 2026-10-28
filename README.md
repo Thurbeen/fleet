@@ -225,12 +225,12 @@ once, when the session is ready.
 
 ## Install, update and uninstall
 
-Use the one-liners above, or download and inspect the pinned installer,
+Use the one-liner above, or download and inspect the pinned installer,
 matching archive and checksum file from [Fleet releases](https://github.com/Thurbeen/fleet/releases).
 Supported release targets are Linux x86_64 and aarch64 (musl). Windows and
 macOS are not release targets.
 
-The installer requires an explicit `FLEET_VERSION` and never resolve
+The installer requires an explicit `FLEET_VERSION` and never resolves
 "latest". To inspect before executing, download the script from the versioned
 release assets into a new directory, then run:
 
