@@ -82,7 +82,8 @@ pub struct SpawnSpec {
     pub host: String,
     pub key: String,
     pub harness: String,
-    pub dir: String,
+    /// What the Task named; the runtime decides how to make it.
+    pub workspace: crate::task::Workspace,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]

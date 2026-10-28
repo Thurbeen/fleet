@@ -849,6 +849,7 @@ fn open_runtime(config: &Config) -> Result<Box<dyn Runtime>, Failure> {
                 cfg.key_prefix = p.clone();
             }
             cfg.model_env.extend(rt.model_env.clone());
+            cfg.repositories = rt.repositories.clone();
             Ok(Box::new(ThurboxRuntime::new(cfg)))
         }
         other => Err(fail(format!(

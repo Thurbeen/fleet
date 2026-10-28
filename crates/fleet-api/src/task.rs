@@ -58,10 +58,59 @@ fn local_host() -> String {
     LOCAL_HOST.to_string()
 }
 
+/// Where the session works. Fleet names it; the runtime makes it, and cleans
+/// it up when the session is deleted, as the runtime is configured to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    untagged,
+    expecting = "a workspace: {\"dir\": PATH} or {\"repositories\": [{\"name\", \"url\", \"ref\"?}]}"
+)]
+pub enum Workspace {
+    Dir(DirWorkspace),
+    Repositories(RepositoriesWorkspace),
+}
+
+/// A directory that exists before the Task; the runtime attaches it as is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Workspace {
+pub struct DirWorkspace {
     pub dir: String,
+}
+
+/// Repositories the runtime materializes under the session key. The first is
+/// the primary, where the agent starts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RepositoriesWorkspace {
+    pub repositories: Vec<Repository>,
+}
+
+impl Workspace {
+    /// A `{dir}` workspace.
+    pub fn at(dir: impl Into<String>) -> Workspace {
+        Workspace::Dir(DirWorkspace { dir: dir.into() })
+    }
+
+    /// The directory of a `{dir}` workspace.
+    pub fn dir(&self) -> Option<&str> {
+        match self {
+            Workspace::Dir(w) => Some(&w.dir),
+            Workspace::Repositories(_) => None,
+        }
+    }
+}
+
+/// A repository a Task works on: its identity, never how it is provisioned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Repository {
+    /// Unique in the Task; labels the repository for people and the runtime.
+    pub name: String,
+    /// The repository's forge URL.
+    pub url: String,
+    /// Where to start from. Opaque to Fleet; the runtime interprets it.
+    #[serde(default, rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -195,6 +244,37 @@ mod tests {
         .unwrap();
         assert_eq!(spec.host, LOCAL_HOST);
         assert!(!spec.dispatch);
+    }
+
+    #[test]
+    fn a_workspace_is_a_directory_or_repositories_and_nothing_else() {
+        let parse = |w: serde_json::Value| {
+            serde_json::from_value::<TaskSpec>(serde_json::json!({
+                "harness": "claude-code", "brief": "b", "workspace": w
+            }))
+            .map(|s| s.workspace)
+        };
+        assert_eq!(
+            parse(serde_json::json!({"dir": "w"})).unwrap(),
+            Workspace::at("w")
+        );
+        let repos = parse(serde_json::json!({"repositories": [
+            {"name": "app", "url": "https://example.invalid/app", "ref": "main"}
+        ]}))
+        .unwrap();
+        let Workspace::Repositories(w) = repos else {
+            panic!("{repos:?}")
+        };
+        assert_eq!(w.repositories[0].reference.as_deref(), Some("main"));
+        for refused in [
+            serde_json::json!({"dir": "w", "repositories": []}),
+            serde_json::json!({"dir": "w", "branch": "x"}),
+            serde_json::json!({"repositories": [{"name": "a", "url": "u", "baseBranch": "x"}]}),
+            serde_json::json!({}),
+        ] {
+            let err = parse(refused.clone()).unwrap_err().to_string();
+            assert!(err.contains("a workspace:"), "{refused}: {err}");
+        }
     }
 
     #[test]
