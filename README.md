@@ -213,14 +213,18 @@ These commands keep the checkout in place and do not migrate its queue or
 configuration. The root `FLEET_MAJOR` file says `2`. A v1 checkout that
 contains the freeze guard reads it before updating and refuses to move onto
 v2: SessionStart and reconciler sync, and both v1 installers, inspect the
-fetched candidate before checkout or fast-forward. They leave the existing
-checkout and data unchanged. To reinstall a pinned checkout, use
+fetched candidate before checkout or fast-forward. They refuse a missing or
+non-v1 `FLEET_MAJOR` marker, or missing Python entry points, and leave the
+existing checkout and data unchanged. A fresh v1 installer also checks before
+writing candidate files. To reinstall a pinned checkout, use
 `uv run fleet install` there rather than the branch-tracking bootstrap.
 
 **Unpatched clients must install this freeze before updating.** They can
-otherwise pull v2 through their old automatic sync or installer. A manual
-`git pull` bypasses the guard. Pin the tag explicitly using the commands
-above. Binary installation does not change a running Python checkout.
+otherwise pull v2 through their old automatic sync or installer.
+Documentation alone cannot protect old code, and a manual `git pull` bypasses
+the guard. Pin the tag explicitly using the commands above; do not run
+development installers over a stable checkout. Binary installation does not
+change a running Python checkout.
 
 ## Contribute
 
