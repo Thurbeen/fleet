@@ -131,6 +131,12 @@ jobs:
       - uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
         with:
           install-only: true
+      # The action adds a POSIX path to GITHUB_PATH, which Windows cannot
+      # resolve; add the native form of the same directory.
+      - name: Put cog on PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cygpath -w "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Test the commit being released
         run: cargo xtask check rust-test
       - name: Use the static Windows CRT
