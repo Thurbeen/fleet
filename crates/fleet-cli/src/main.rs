@@ -278,12 +278,17 @@ fn run(cli: Cli) -> Result<(), Failure> {
         );
         return Ok(());
     }
-    let config = match &config_path {
+    // The text is kept: `fleet up` compares later edits against it.
+    let (config, config_text) = match &config_path {
         Some(p) if !explicit_config && !p.try_exists().map_err(|e| fail(e.to_string()))? => {
-            Config::empty()
+            (Config::empty(), String::new())
         }
-        Some(p) => Config::load(p).map_err(fail)?,
-        None => Config::empty(),
+        Some(p) => {
+            let text = std::fs::read_to_string(p)
+                .map_err(|e| fail(format!("cannot read config {}: {e}", p.display())))?;
+            (Config::parse(&text, p).map_err(fail)?, text)
+        }
+        None => (Config::empty(), String::new()),
     };
     let data_dir = cli
         .data_dir
@@ -348,7 +353,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
             let path = config_path.ok_or_else(|| fail("no configuration; run fleet init first"))?;
             cmd_up(
                 store,
-                &config,
+                (&config, &config_text),
                 &path,
                 poll_ms,
                 lease_ttl_ms,
@@ -649,7 +654,7 @@ fn gateway_side<'a>(
 
 fn cmd_up(
     store: &dyn Store,
-    config: &Config,
+    (config, config_text): (&Config, &str),
     config_path: &Path,
     poll_ms: u64,
     lease_ttl_ms: Option<u64>,
@@ -663,7 +668,7 @@ fn cmd_up(
         .as_ref()
         .ok_or_else(|| fail("no starter workspace configured; run fleet init first"))?;
     let (runtime, repositories) = open_reloadable_runtime(config)?;
-    let mut reload = repositories.map(|map| Reload::new(config_path, map));
+    let mut reload = repositories.map(|map| Reload::new(config_path, config_text, map));
     let forge = open_forge(config)?;
     let gateway = open_gateway(config)?;
     let task = match store.get("Task", "vega") {
@@ -826,14 +831,12 @@ struct Reload<'a> {
 }
 
 impl<'a> Reload<'a> {
-    fn new(path: &'a Path, repositories: Repositories) -> Reload<'a> {
-        let started = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|text| without_repositories(&text));
+    /// `text` is the file the process started from, as it was read then.
+    fn new(path: &'a Path, text: &str, repositories: Repositories) -> Reload<'a> {
         Reload {
             path,
             repositories,
-            started,
+            started: without_repositories(text),
             notice: String::new(),
         }
     }

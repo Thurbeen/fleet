@@ -68,7 +68,8 @@ A Task names its repositories. The runtime decides how they become files.
   them. The worker reports the change it opened through `fleet declare`.
 - The thurbox runtime creates one worktree per repository, on the branch
   `<keyPrefix>/<session key>`. `runtime.repositories` in `fleet.toml` maps
-  each URL to its source checkout. An unmapped URL fails the spawn.
+  each URL to its source checkout. An unmapped URL keeps the Task in Pending
+  with `RepositoryUnmapped`.
 - Deleting the session cleans the workspace. With thurbox, the worktrees go
   with the session by default. `runtime.workspaceCleanup = "keep"` keeps
   them instead.

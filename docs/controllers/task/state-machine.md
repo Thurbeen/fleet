@@ -103,7 +103,7 @@ are last recorded observations; absence of a condition is not a True value.
 | NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, InboxFull or RepositoryUnmapped. |
 
 WorkerGone clears when the exact recorded session is seen again.
-RepositoryUnmapped clears when a later spawn answers Spawned or Failed. A successful
+RepositoryUnmapped clears when a later spawn does not answer Unmapped. A successful
 delivery recovery clears attention whose reason is BriefUnconfirmed or
 DeliveryUnconfirmed; an inbox drained back within its bound clears InboxFull.
 DeliveryFailed stays while the failed entry does. A

@@ -192,7 +192,7 @@ Guarantees, each with its test:
   no attempt. The Task returns to Pending with `Spawned=False` and
   `NeedsAttention`, both with reason `RepositoryUnmapped`. The spawn is tried
   again after `RETRY_DELAY_MS`, without limit, under the same effect key.
-  A later Spawned or Failed answer clears that `NeedsAttention`.
+  A later spawn that does not answer `Unmapped` clears that `NeedsAttention`.
 - **Result.** `fleet result` writes `status.result` as field manager
   `worker`, only once the brief has a receipt, only for the generation it
   was briefed for, and only when its outputs match `spec.outputs`. The same
