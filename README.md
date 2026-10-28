@@ -15,18 +15,12 @@ FLEET_VERSION=v2.2.0
 curl -fsSL "https://github.com/Thurbeen/fleet/releases/download/$FLEET_VERSION/install-release.sh" | FLEET_VERSION=$FLEET_VERSION sh
 ```
 
-Windows x86_64 (PowerShell 5.1 or 7):
-
-```powershell
-$env:FLEET_VERSION='v2.2.0'; & ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing "https://raw.githubusercontent.com/Thurbeen/fleet/$env:FLEET_VERSION/scripts/install-release.ps1").Content))
-```
-
-Installers verify the archive checksum and exact binary version, then install
-only the executable. Follow their PATH guidance. Run `fleet init` separately
+The installer verifies the archive checksum and exact binary version, then
+installs only the executable. Follow its PATH guidance. Run `fleet init` separately
 for offline setup, then `fleet up` when Thurbox and the harness are ready.
 [Release assets](https://github.com/Thurbeen/fleet/releases) include
-checksums, pinned installers, VEGA manifest/provenance and GitHub build
-attestations. macOS has no binary release.
+checksums, the pinned installer, VEGA manifest/provenance and GitHub build
+attestations. Windows and macOS have no binary release.
 
 ## Frozen Python v1.0.0
 
@@ -233,11 +227,11 @@ once, when the session is ready.
 
 Use the one-liners above, or download and inspect the pinned installer,
 matching archive and checksum file from [Fleet releases](https://github.com/Thurbeen/fleet/releases).
-Supported release targets are Linux x86_64 and aarch64 (musl), and Windows
-x86_64 (MSVC with a static CRT). macOS is not a release target.
+Supported release targets are Linux x86_64 and aarch64 (musl). Windows and
+macOS are not release targets.
 
-The installers require an explicit `FLEET_VERSION` and never resolve
-"latest". To inspect before executing, download the scripts from the versioned
+The installer requires an explicit `FLEET_VERSION` and never resolve
+"latest". To inspect before executing, download the script from the versioned
 release assets into a new directory, then run:
 
 ```sh
@@ -245,25 +239,16 @@ FLEET_VERSION=v2.2.0 sh install-release.sh
 sh install-release.sh --uninstall
 ```
 
-On Windows, use Windows PowerShell 5.1 or PowerShell 7:
-
-```powershell
-$env:FLEET_VERSION = 'v2.2.0'
-powershell -NoProfile -File install-release.ps1
-powershell -NoProfile -File install-release.ps1 -Uninstall
-```
-
 Repeat installation with a newer `FLEET_VERSION` to update. Set
-`FLEET_INSTALL_DIR` to choose an isolated binary directory; the defaults are
-`~/.local/bin` and
-`%LOCALAPPDATA%\Programs\fleet\bin`. Add that directory to PATH yourself. Installers
-verify the archive checksum and candidate version before replacing the
-binary, and refuse a second installer holding the destination lock. A failed
+`FLEET_INSTALL_DIR` to choose an isolated binary directory; the default is
+`~/.local/bin`. Add that directory to PATH yourself. The installer
+verifies the archive checksum and candidate version before replacing the
+binary, and refuses a second installer holding the destination lock. A failed
 update preserves the old binary. A stale `.fleet-install.lock` requires
 checking that its installer is gone before manually removing that lock.
 
 `FLEET_RELEASE_BASE` may name an HTTPS release download base or an offline
-directory laid out as `<base>/<tag>/<archive-and-checksums>`. Installers never
+directory laid out as `<base>/<tag>/<archive-and-checksums>`. The installer never
 start services, install an extension, configure credentials, or alter data.
 Uninstall removes the binary only. Stop managers deliberately before updating
 or uninstalling an operational deployment; changing an executable does not

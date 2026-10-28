@@ -20,7 +20,6 @@ semver = "=1.0.28"
 sha2 = "=0.11.1"
 flate2 = "=1.1.10"
 tar = "=0.4.46"
-zip = { version = "=9.0.5", default-features = false }
 
 [lints]
 workspace = true

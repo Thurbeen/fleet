@@ -88,7 +88,7 @@ impl Drop for Env {
     }
 }
 
-const CI: &str = "on: {pull_request: {branches: [main]}}\njobs:\n  rust:\n    strategy: {matrix: {os: [ubuntu-latest, windows-latest, ubuntu-26.04-arm]}}\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 30\n    steps: [{run: 'cargo xtask check'}]\n  all-checks:\n    if: always()\n    needs: [rust]\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n    steps: [{run: 'cargo xtask verdict'}]\n";
+const CI: &str = "on: {pull_request: {branches: [main]}}\njobs:\n  rust:\n    strategy: {matrix: {os: [ubuntu-latest, ubuntu-26.04-arm]}}\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 30\n    steps: [{run: 'cargo xtask check'}]\n  all-checks:\n    if: always()\n    needs: [rust]\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n    steps: [{run: 'cargo xtask verdict'}]\n";
 
 #[test]
 fn workflow_and_verdict_fail_closed_on_mutated_jobs() {
@@ -118,7 +118,7 @@ fn workflow_and_verdict_fail_closed_on_mutated_jobs() {
             "cargo xtask check rust-fmt",
             "rust-test",
         ),
-        ("windows-latest", "macos-latest", "windows"),
+        ("ubuntu-latest, ", "", "ubuntu-latest"),
     ] {
         e.write(".github/workflows/ci.yml", &CI.replace(from, to));
         let (ok, out) = e.call(&["workflow"], &[]);
@@ -163,11 +163,7 @@ fn archives_are_reproducible_and_missing_targets_fail_checksums() {
     let e = Env::new();
     e.write("LICENSE", "fixture licence\n");
     e.write("binary", "binary fixture\n");
-    let targets = [
-        "x86_64-unknown-linux-musl",
-        "aarch64-unknown-linux-musl",
-        "x86_64-pc-windows-msvc",
-    ];
+    let targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"];
     for t in targets {
         let args = [
             "release",
@@ -183,55 +179,33 @@ fn archives_are_reproducible_and_missing_targets_fail_checksums() {
         ];
         let (ok, out) = e.call(&args, &[]);
         assert!(ok, "{out}");
-        let suffix = if t.contains("windows") {
-            "zip"
-        } else {
-            "tar.gz"
-        };
-        let p = e.0.join(format!("dist/fleet-v1.2.3-{t}.{suffix}"));
+        let p = e.0.join(format!("dist/fleet-v1.2.3-{t}.tar.gz"));
         let a = fs::read(&p).unwrap();
         assert!(e.call(&args, &[]).0);
         assert_eq!(a, fs::read(&p).unwrap());
         use std::io::Read;
-        if t.contains("windows") {
-            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&a)).unwrap();
-            assert_eq!(archive.len(), 2);
-            for (name, want) in [
-                ("fleet.exe", "binary fixture\n"),
-                ("LICENSE", "fixture licence\n"),
-            ] {
+        let gz = flate2::read::GzDecoder::new(a.as_slice());
+        let mut archive = tar::Archive::new(gz);
+        let entries = archive
+            .entries()
+            .unwrap()
+            .map(|entry| {
+                let mut entry = entry.unwrap();
+                let name = entry.path().unwrap().to_string_lossy().into_owned();
+                let mode = entry.header().mode().unwrap();
                 let mut bytes = String::new();
-                archive
-                    .by_name(name)
-                    .unwrap()
-                    .read_to_string(&mut bytes)
-                    .unwrap();
-                assert_eq!(bytes, want);
-            }
-        } else {
-            let gz = flate2::read::GzDecoder::new(a.as_slice());
-            let mut archive = tar::Archive::new(gz);
-            let entries = archive
-                .entries()
-                .unwrap()
-                .map(|entry| {
-                    let mut entry = entry.unwrap();
-                    let name = entry.path().unwrap().to_string_lossy().into_owned();
-                    let mode = entry.header().mode().unwrap();
-                    let mut bytes = String::new();
-                    entry.read_to_string(&mut bytes).unwrap();
-                    (name, mode, bytes)
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(
-                entries,
-                vec![
-                    ("fleet".into(), 0o755, "binary fixture\n".into()),
-                    ("LICENSE".into(), 0o644, "fixture licence\n".into())
-                ]
-            );
-        }
-        if t != targets[2] {
+                entry.read_to_string(&mut bytes).unwrap();
+                (name, mode, bytes)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries,
+            vec![
+                ("fleet".into(), 0o755, "binary fixture\n".into()),
+                ("LICENSE".into(), 0o644, "fixture licence\n".into())
+            ]
+        );
+        if t != targets[1] {
             assert!(
                 !e.call(
                     &["release", "checksums", "--version", "v1.2.3", "dist"],
@@ -247,7 +221,73 @@ fn archives_are_reproducible_and_missing_targets_fail_checksums() {
     );
     assert!(ok, "{out}");
     let sums = fs::read_to_string(e.0.join("dist/fleet-v1.2.3-checksums.txt")).unwrap();
-    assert_eq!(sums.lines().count(), 3);
+    assert_eq!(sums.lines().count(), 2);
+}
+
+#[test]
+fn windows_is_not_a_release_target_and_no_workflow_runs_on_it() {
+    let linux = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"];
+    let e = Env::new();
+    e.write("LICENSE", "fixture licence\n");
+    e.write("binary", "binary fixture\n");
+    let package = |target: &str| {
+        e.call(
+            &[
+                "release",
+                "package",
+                "--version",
+                "v1.2.3",
+                "--target",
+                target,
+                "--binary",
+                "binary",
+                "--out",
+                "dist",
+            ],
+            &[],
+        )
+    };
+    let (ok, out) = package("x86_64-pc-windows-msvc");
+    assert!(!ok && out.contains("unsupported release target"), "{out}");
+    for t in linux {
+        let (ok, out) = package(t);
+        assert!(ok, "{out}");
+    }
+    // The Linux archives alone are a complete release.
+    let (ok, out) = e.call(
+        &["release", "checksums", "--version", "v1.2.3", "dist"],
+        &[],
+    );
+    assert!(ok, "{out}");
+    let sums = fs::read_to_string(e.0.join("dist/fleet-v1.2.3-checksums.txt")).unwrap();
+    assert_eq!(sums.lines().count(), linux.len(), "{sums}");
+    // A Linux-only CI satisfies the workflow gate.
+    e.write(".github/workflows/ci.yml", CI);
+    let (ok, out) = e.call(&["workflow"], &[]);
+    assert!(ok, "{out}");
+    // The repository's own workflows build exactly the supported targets and
+    // run no job on Windows.
+    let workflows = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows");
+    let cd: serde_json::Value =
+        serde_saphyr::from_str(&fs::read_to_string(workflows.join("cd.yml")).unwrap()).unwrap();
+    let targets: Vec<_> = cd["jobs"]["build"]["strategy"]["matrix"]["include"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["target"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(targets, linux);
+    for name in ["ci.yml", "cd.yml", "pr-title.yml"] {
+        let doc: serde_json::Value =
+            serde_saphyr::from_str(&fs::read_to_string(workflows.join(name)).unwrap()).unwrap();
+        for (job, body) in doc["jobs"].as_object().unwrap() {
+            let runners = [&body["runs-on"], &body["strategy"]["matrix"]];
+            assert!(
+                !runners.iter().any(|r| r.to_string().contains("windows")),
+                "{name}/{job} runs on Windows"
+            );
+        }
+    }
 }
 
 #[test]
@@ -281,24 +321,9 @@ fn installer(e: &Env, args: &[&str]) -> (bool, String) {
 }
 fn installer_with(e: &Env, args: &[&str], version: Option<&str>) -> (bool, String) {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let (program, script) = if cfg!(windows) {
-        ("powershell", "scripts/install-release.ps1")
-    } else {
-        ("sh", "scripts/install-release.sh")
-    };
-    let mut s = Spec::new(program, Duration::from_secs(30));
-    if cfg!(windows) {
-        s = s.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
-    }
-    s = s
-        .arg(repo.join(script).into_os_string())
-        .args(args.iter().map(|a| {
-            if cfg!(windows) && *a == "--uninstall" {
-                "-Uninstall"
-            } else {
-                *a
-            }
-        }));
+    let mut s = Spec::new("sh", Duration::from_secs(30))
+        .arg(repo.join("scripts/install-release.sh").into_os_string())
+        .args(args.iter().copied());
     s.cwd = Some(e.0.clone());
     s.env = vec![
         (
@@ -333,11 +358,7 @@ fn installer_with(e: &Env, args: &[&str], version: Option<&str>) -> (bool, Strin
 }
 fn install_fixture(e: &Env) {
     e.write("LICENSE", "fixture\n");
-    for t in [
-        "x86_64-unknown-linux-musl",
-        "aarch64-unknown-linux-musl",
-        "x86_64-pc-windows-msvc",
-    ] {
+    for t in ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"] {
         let (ok, out) = e.call(
             &[
                 "release",
@@ -373,9 +394,7 @@ fn offline_install_update_tamper_refusal_and_uninstall() {
     install_fixture(&e);
     let (ok, out) = installer(&e, &[]);
     assert!(ok, "{out}");
-    let binary =
-        e.0.join("bin")
-            .join(if cfg!(windows) { "fleet.exe" } else { "fleet" });
+    let binary = e.0.join("bin/fleet");
     let first = fs::read(&binary).unwrap();
     let (ok, out) = installer(&e, &[]);
     assert!(ok, "{out}");
@@ -395,9 +414,7 @@ fn concurrent_install_and_wrong_version_preserve_existing_binary() {
     install_fixture(&e);
     let (ok, out) = installer(&e, &[]);
     assert!(ok, "{out}");
-    let binary =
-        e.0.join("bin")
-            .join(if cfg!(windows) { "fleet.exe" } else { "fleet" });
+    let binary = e.0.join("bin/fleet");
     let before = fs::read(&binary).unwrap();
     fs::create_dir(e.0.join("bin/.fleet-install.lock")).unwrap();
     let (ok, out) = installer(&e, &[]);
@@ -406,11 +423,7 @@ fn concurrent_install_and_wrong_version_preserve_existing_binary() {
     fs::remove_dir(e.0.join("bin/.fleet-install.lock")).unwrap();
     // A correctly checksummed archive carrying the wrong version is still refused.
     fs::rename(e.0.join("releases/v1.2.3"), e.0.join("releases/v2.0.0")).unwrap();
-    for t in [
-        "x86_64-unknown-linux-musl",
-        "aarch64-unknown-linux-musl",
-        "x86_64-pc-windows-msvc",
-    ] {
+    for t in ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"] {
         assert!(
             e.call(
                 &[
@@ -446,14 +459,8 @@ fn concurrent_install_and_wrong_version_preserve_existing_binary() {
     fs::rename(e.0.join("releases/v2.0.0"), e.0.join("releases/v1.2.3")).unwrap();
     // Installer below is explicitly asked for a different release via direct fixture call.
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut s = if cfg!(windows) {
-        Spec::new("powershell", Duration::from_secs(30))
-            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-            .arg(repo.join("scripts/install-release.ps1").into_os_string())
-    } else {
-        Spec::new("sh", Duration::from_secs(30))
-            .arg(repo.join("scripts/install-release.sh").into_os_string())
-    };
+    let mut s = Spec::new("sh", Duration::from_secs(30))
+        .arg(repo.join("scripts/install-release.sh").into_os_string());
     fs::rename(e.0.join("releases/v1.2.3"), e.0.join("releases/v2.0.0")).unwrap();
     s.env = vec![
         ("FLEET_VERSION".into(), "v2.0.0".into()),
@@ -594,7 +601,7 @@ fn release_and_title_workflows_keep_native_platform_and_trust_promises() {
         "  arm:\n    runs-on: ubuntu-26.04-arm\n    timeout-minutes: 20\n    steps: [{{run: 'cargo xtask check {rust}'}}]\n"
     );
     let complete = CI
-        .replace("windows-latest, ubuntu-26.04-arm", "windows-latest")
+        .replace("ubuntu-latest, ubuntu-26.04-arm", "ubuntu-latest")
         .replace("needs: [rust]", "needs: [rust, arm]")
         + &extra;
     e.write(".github/workflows/ci.yml", &complete);
@@ -761,99 +768,6 @@ fn swallowed_ci_and_release_test_failures_cannot_count_as_validation() {
 }
 
 #[test]
-fn windows_default_path_policy_is_disjoint_and_has_no_effects() {
-    let e = Env::new();
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let program = if cfg!(windows) { "powershell" } else { "pwsh" };
-    let spec = Spec::new(program, Duration::from_secs(30))
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-        ])
-        .arg(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/install-paths.ps1")
-                .into_os_string(),
-        )
-        .arg("-Installer")
-        .arg(repo.join("scripts/install-release.ps1").into_os_string())
-        .arg("-Root")
-        .arg(e.0.clone().into_os_string());
-    let outcome = run(&spec);
-    if let Outcome::NotStarted(why) = &outcome {
-        let requirement = if cfg!(windows) {
-            "Windows PowerShell (powershell.exe) is required for the Windows installer path-policy test"
-        } else {
-            "PowerShell 7 (pwsh) is required for the Windows installer path-policy test"
-        };
-        panic!(
-            "{requirement}. Install it and add {program} to PATH; see CONTRIBUTING.md. Could not start: {why}"
-        );
-    }
-    if let Outcome::Exited {
-        code,
-        stdout,
-        stderr,
-    } = &outcome
-    {
-        assert_eq!(
-            *code,
-            Some(0),
-            "{}{}",
-            String::from_utf8_lossy(stdout),
-            String::from_utf8_lossy(stderr)
-        );
-    } else {
-        panic!("{}", outcome.failure());
-    }
-}
-
-#[cfg(unix)]
-#[test]
-fn missing_pwsh_fails_with_an_actionable_gate_prerequisite() {
-    let e = Env::new();
-    let empty = e.0.join("empty-path");
-    fs::create_dir(&empty).unwrap();
-    let mut spec = Spec::new(
-        std::env::current_exe().unwrap().into_os_string(),
-        Duration::from_secs(30),
-    )
-    .args([
-        "--exact",
-        "windows_default_path_policy_is_disjoint_and_has_no_effects",
-        "--nocapture",
-    ]);
-    spec.cwd = Some(e.0.clone());
-    spec.env
-        .push(("PATH".into(), empty.to_string_lossy().into_owned()));
-    let Outcome::Exited {
-        code,
-        stdout,
-        stderr,
-    } = run(&spec)
-    else {
-        panic!("path-policy test child did not exit");
-    };
-    assert_ne!(code, Some(0), "missing PowerShell must fail, never skip");
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&stdout),
-        String::from_utf8_lossy(&stderr)
-    );
-    assert!(
-        text.contains("PowerShell 7 (pwsh) is required for"),
-        "{text}"
-    );
-    assert!(
-        text.contains("PATH") && text.contains("CONTRIBUTING.md"),
-        "{text}"
-    );
-}
-
-#[test]
 fn the_gate_never_rebuilds_the_binary_it_runs_from() {
     // `cargo xtask check` runs fleet-dev while its own `cargo test` rebuilds
     // the workspace, fleet-dev included. Windows refuses to replace a running
@@ -876,9 +790,7 @@ fn v2_installs_only_when_a_version_is_named() {
     assert!(!ok, "{out}");
     assert!(out.contains("FLEET_VERSION"), "{out}");
     assert!(!out.contains("latest"), "{out}");
-    let binary =
-        e.0.join("bin")
-            .join(if cfg!(windows) { "fleet.exe" } else { "fleet" });
+    let binary = e.0.join("bin/fleet");
     assert!(!binary.exists());
     // Removing an install needs no version.
     let (ok, out) = installer_with(&e, &["--uninstall"], None);
@@ -928,7 +840,6 @@ fn release_checksums_include_published_installers_and_starter_metadata() {
     install_fixture(&e);
     for name in [
         "install-release.sh",
-        "install-release.ps1",
         "vega-provenance.json",
         "vega-starter.toml",
     ] {
@@ -948,7 +859,6 @@ fn release_checksums_include_published_installers_and_starter_metadata() {
     let sums = fs::read_to_string(e.0.join("releases/v1.2.3/fleet-v1.2.3-checksums.txt")).unwrap();
     for name in [
         "install-release.sh",
-        "install-release.ps1",
         "vega-provenance.json",
         "vega-starter.toml",
     ] {
@@ -957,7 +867,7 @@ fn release_checksums_include_published_installers_and_starter_metadata() {
 }
 
 #[test]
-fn native_release_fixture_installs_with_binary_mode_checksum_tools() {
+fn release_fixture_checksum_recipe_installs() {
     let e = Env::new();
     install_fixture(&e);
     let fixture = e.0.join("installer-fixture/v1.2.3");
@@ -978,52 +888,10 @@ fn native_release_fixture_installs_with_binary_mode_checksum_tools() {
         .find(|l| l.contains("sha256sum") && l.contains("checksums.txt"))
         .expect("native release fixture checksum recipe")
         .trim();
-    // On Windows PATH may resolve bash.exe to WSL, not Git Bash. Locate the
-    // shell shipped beside the declared Git prerequisite, as Actions does.
-    #[cfg(windows)]
-    let shell = {
-        let output = run(&Spec::new("git", Duration::from_secs(10)).arg("--exec-path"))
-            .success_text()
-            .expect("Git prerequisite");
-        Path::new(output.trim())
-            .ancestors()
-            .map(|p| p.join("bin/bash.exe"))
-            .find(|p| p.is_file())
-            .expect("Git for Windows Bash is required for native release fixture acceptance")
-    };
-    #[cfg(not(windows))]
-    let shell = PathBuf::from("bash");
     let mut spec =
-        Spec::new(shell, Duration::from_secs(30)).args(["-eo", "pipefail", "-c", recipe]);
+        Spec::new("bash", Duration::from_secs(30)).args(["-eo", "pipefail", "-c", recipe]);
     spec.cwd = Some(e.0.clone());
     spec.env.push(("VERSION".into(), "v1.2.3".into()));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // Model Windows' binary default without claiming native Windows evidence.
-        let tool =
-            run(&Spec::new("sh", Duration::from_secs(10)).args(["-c", "command -v sha256sum"]))
-                .success_text()
-                .expect("sha256sum prerequisite");
-        e.write(
-            "checksum-tools/sha256sum",
-            &format!("#!/bin/sh\nexec '{}' --binary \"$@\"\n", tool.trim()),
-        );
-        fs::set_permissions(
-            e.0.join("checksum-tools/sha256sum"),
-            fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
-        let mut paths = vec![e.0.join("checksum-tools")];
-        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-        spec.env.push((
-            "PATH".into(),
-            std::env::join_paths(paths)
-                .unwrap()
-                .to_string_lossy()
-                .into(),
-        ));
-    }
     let result = run(&spec);
     assert!(result.success_text().is_some(), "{result:?}");
     fs::copy(
