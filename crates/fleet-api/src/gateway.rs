@@ -801,8 +801,14 @@ impl GatewayConfig {
             if !is_absolute_path(&route.brief.to_string_lossy()) {
                 return Err(format!("{at}: brief must be an absolute path"));
             }
-            let dir = Path::new(&route.workspace.dir);
-            if !is_absolute_path(&route.workspace.dir) {
+            crate::validate::validate_workspace(&route.workspace)
+                .map_err(|e| format!("{at}: workspace{e}"))?;
+            // A shared directory needs its own route; repositories are
+            // materialized per Task, so nothing is shared between routes.
+            let dir = route.workspace.dir().map(Path::new);
+            if let Some(d) = route.workspace.dir()
+                && !is_absolute_path(d)
+            {
                 return Err(format!("{at}: workspace.dir must be an absolute path"));
             }
             if route
@@ -812,6 +818,7 @@ impl GatewayConfig {
             {
                 return Err(format!("{at}: refusal is empty"));
             }
+            let Some(dir) = dir else { continue };
             for (other, other_dir) in &dirs {
                 if dir.starts_with(other_dir) || other_dir.starts_with(dir) {
                     return Err(format!(
@@ -945,7 +952,7 @@ mod tests {
             allow_bots: vec!["B0123ABCD".into()],
             task_config: "conversation".into(),
             brief: "/etc/fleet/briefs/conversation.md".into(),
-            workspace: Workspace { dir: dir.into() },
+            workspace: Workspace::at(dir),
             refusal: None,
         }
     }
@@ -1163,6 +1170,26 @@ mod tests {
                 "{dir}"
             );
         }
+        // Repositories are materialized per Task: two routes share nothing.
+        let mut c = config();
+        let repositories: Workspace = serde_json::from_value(serde_json::json!(
+            {"repositories": [{"name": "app", "url": "https://example.invalid/app"}]}
+        ))
+        .unwrap();
+        c.routes.get_mut("eng").unwrap().workspace = repositories.clone();
+        let mut ops = route("/work");
+        ops.channels = vec!["C0789IJKL".into()];
+        ops.workspace = repositories;
+        c.routes.insert("ops".into(), ops);
+        assert_eq!(c.validate(), Ok(()));
+        let mut c = config();
+        c.routes.get_mut("eng").unwrap().workspace =
+            serde_json::from_value(serde_json::json!({"repositories": []})).unwrap();
+        assert!(
+            c.validate()
+                .unwrap_err()
+                .contains("routes.eng: workspace.repositories must name at least one repository")
+        );
         let mut c = config();
         let mut ops = route("/work/conversations-2");
         ops.channels = vec!["C0789IJKL".into()];
@@ -1197,7 +1224,7 @@ mod tests {
                 .contains("routes.eng: brief must be an absolute path")
         );
         let mut c = config();
-        c.routes.get_mut("eng").unwrap().workspace.dir = "work".into();
+        c.routes.get_mut("eng").unwrap().workspace = Workspace::at("work");
         assert!(
             c.validate()
                 .unwrap_err()

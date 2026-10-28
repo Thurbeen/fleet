@@ -12,16 +12,9 @@ Required gate tools:
 
 - Rustup and the exact toolchain in `rust-toolchain.toml`.
 - cargo-nextest, cargo-deny and rumdl at the versions CI pins.
-- PowerShell 7 (`pwsh`) on Linux for the Windows installer's pure path test;
-  Windows PowerShell (`powershell.exe`) on Windows for installer acceptance.
-- Git for tracked-file checks (Git for Windows with its Bash on Windows),
-  and `prek` for the commit hooks.
-
-PowerShell must be on PATH; a missing runtime fails with setup guidance and
-never silently skips its tests. Hosted Ubuntu x64 and arm64 images include
-PowerShell 7; the workflow verifies it before the native gate. Windows runs
-its install-then-default-apply test natively. The Linux path-policy test is
-not native Windows filesystem evidence.
+- cocogitto (`cog`) at the version the pinned `cocogitto-action` installs; the
+  release tooling tests run it.
+- Git for tracked-file checks, and `prek` for the commit hooks.
 
 Install hooks with `prek install`. Hooks invoke focused areas of the same
 gate; publish runs the full gate. Missing tools or a missing workspace fail
@@ -47,9 +40,9 @@ rule detects a forbidden edge. Tooling's E2E suite runs the actual gate against
 a tiny workspace with deleted, ignored and filtered suites, failing tests,
 failing doctests, malformed formatting and warning-denied lint/docs.
 
-Native CI runs the full gate on Linux x86_64, Linux aarch64 and Windows x86_64.
-A Unix simulation or cross build is not native Windows evidence. Every release
-runner must have its Rust checks in CI. Do not duplicate a full gate for a
+Native CI runs the full gate on Linux x86_64 and Linux aarch64. Windows and
+macOS are not supported, tested or released. Every release runner must have
+its Rust checks in CI. Do not duplicate a full gate for a
 reviewer when exact-tree evidence is already available.
 
 ## Review rules
@@ -76,27 +69,39 @@ environment variables, never GitHub expression interpolation in `run`.
 All Checks runs `if: always()` and requires success from every declared job;
 skipped, cancelled, failed or missing results fail. PR Title reruns on edits.
 The release workflow uses bash with pipefail and a protected `release`
-environment, and tests the exact commit before packaging it. Release jobs
+environment, and tests the tagged commit before packaging it. Release jobs
 restore no pull-request caches.
 
-`cargo xtask release plan --ref refs/heads/main --dry-run` computes the next
-version without publishing. Conventional `feat`, `fix`, `perf` and breaking
-changes trigger bumps only when shipped files changed. An existing version
-tag is refused. Prereleases are marked as such and never marked latest.
-Production publishes only pushed `v2.*` tags whose commit is merged into
-`origin/main` and whose SemVer matches `workspace.package.version`. The tag
-must already name HEAD; the workflow never creates or moves it. The readiness
-file must explicitly enable publication. Branch dispatches are always dry runs.
-Before the coordinator merges a release prerequisite, require the full local
-gate, independent exact-head review and native CI. After merge, push the
-version tag at that checked commit. Every release runner tests, builds,
-packages, installs its archive and runs offline first-run acceptance before
-publication. The protected release environment and provenance attestation
-remain required. No release step installs onto an existing deployment.
+Releases follow the thurbox pattern, driven by cocogitto and `cog.toml`.
+Every push to `main` runs the release workflow:
+
+1. `check-release` asks `cog bump --auto --dry-run` for the next version.
+   `feat`, `fix`, `perf` and breaking changes bump. The squash-merged pull
+   request title is the commit that decides.
+2. The same job releases that version only when shipped files changed since
+   the last tag, the ref is `main`, and the readiness file says
+   `ready = true`. A false, missing or invalid file holds the release.
+3. `create-tag` runs `cog bump` and pushes the version tag.
+4. Every release runner checks out that tag, tests it, builds, packages,
+   installs its archive and runs offline first-run acceptance.
+5. `generate-changelog` writes the release notes with `cog changelog`.
+6. `publish` attests the artifacts and creates the release on the tag.
+
+A missing or failing `cog` fails the workflow; it never means "no release".
+A commit that already carries a version tag releases nothing. A dispatch on
+`main` with an explicit `version` cuts that version. Prereleases are marked
+as such and never marked latest. No person pushes a version tag, and no tag
+moves. A tag whose build fails stays without a release; the next releasable
+push takes the next version. `workspace.package.version` stays `0.0.0-dev`;
+the build stamps the tag's version into the binary. The protected release
+environment and provenance attestation remain required. No release step
+installs onto an existing deployment.
+
+On a `main` checkout, `cog bump --auto --disable-bump-commit --dry-run` shows
+the next version; `cog.toml` allows bumps on `main` only.
 
 ```sh
 cargo xtask release title 'feat: resource orchestration' 123
-cargo xtask release plan --ref refs/heads/main --dry-run
 cargo xtask release smoke --binary target/release/fleet --version v1.2.3
 cargo xtask release package --target x86_64-unknown-linux-musl --version v1.2.3 --binary target/release/fleet --out dist
 cargo xtask release checksums --version v1.2.3 dist
@@ -104,7 +109,7 @@ cargo xtask release checksums --version v1.2.3 dist
 
 Packaging writes deterministic archives with the binary and LICENSE; the
 pinned VEGA starter, its license and provenance are embedded in that binary.
-Release assets also include both installers and the VEGA manifest/provenance.
+Release assets also include the installer and the VEGA manifest/provenance.
 Checksums require every supported target and cover those metadata assets.
 Smoke requires the exact binary version; `--first-run-dir NEW_DIRECTORY` also
 runs `init` with an empty PATH and isolated native config/data homes, then

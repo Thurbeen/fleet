@@ -110,14 +110,26 @@ pub struct RuntimeConfig {
     /// thurbox: the variable each harness reads `Task.spec.model` from.
     #[serde(default)]
     pub model_env: BTreeMap<String, String>,
+    /// thurbox: each repository URL a Task may name, and its source checkout,
+    /// an absolute path on the hosts thurbox creates worktrees on.
+    #[serde(default)]
+    pub repositories: BTreeMap<String, String>,
+    /// thurbox: `delete` (the default) removes a session's worktrees with it;
+    /// `keep` leaves them, restorable in thurbox.
+    pub workspace_cleanup: Option<String>,
 }
 
 impl Config {
     pub fn load(path: &Path) -> Result<Config, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read config {}: {e}", path.display()))?;
+        Config::parse(&text, path)
+    }
+
+    /// The config `text` read from `path`, validated as [`Config::load`] does.
+    pub fn parse(text: &str, path: &Path) -> Result<Config, String> {
         let mut config: Config =
-            toml::from_str(&text).map_err(|e| format!("config {}: {e}", path.display()))?;
+            toml::from_str(text).map_err(|e| format!("config {}: {e}", path.display()))?;
         if config.version != CONFIG_VERSION {
             return Err(format!(
                 "config {}: version {} is not served; this build reads version {CONFIG_VERSION}",

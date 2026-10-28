@@ -23,7 +23,7 @@ Fleet does not search the current directory or parents. Explicit config paths
 must exist, except `fleet init --config PATH`, which creates an isolated
 instance without replacing an existing config. `fleet init` creates the
 native config and bundled workspace; see
-[initialization/customization](../../README.md#configuration-and-customization)
+[initialization/customization](init.md#configuration-and-customization)
 for data roots, managed files, conflict handling and per-instance paths.
 
 Relative `data.dir`, `runtime.dir` and `starter.workspace` resolve beside the
@@ -69,6 +69,8 @@ Fleet installation talking to the same Thurbox hosts needs a distinct
 | `runtime.callTimeoutMs` | Thurbox: `15000` | Bound for each Thurbox call; manager lease must outlast the runtime's reported worst case. |
 | `runtime.keyPrefix` | Thurbox: `fleet` | Session identity prefix; at most 32 lowercase letters/digits/`-`, starting/ending with letter/digit. |
 | `runtime.modelEnv` | Thurbox: Claude mappings below | Harness name to supported model environment-variable name. |
+| `runtime.repositories` | Thurbox: empty | Repository URL to its source checkout, an absolute path on the hosts thurbox creates worktrees on. A relative path is refused at load. A Task whose `workspace.repositories` names an unmapped URL waits in Pending with `RepositoryUnmapped`; the refusal spends no spawn attempt. A running `fleet up` reloads this table; see [Reloading](#reloading-runtimerepositories). |
+| `runtime.workspaceCleanup` | Thurbox: `delete` | What deleting a session does to its worktrees. `delete` removes them with the session (`session delete --force`). `keep` leaves them, restorable in thurbox (`session delete --soft`). The setting also applies to `dir` Tasks: `delete` overrides thurbox's own `soft_delete`, so a released session cannot be restored. |
 | `runtime.dir` | Required for `fake` | Isolated fake-host persistence, relative to this config file. |
 | `starter.workspace` | Required for `up` | Initialized VEGA workspace, relative to this config file. |
 
@@ -76,6 +78,19 @@ Fleet installation talking to the same Thurbox hosts needs a distinct
 override because its workers must share the store selected by the persisted
 config. Persist `data.dir` before using `up` with a different store. All
 resource commands in one workflow should use the same `--config` path.
+
+### Reloading `runtime.repositories`
+
+`fleet up` reads this file again before each sweep. It applies
+`runtime.repositories` only, so a new mapping needs no restart:
+
+- A valid file replaces the map. The next spawn uses it, and a Task waiting
+  with `RepositoryUnmapped` spawns at its next retry.
+- An unreadable, unparsable or invalid file changes nothing. The last valid
+  map stays in force. `fleet up` reports the refusal once on standard error.
+- A change to any other setting is not applied. `fleet up` reports it once
+  and asks for a restart. A running process never switches its store, lease
+  holder, runtime or key prefix.
 
 `runtime.modelEnv` extends/overrides the built-in `claude` and `claude-code`
 entries, both `ANTHROPIC_MODEL`. An explicit/inherited Task model requires a
@@ -292,9 +307,9 @@ workspace = { dir = "/work/triage" }   # shared: each alert waits for the last T
 | `gateway.retainMs` | `2592000000` | How long an Untied or Orphaned Conversation is kept after the later of its last message and its orphaning. |
 | `gateway.beatMs` | `60000` | The longest a listener goes between beats. An account's `InboundReady` turns False when three are missed. |
 | `gateway.questions` | Absent | The route whose first channel takes a new thread for a Question declared by a Task with no tie and no parent. A Task's `gateway.fleet.dev/route` label overrides it. Absent and unlabelled: such a Question is not posted. |
-| `gateway.accounts.<name>` | One per chat account | `platform` is `fake` with a `dir` in this build, `slack` once the Slack adapter lands, and later `telegram`, `discord` or `teams`; a platform the build lacks is refused when the manager runs; `team` the platform's workspace identity; `bot`, Fleet's bot id there, which the adapter's pure event reading uses to tell Fleet's own posts and mentions apart; `inbound`, required, the one way its listener receives deliveries, which fixes how each is authenticated (Slack: `socket-mode`, an authenticated connection, or `events-api`, a signed HTTPS delivery; `fake`: `connection`), and an envelope claiming another is refused; `cli` and the platform's credential reference, here `curlConfig`, an absolute path Fleet passes to `curl -K` and never reads. |
+| `gateway.accounts.<name>` | One per chat account | `platform` is `slack`, or `fake` with a `dir`, in this build, and later `telegram`, `discord` or `teams`; a platform the build lacks is refused when the manager runs; `team` the platform's workspace identity; `bot`, Fleet's bot id there, which the adapter's pure event reading uses to tell Fleet's own posts and mentions apart; `inbound`, required, the one way its listener receives deliveries, which fixes how each is authenticated (Slack: `socket-mode`, an authenticated connection, or `events-api`, a signed HTTPS delivery; `fake`: `connection`), and an envelope claiming another is refused; `cli` and the platform's credential reference, here `curlConfig`, an absolute path Fleet passes to `curl -K` and never reads. |
 | `gateway.people.<name>` | Optional | A person, with one platform id per account name. Ids only: never a display name, username or email. |
-| `gateway.routes.<name>` | One per set of channels | `account`; `channels`, platform channel ids; `mention`, `required` or `top-level`; `allow`, people names; `allowBots`, bot or app ids whose messages count as a person's; `taskConfig`, the TaskConfig a new conversation Task references; `brief`, an absolute path the manager reads when it loads the config and copies into each Task it creates; `workspace`, the Task's workspace as a Task spec gives it, a directory every Task of the route shares, so the route starts a Task only while no other Task uses that directory, and no two routes' directories may equal or contain each other; `refusal`, the one polite refusal. A channel belongs to at most one route. |
+| `gateway.routes.<name>` | One per set of channels | `account`; `channels`, platform channel ids; `mention`, `required` or `top-level`; `allow`, people names; `allowBots`, bot or app ids whose messages count as a person's; `taskConfig`, the TaskConfig a new conversation Task references; `brief`, an absolute path the manager reads when it loads the config and copies into each Task it creates; `workspace`, the Task's workspace as a Task spec gives it: a `dir` every Task of the route shares, so the route starts a Task only while no other Task uses that directory, and no two routes' directories may equal or contain each other; or `repositories`, which the runtime materializes for each Task, so a route's Tasks share nothing; `refusal`, the one polite refusal. A channel belongs to at most one route. |
 
 Credentials stay with the external client: Fleet passes the curl config's
 path and never constructs an Authorization header. The listener holds the

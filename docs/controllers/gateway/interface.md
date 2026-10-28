@@ -250,8 +250,8 @@ labels; `apply` refuses them.
 
 #### Workspaces
 
-A route gives every Task the same directory, so a route runs one
-conversation Task at a time. The create carries an
+A route with a `dir` workspace gives every Task the same directory, so the
+route runs one conversation Task at a time. The create carries an
 `exclusive: {workspace}` precondition. The manager refuses it with
 `WorkspaceBusy` while any Task has that directory. The thread then:
 
@@ -259,6 +259,10 @@ conversation Task at a time. The create carries an
 - tells the person once that the request is queued,
 - starts the Task, with the whole thread, once the directory is free,
 - starts nothing if the message that asked is removed meanwhile.
+
+A route with a `repositories` workspace has no shared directory. Its create
+carries no `exclusive` precondition, and each Task gets the workspace the
+runtime makes for it.
 
 A Task keeps its directory until someone deletes it, Concluded or not. The
 config is refused when one route's directory equals, contains or lies inside

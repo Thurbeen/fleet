@@ -201,6 +201,85 @@ fn spawn_attempts_are_bounded() {
     assert_eq!(cond(&st, "NeedsAttention").reason, "Stalled");
 }
 
+/// One spawn as the manager performs it: the planned status, then the
+/// effect's receipt under the planned key, then the next pass.
+fn spawn_once(obj: &Object, outcome: EffectOutcome, now: u64) -> (Object, TaskStatus) {
+    let host = Observations {
+        host: Some(Observation::Known(true)),
+        ..Default::default()
+    };
+    let (plan, mut st) = run_at(obj, host, now);
+    assert_eq!(plan.effects.len(), 1, "{st:#?}");
+    st.receipts.insert(
+        plan.effects[0].key.clone(),
+        receipt("spawn", Observation::Known(outcome)),
+    );
+    let (_, st) = run_at(&task(true, Some(st)), Observations::default(), now);
+    (task(true, Some(st.clone())), st)
+}
+
+#[test]
+fn an_unmapped_repository_spends_no_attempt_and_never_stalls_the_task() {
+    let unmapped = || EffectOutcome::Unmapped {
+        url: "https://example.invalid/app".into(),
+    };
+    let mut obj = task(true, None);
+    let mut now = NOW;
+    for _ in 0..MAX_ATTEMPTS + 2 {
+        let (next, st) = spawn_once(&obj, unmapped(), now);
+        assert_eq!(st.phase, Phase::Pending, "{st:#?}");
+        assert_eq!(st.spawn_attempts, 0);
+        assert_eq!(
+            st.receipts.len(),
+            1,
+            "the given-back attempt reuses its key"
+        );
+        assert_eq!(cond(&st, "Spawned").reason, "RepositoryUnmapped");
+        assert_eq!(cond(&st, "NeedsAttention").reason, "RepositoryUnmapped");
+        assert_eq!(st.not_before, Some(now + RETRY_DELAY_MS));
+        let (plan, _) = run_at(&next, Observations::default(), now + 1);
+        assert!(plan.effects.is_empty(), "the retry waits");
+        obj = next;
+        now += RETRY_DELAY_MS;
+    }
+
+    // Genuine runtime failures keep their limit once the mapping is there.
+    for attempt in 1..=MAX_ATTEMPTS {
+        let (next, st) = spawn_once(&obj, EffectOutcome::Failed { why: "no".into() }, now);
+        assert_eq!(st.spawn_attempts, attempt);
+        assert_eq!(
+            cond(&st, "NeedsAttention").status == ConditionStatus::True,
+            attempt == MAX_ATTEMPTS,
+            "{st:#?}"
+        );
+        obj = next;
+        now += RETRY_DELAY_MS;
+    }
+    let st: TaskStatus = serde_json::from_value(obj.status.clone()).unwrap();
+    assert_eq!(st.phase, Phase::Stalled);
+    assert_eq!(cond(&st, "Stalled").reason, "SpawnAttemptsExhausted");
+}
+
+#[test]
+fn a_mapping_added_while_waiting_spawns_and_resolves_the_attention() {
+    let (obj, _) = spawn_once(
+        &task(true, None),
+        EffectOutcome::Unmapped {
+            url: "https://example.invalid/app".into(),
+        },
+        NOW,
+    );
+    let later = NOW + RETRY_DELAY_MS;
+    let spawned = EffectOutcome::Spawned {
+        session: session(),
+        adopted: false,
+    };
+    let (_, st) = spawn_once(&obj, spawned, later);
+    assert_eq!(st.phase, Phase::Spawned);
+    assert_eq!(st.spawn_attempts, 1);
+    assert_eq!(cond(&st, "NeedsAttention").reason, "Resolved");
+}
+
 fn spawned(extra: impl FnOnce(&mut TaskStatus)) -> Object {
     let mut st = TaskStatus {
         phase: Phase::Spawned,

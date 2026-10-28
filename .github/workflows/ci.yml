@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, ubuntu-26.04-arm]
+        os: [ubuntu-latest, ubuntu-26.04-arm]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     env:
@@ -28,18 +28,13 @@ jobs:
           rustup toolchain install
           rustup default "$(rustup show active-toolchain | cut -d' ' -f1)"
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - name: Verify PowerShell gate prerequisite (Linux)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          if ! command -v pwsh >/dev/null 2>&1; then
-            echo '::error::PowerShell 7 (pwsh) is required for the Windows installer path-policy test; install it and add pwsh to PATH (see CONTRIBUTING.md).'
-            exit 1
-          fi
-          pwsh -NoProfile -NonInteractive -Command '$PSVersionTable.PSVersion.ToString()'
       - uses: taiki-e/install-action@a4d3f3f761dcd95cce1b72cb61cb6d1963438177 # v2.87.30
         with:
           tool: cargo-nextest@0.9.149,cargo-deny@0.20.2,rumdl@0.3.0
+      # The release tooling tests run the real cog.
+      - uses: cocogitto/cocogitto-action@52d0023b4396897f1815648e553db2ab8d782f3a # v4.2.0
+        with:
+          install-only: true
       - run: cargo xtask check
   all-checks:
     name: All Checks

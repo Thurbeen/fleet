@@ -4,27 +4,14 @@ use clap::Subcommand;
 use semver::Version;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
-pub const TARGETS: [&str; 3] = [
-    "x86_64-unknown-linux-musl",
-    "aarch64-unknown-linux-musl",
-    "x86_64-pc-windows-msvc",
-];
+pub const TARGETS: [&str; 2] = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"];
 #[derive(Debug, Subcommand)]
 pub enum Command {
     Title {
         title: String,
         number: String,
-    },
-    Plan {
-        #[arg(long = "ref")]
-        reference: Option<String>,
-        #[arg(long)]
-        version: Option<String>,
-        #[arg(long)]
-        dry_run: bool,
     },
     Package {
         #[arg(long)]
@@ -81,173 +68,8 @@ fn conventional(s: &str) -> Option<(&str, bool)> {
     .contains(&kind)
     .then_some((kind, breaking))
 }
-fn git(args: &[&str]) -> Result<String> {
-    exec("git", args, &[])
-}
-fn tags(extra: &[&str]) -> Result<Vec<(Version, String)>> {
-    let mut args = vec!["tag", "--list", "v*"];
-    args.extend_from_slice(extra);
-    Ok(git(&args)?
-        .lines()
-        .filter_map(|s| version(s).ok().map(|v| (v, s.into())))
-        .collect())
-}
-fn shipped(p: &str) -> bool {
-    p.starts_with("crates/")
-        || p.starts_with("scripts/install-release.")
-        || [
-            "Cargo.toml",
-            "Cargo.lock",
-            "rust-toolchain.toml",
-            "LICENSE",
-            ".github/workflows/cd.yml",
-        ]
-        .contains(&p)
-}
-fn plan(reference: Option<&str>, forced: Option<&str>, dry: bool) -> Result {
-    let all = tags(&[])?;
-    let last = tags(&["--merged", "HEAD"])?
-        .into_iter()
-        .max_by(|a, b| a.0.cmp(&b.0));
-    let span = last
-        .as_ref()
-        .map(|(_, s)| format!("{s}..HEAD"))
-        .unwrap_or("HEAD".into());
-    let mut reason = "no releasable commit".to_string();
-    let tag = reference.and_then(|r| r.strip_prefix("refs/tags/"));
-    let proposed = if let Some(tag) = tag {
-        let v = version(tag)?;
-        if tag != format!("v{v}") {
-            return Err("release tag must use canonical v-prefixed SemVer".into());
-        }
-        let commit = git(&["rev-parse", &format!("refs/tags/{tag}^{{commit}}")])?;
-        if commit.trim() != git(&["rev-parse", "HEAD"])?.trim() {
-            return Err("release tag does not name HEAD".into());
-        }
-        git(&["merge-base", "--is-ancestor", "HEAD", "origin/main"])
-            .map_err(|_| "release tag must name a commit merged into origin/main")?;
-        let manifest: toml::Value = toml::from_str(&fs::read_to_string("Cargo.toml")?)?;
-        if manifest["workspace"]["package"]["version"].as_str() != Some(v.to_string().as_str()) {
-            return Err("release tag differs from workspace manifest version".into());
-        }
-        if forced.is_some_and(|f| version(f).ok().as_ref() != Some(&v)) {
-            return Err("forced version differs from release tag".into());
-        }
-        reason = "checked tag on main".into();
-        Some(v)
-    } else if let Some(v) = forced {
-        reason = "forced by dispatch".into();
-        Some(version(v)?)
-    } else {
-        let messages = git(&["log", "--format=%B%x1e", &span])?;
-        let mut bump = 0;
-        for m in messages.split('\x1e') {
-            let mut lines = m.trim().lines();
-            let Some(subject) = lines.next() else {
-                continue;
-            };
-            if let Some((kind, breaking)) = conventional(subject) {
-                let breaks = breaking
-                    || lines.any(|l| {
-                        l.starts_with("BREAKING CHANGE: ") || l.starts_with("BREAKING-CHANGE: ")
-                    });
-                bump = bump.max(if breaks {
-                    3
-                } else if kind == "feat" {
-                    2
-                } else if ["fix", "perf"].contains(&kind) {
-                    1
-                } else {
-                    0
-                });
-            }
-        }
-        let changed = if last.is_some() {
-            git(&["diff", "--name-only", &span])?
-        } else {
-            git(&["ls-tree", "-r", "--name-only", "HEAD"])?
-        };
-        if bump == 0 || !changed.lines().any(shipped) {
-            None
-        } else {
-            let mut v = last
-                .as_ref()
-                .map(|(v, _)| v.clone())
-                .unwrap_or(Version::new(0, 0, 0));
-            if bump == 3 && v.major == 0 {
-                bump = 2;
-            }
-            match bump {
-                3 => {
-                    v.major += 1;
-                    v.minor = 0;
-                    v.patch = 0;
-                }
-                2 => {
-                    v.minor += 1;
-                    v.patch = 0;
-                }
-                _ => v.patch += 1,
-            }
-            v.pre = semver::Prerelease::EMPTY;
-            v.build = semver::BuildMetadata::EMPTY;
-            reason = "releasable shipped changes".into();
-            Some(v)
-        }
-    };
-    if let Some(v) = &proposed
-        && tag.is_none()
-        && all.iter().any(|(t, _)| t == v)
-    {
-        return Err(format!("v{v} is already a tag; a tag never moves").into());
-    }
-    let ready = fs::read_to_string(".github/release-readiness.toml")
-        .ok()
-        .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
-        .is_some_and(|v| v.get("ready").and_then(toml::Value::as_bool) == Some(true));
-    let release = proposed.is_some();
-    let publish =
-        release && ready && (tag.is_some() || reference == Some("refs/heads/main")) && !dry;
-    let newest = proposed.as_ref().is_some_and(|v| {
-        v.pre.is_empty() && all.iter().all(|(t, _)| v > t || tag.is_some() && v == t)
-    });
-    let prerelease = proposed.as_ref().is_some_and(|v| !v.pre.is_empty());
-    let v = if let Some(v) = proposed {
-        format!("v{v}")
-    } else if dry {
-        format!(
-            "v0.0.0-dryrun.g{}",
-            git(&["rev-parse", "--short=7", "HEAD"])?.trim()
-        )
-    } else {
-        String::new()
-    };
-    if release && !publish {
-        reason = if dry {
-            "dry run"
-        } else if !ready {
-            "release readiness held"
-        } else {
-            "only refs/heads/main publishes"
-        }
-        .into();
-    }
-    println!(
-        "release={release}\nversion={v}\nsemver={}\nnewest={newest}\nprerelease={prerelease}\npublish={publish}\nbuild={}\nreason={reason}",
-        v.trim_start_matches('v'),
-        publish || dry
-    );
-    Ok(())
-}
 fn archive(version: &str, target: &str) -> String {
-    format!(
-        "fleet-{version}-{target}.{}",
-        if target.contains("windows") {
-            "zip"
-        } else {
-            "tar.gz"
-        }
-    )
+    format!("fleet-{version}-{target}.tar.gz")
 }
 fn normalized(v: &str) -> Result<String> {
     Ok(format!("v{}", version(v)?))
@@ -262,33 +84,21 @@ fn package(target: &str, v: &str, binary: &Path, out: &Path) -> Result {
     fs::create_dir_all(out)?;
     let path = out.join(archive(&v, target));
     let file = File::create(&path)?;
-    if target.contains("windows") {
-        let mut z = zip::ZipWriter::new(file);
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored)
-            .last_modified_time(zip::DateTime::default());
-        for (name, bytes) in [("fleet.exe", &exe), ("LICENSE", &license)] {
-            z.start_file(name, options)?;
-            z.write_all(bytes)?;
-        }
-        z.finish()?;
-    } else {
-        let gz = flate2::GzBuilder::new()
-            .mtime(0)
-            .write(file, flate2::Compression::default());
-        let mut tar = tar::Builder::new(gz);
-        for (name, bytes, mode) in [("fleet", &exe, 0o755), ("LICENSE", &license, 0o644)] {
-            let mut h = tar::Header::new_gnu();
-            h.set_size(bytes.len() as u64);
-            h.set_mode(mode);
-            h.set_mtime(0);
-            h.set_uid(0);
-            h.set_gid(0);
-            h.set_cksum();
-            tar.append_data(&mut h, name, bytes.as_slice())?;
-        }
-        tar.into_inner()?.finish()?;
+    let gz = flate2::GzBuilder::new()
+        .mtime(0)
+        .write(file, flate2::Compression::default());
+    let mut tar = tar::Builder::new(gz);
+    for (name, bytes, mode) in [("fleet", &exe, 0o755), ("LICENSE", &license, 0o644)] {
+        let mut h = tar::Header::new_gnu();
+        h.set_size(bytes.len() as u64);
+        h.set_mode(mode);
+        h.set_mtime(0);
+        h.set_uid(0);
+        h.set_gid(0);
+        h.set_cksum();
+        tar.append_data(&mut h, name, bytes.as_slice())?;
     }
+    tar.into_inner()?.finish()?;
     println!("{}", path.display());
     Ok(())
 }
@@ -297,7 +107,6 @@ fn checksums(v: &str, dir: &Path) -> Result {
     let mut names = TARGETS.iter().map(|t| archive(&v, t)).collect::<Vec<_>>();
     for name in [
         "install-release.sh",
-        "install-release.ps1",
         "vega-provenance.json",
         "vega-starter.toml",
     ] {
@@ -335,11 +144,6 @@ pub fn run(c: Command) -> Result {
             println!("title accepted: {title} (#{number})");
             Ok(())
         }
-        Command::Plan {
-            reference,
-            version,
-            dry_run,
-        } => plan(reference.as_deref(), version.as_deref(), dry_run),
         Command::Package {
             target,
             version,

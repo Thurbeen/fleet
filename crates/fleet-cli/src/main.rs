@@ -6,6 +6,7 @@
 mod bootstrap;
 mod config;
 
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -25,7 +26,7 @@ use fleet_manager::{
     apply_conversation, beat, declare, declare_change_request, delete, receive, record_result,
     send,
 };
-use fleet_runtime::{FakeHost, FakeRuntime, ThurboxConfig, ThurboxRuntime};
+use fleet_runtime::{Cleanup, FakeHost, FakeRuntime, Repositories, ThurboxConfig, ThurboxRuntime};
 use fleet_store::{FileStore, SystemClock};
 use serde_json::{Value, json};
 
@@ -281,12 +282,17 @@ fn run(cli: Cli) -> Result<(), Failure> {
         );
         return Ok(());
     }
-    let config = match &config_path {
+    // The text is kept: `fleet up` compares later edits against it.
+    let (config, config_text) = match &config_path {
         Some(p) if !explicit_config && !p.try_exists().map_err(|e| fail(e.to_string()))? => {
-            Config::empty()
+            (Config::empty(), String::new())
         }
-        Some(p) => Config::load(p).map_err(fail)?,
-        None => Config::empty(),
+        Some(p) => {
+            let text = std::fs::read_to_string(p)
+                .map_err(|e| fail(format!("cannot read config {}: {e}", p.display())))?;
+            (Config::parse(&text, p).map_err(fail)?, text)
+        }
+        None => (Config::empty(), String::new()),
     };
     let data_dir = cli
         .data_dir
@@ -351,7 +357,7 @@ fn run(cli: Cli) -> Result<(), Failure> {
             let path = config_path.ok_or_else(|| fail("no configuration; run fleet init first"))?;
             cmd_up(
                 store,
-                &config,
+                (&config, &config_text),
                 &path,
                 poll_ms,
                 lease_ttl_ms,
@@ -657,7 +663,7 @@ fn gateway_side<'a>(
 
 fn cmd_up(
     store: &dyn Store,
-    config: &Config,
+    (config, config_text): (&Config, &str),
     config_path: &Path,
     poll_ms: u64,
     lease_ttl_ms: Option<u64>,
@@ -670,7 +676,8 @@ fn cmd_up(
         .starter
         .as_ref()
         .ok_or_else(|| fail("no starter workspace configured; run fleet init first"))?;
-    let runtime = open_runtime(config)?;
+    let (runtime, repositories) = open_reloadable_runtime(config)?;
+    let mut reload = repositories.map(|map| Reload::new(config_path, config_text, map));
     let forge = open_forge(config)?;
     let gateway = open_gateway(config)?;
     let task = match store.get("Task", "vega") {
@@ -777,6 +784,9 @@ fn cmd_up(
             {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
+            if let Some(reload) = reload.as_mut() {
+                reload.poll();
+            }
             !stopped.load(std::sync::atomic::Ordering::Relaxed)
         },
     )?;
@@ -817,7 +827,98 @@ fn version(json: bool) -> Result<(), Failure> {
     Ok(())
 }
 
+/// What `fleet up` re-reads from its config file between sweeps:
+/// `runtime.repositories`, and nothing else. Every other setting, the store
+/// and the runtime's identity among them, stays as the process started.
+struct Reload<'a> {
+    path: &'a Path,
+    repositories: Repositories,
+    /// The file as it started, without `runtime.repositories`.
+    started: Option<toml::Value>,
+    /// The last notice printed, so a lasting state is reported once.
+    notice: String,
+}
+
+impl<'a> Reload<'a> {
+    /// `text` is the file the process started from, as it was read then.
+    fn new(path: &'a Path, text: &str, repositories: Repositories) -> Reload<'a> {
+        Reload {
+            path,
+            repositories,
+            started: without_repositories(text),
+            notice: String::new(),
+        }
+    }
+
+    /// Apply a valid file's `runtime.repositories`; keep the last valid map
+    /// when the file cannot be read, parsed or validated.
+    fn poll(&mut self) {
+        let notice = match self.read() {
+            Err(why) => {
+                format!("config reload refused: {why}; keeping the last valid runtime.repositories")
+            }
+            Ok((map, others)) => {
+                let count = map.len();
+                if self.repositories.replace(map) {
+                    println!("config reloaded: runtime.repositories maps {count} repositories");
+                }
+                if others == self.started {
+                    String::new()
+                } else {
+                    "config changed outside runtime.repositories; restart fleet up to apply it"
+                        .into()
+                }
+            }
+        };
+        if notice != self.notice {
+            if !notice.is_empty() {
+                eprintln!("{notice}");
+            }
+            self.notice = notice;
+        }
+    }
+
+    /// The file's valid map, and the file without it.
+    fn read(&self) -> Result<(BTreeMap<String, String>, Option<toml::Value>), String> {
+        let text = std::fs::read_to_string(self.path)
+            .map_err(|e| format!("cannot read config {}: {e}", self.path.display()))?;
+        let config = Config::parse(&text, self.path)?;
+        let map = match &config.runtime {
+            Some(rt) if rt.kind == "thurbox" => repositories(rt)?,
+            _ => return Err("the runtime is no longer thurbox".into()),
+        };
+        Ok((map, without_repositories(&text)))
+    }
+}
+
+fn without_repositories(text: &str) -> Option<toml::Value> {
+    let mut value: toml::Value = toml::from_str(text).ok()?;
+    if let Some(rt) = value.get_mut("runtime").and_then(toml::Value::as_table_mut) {
+        rt.remove("repositories");
+    }
+    Some(value)
+}
+
+/// `runtime.repositories`, each source an absolute path.
+fn repositories(rt: &config::RuntimeConfig) -> Result<BTreeMap<String, String>, String> {
+    for (url, source) in &rt.repositories {
+        if !fleet_api::validate::is_absolute_path(source) {
+            return Err(format!(
+                "runtime.repositories: the source {source:?} of {url} must be an absolute path"
+            ));
+        }
+    }
+    Ok(rt.repositories.clone())
+}
+
 fn open_runtime(config: &Config) -> Result<Box<dyn Runtime>, Failure> {
+    open_reloadable_runtime(config).map(|(runtime, _)| runtime)
+}
+
+/// The runtime, and for thurbox the handle to its repository map.
+fn open_reloadable_runtime(
+    config: &Config,
+) -> Result<(Box<dyn Runtime>, Option<Repositories>), Failure> {
     let Some(rt) = &config.runtime else {
         return Err(Failure {
             code: exit::ERROR,
@@ -836,7 +937,7 @@ fn open_runtime(config: &Config) -> Result<Box<dyn Runtime>, Failure> {
                 .ok_or_else(|| fail("runtime.dir is required for the fake runtime"))?;
             let host = FakeHost::open(&dir)
                 .map_err(|e| fail(format!("fake host {}: {e}", dir.display())))?;
-            Ok(Box::new(FakeRuntime::new(host)))
+            Ok((Box::new(FakeRuntime::new(host)), None))
         }
         "thurbox" => {
             let default_cli = if cfg!(windows) {
@@ -858,7 +959,18 @@ fn open_runtime(config: &Config) -> Result<Box<dyn Runtime>, Failure> {
                 cfg.key_prefix = p.clone();
             }
             cfg.model_env.extend(rt.model_env.clone());
-            Ok(Box::new(ThurboxRuntime::new(cfg)))
+            cfg.repositories = Repositories::new(repositories(rt).map_err(fail)?);
+            cfg.cleanup = match rt.workspace_cleanup.as_deref() {
+                None | Some("delete") => Cleanup::Delete,
+                Some("keep") => Cleanup::Keep,
+                Some(other) => {
+                    return Err(fail(format!(
+                        "runtime.workspaceCleanup {other:?}: use delete or keep"
+                    )));
+                }
+            };
+            let handle = cfg.repositories.clone();
+            Ok((Box::new(ThurboxRuntime::new(cfg)), Some(handle)))
         }
         other => Err(fail(format!(
             "unknown runtime kind {other:?}; this build has thurbox and fake"

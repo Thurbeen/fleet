@@ -77,7 +77,7 @@ pub struct FakeSession {
     pub host: String,
     pub key: String,
     pub harness: String,
-    pub dir: String,
+    pub workspace: fleet_api::task::Workspace,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub ready: bool,
@@ -378,7 +378,7 @@ impl Runtime for FakeRuntime {
                 host: spec.host.clone(),
                 key: spec.key.clone(),
                 harness: spec.harness.clone(),
-                dir: spec.dir.clone(),
+                workspace: spec.workspace.clone(),
                 model: spec.model.clone(),
                 ready: !s.spawn_not_ready,
                 at_rest: false,

@@ -26,7 +26,7 @@ same sweep as the Task controller, through the Forge port.
 | [fleet-store](../crates/fleet-store/src/lib.rs) | File persistence, CAS, write ownership and lease fencing | A corrupt or unreadable record is Unknown; only proven absence is not-found. |
 | [fleet-runtime](../crates/fleet-runtime/src/lib.rs) | Session operations through thurbox, or the file-backed fake host | Converts external answers to Known/Unknown; retains identity and delivery keys. |
 | [fleet-forge](../crates/fleet-forge/src/lib.rs) | Reading one change through `gh`, `glab`, `az`, externally authenticated `curl`, or the file-backed fake forge, and taking a supported draft out of draft after a fresh read | One bounded observation is complete or Unknown; a write either preserves the head/state guard or fails closed; the only crate that knows a forge CLI's name. |
-| [fleet-gateway](../crates/fleet-gateway/src/lib.rs) | Reading and writing one chat thread through the file-backed fake platform, with the Slack adapter to follow | Every answer is Known or Unknown; a refused write fails closed; the only crate that will know a chat client's name. |
+| [fleet-gateway](../crates/fleet-gateway/src/lib.rs) | Reading and writing one chat thread through Slack's Web API by `curl`, or through the file-backed fake platform | Every answer is Known or Unknown; a refused write fails closed; the only crate that knows a chat client's name. |
 | [fleet-exec](../crates/fleet-exec/src/lib.rs) | Bounded process execution | The only production process spawner; timeout/unwind kills the process tree. |
 
 `fleet-arch` and `fleet-dev` are repository tooling: architecture enforcement,
@@ -115,7 +115,7 @@ config without Git or network. Bootstrap file ownership and conflict copies
 are local file concerns, separate from resource writes. `up` asks the manager
 to create `Task/vega` only when absent, then runs the ordinary Task controller
 for every due Task. VEGA has no extra resource kind, controller or privileges.
-The [README](../README.md#configuration-and-customization) owns config precedence,
+The [initialization guide](configuration/init.md#configuration-and-customization) owns config precedence,
 managed/editable files, source provenance and startup/recovery instructions.
 
 The runtime is chosen in versioned TOML config, not a separate resource.

@@ -698,3 +698,225 @@ fn explicit_config_and_store_work_without_native_home_variables() {
     .ok();
     assert!(store.join("store.json").is_file());
 }
+
+/// A `fleet up` whose output is read while it runs: both streams land in
+/// one buffer, so a chatty child never blocks on a full pipe.
+struct Up {
+    child: std::process::Child,
+    output: std::sync::Arc<std::sync::Mutex<String>>,
+}
+
+impl Up {
+    fn start(env: &Env) -> Up {
+        let mut child = env.spawn(&["up", "--poll-ms", "100"]);
+        let output = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+        let drain = |pipe: Option<Box<dyn std::io::Read + Send>>| {
+            let output = output.clone();
+            thread::spawn(move || {
+                use std::io::BufRead;
+                if let Some(pipe) = pipe {
+                    for line in std::io::BufReader::new(pipe).lines().map_while(Result::ok) {
+                        let mut o = output.lock().unwrap();
+                        o.push_str(&line);
+                        o.push('\n');
+                    }
+                }
+            });
+        };
+        drain(child.stdout.take().map(|p| Box::new(p) as _));
+        drain(child.stderr.take().map(|p| Box::new(p) as _));
+        Up { child, output }
+    }
+
+    fn output(&self) -> String {
+        self.output.lock().unwrap().clone()
+    }
+
+    /// The same process is still serving: it never exited.
+    fn assert_running(&mut self) {
+        assert!(
+            self.child.try_wait().unwrap().is_none(),
+            "fleet up exited:\n{}",
+            self.output()
+        );
+    }
+}
+
+impl Drop for Up {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn until_within(bound: Duration, mut predicate: impl FnMut() -> bool) {
+    let deadline = Instant::now() + bound;
+    while !predicate() {
+        assert!(
+            Instant::now() < deadline,
+            "automatic progress did not happen"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// `init`, then the stub thurbox-cli as the runtime and a scratch store:
+/// what `fleet up` needs, with no real session or host.
+fn thurbox_bootstrap(name: &str) -> Env {
+    let mut env = Env::thurbox(name);
+    env.set_var(
+        "LOCALAPPDATA",
+        &env.root.join("local-data").to_string_lossy(),
+    );
+    env.set_var("APPDATA", &env.root.join("config").to_string_lossy());
+    let stub: toml::Value = toml::from_str(&fs::read_to_string(&env.config).unwrap()).unwrap();
+    fs::remove_file(&env.config).unwrap();
+    env.fleet(&["init"]).ok();
+    let mut config: toml::Value =
+        toml::from_str(&fs::read_to_string(&env.config).unwrap()).unwrap();
+    config["runtime"] = stub["runtime"].clone();
+    config["data"]["dir"] = toml::Value::String(env.data.to_string_lossy().into_owned());
+    fs::write(&env.config, toml::to_string(&config).unwrap()).unwrap();
+    env
+}
+
+const APP_URL: &str = "https://example.invalid/org/app";
+
+fn app_source() -> &'static str {
+    if cfg!(windows) {
+        "C:\\src\\app"
+    } else {
+        "/src/app"
+    }
+}
+
+fn repositories_task(name: &str) -> serde_json::Value {
+    let mut t = support::task(name, true);
+    t["spec"]["workspace"] = serde_json::json!({"repositories": [{"name": "app", "url": APP_URL}]});
+    t
+}
+
+/// The config text with `runtime.repositories` mapping `url` to `source`.
+fn with_mapping(config: &str, url: &str, source: &str) -> String {
+    let mut config: toml::Value = toml::from_str(config).unwrap();
+    config["runtime"].as_table_mut().unwrap().insert(
+        "repositories".into(),
+        toml::Value::Table(toml::map::Map::from_iter([(
+            url.to_string(),
+            toml::Value::String(source.to_string()),
+        )])),
+    );
+    toml::to_string(&config).unwrap()
+}
+
+/// The `session create` argv thurbox-cli was given for the Task `name`.
+fn create_of(env: &Env, name: &str) -> Option<Vec<String>> {
+    env.stub_calls()
+        .iter()
+        .filter(|c| c["argv"][0] == "session" && c["argv"][1] == "create")
+        .map(|c| {
+            c["argv"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|a| a.as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        })
+        .find(|argv| argv.windows(2).any(|w| w[0] == "--name" && w[1] == name))
+}
+
+fn after<'a>(argv: &'a [String], flag: &str) -> Option<&'a str> {
+    argv.iter()
+        .position(|a| a == flag)
+        .map(|i| argv[i + 1].as_str())
+}
+
+fn spawned_reason(env: &Env, name: &str) -> String {
+    env.status(name)["conditions"]
+        .as_array()
+        .and_then(|cs| cs.iter().find(|c| c["type"] == "Spawned"))
+        .and_then(|c| c["reason"].as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+#[test]
+fn up_reloads_runtime_repositories_without_a_restart() {
+    let env = thurbox_bootstrap("up-reload-repositories");
+    let mut up = Up::start(&env);
+    until(|| env.fleet(&["get", "task", "vega"]).code == Some(0));
+    let vega = env.get("vega")["metadata"]["uid"].clone();
+
+    // Unmapped: refused before any session create, and the refusal spends
+    // no spawn attempt, so the Task cannot run out of them while it waits.
+    env.apply(repositories_task("app")).ok();
+    until(|| spawned_reason(&env, "app") == "RepositoryUnmapped");
+    let status = env.get("app")["status"].clone();
+    assert_eq!(status["phase"], "Pending", "{status:#}");
+    assert_eq!(
+        status["spawnAttempts"].as_u64().unwrap_or(0),
+        0,
+        "{status:#}"
+    );
+    support::assert_condition(&status, "NeedsAttention", "True", "RepositoryUnmapped");
+    assert!(create_of(&env, "app").is_none());
+
+    // A partial edit is refused and reported; the process keeps serving.
+    let valid = fs::read_to_string(&env.config).unwrap();
+    fs::write(&env.config, format!("{valid}\n[runtime.repositories\n")).unwrap();
+    until(|| up.output().contains("config reload refused"));
+    up.assert_running();
+
+    // A valid edit maps the repository: the same process spawns the Task.
+    fs::write(&env.config, with_mapping(&valid, APP_URL, app_source())).unwrap();
+    until_within(Duration::from_secs(60), || {
+        env.status("app")["phase"] == "Briefed"
+    });
+    let create = create_of(&env, "app").expect("app spawned");
+    assert_eq!(
+        after(&create, "--repo-path"),
+        Some(app_source()),
+        "{create:?}"
+    );
+    support::assert_condition(
+        &env.get("app")["status"],
+        "NeedsAttention",
+        "False",
+        "Resolved",
+    );
+    up.assert_running();
+
+    // An invalid mapping is refused as a whole: the last valid one stays in
+    // force for a Task created after it.
+    let mapped = fs::read_to_string(&env.config).unwrap();
+    fs::write(&env.config, with_mapping(&valid, APP_URL, "src/app")).unwrap();
+    until(|| up.output().contains("must be an absolute path"));
+    env.apply(repositories_task("app2")).ok();
+    until(|| env.status("app2")["phase"] == "Briefed");
+    let create = create_of(&env, "app2").expect("app2 spawned");
+    assert_eq!(
+        after(&create, "--repo-path"),
+        Some(app_source()),
+        "{create:?}"
+    );
+
+    // A startup-only setting is not switched while the process runs: a new
+    // key prefix is reported and waits for the next start.
+    let mut renamed: toml::Value = toml::from_str(&mapped).unwrap();
+    renamed["runtime"]
+        .as_table_mut()
+        .unwrap()
+        .insert("keyPrefix".into(), toml::Value::String("other".into()));
+    fs::write(&env.config, toml::to_string(&renamed).unwrap()).unwrap();
+    until(|| up.output().contains("restart fleet up to apply"));
+    env.apply(repositories_task("app3")).ok();
+    until(|| env.status("app3")["phase"] == "Briefed");
+    let create = create_of(&env, "app3").expect("app3 spawned");
+    assert!(
+        after(&create, "--key").is_some_and(|k| k.starts_with("fleet.")),
+        "{create:?}"
+    );
+
+    up.assert_running();
+    assert_eq!(env.get("vega")["metadata"]["uid"], vega);
+}

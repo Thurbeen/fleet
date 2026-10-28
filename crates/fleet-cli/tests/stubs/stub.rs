@@ -1,10 +1,12 @@
 //! A bounded stand-in for `thurbox-cli`, `az`, `curl`, `gh` and `glab`, so the end-to-end
 //! tests drive the real binary against something that behaves like them
-//! without any real session, host or forge. As `thurbox-cli` it answers
-//! `session …` and `doctor …`, the slice the runtime adapter calls, in its
-//! JSON shapes. Copied to a file named `gh` or `glab` it answers `api …` in
-//! that forge's shapes, GraphQL for GitHub and REST for GitLab, rendered from
-//! one forge-neutral model under `changes` in its state.
+//! without any real session, host, forge or chat platform. As `thurbox-cli`
+//! it answers `session …` and `doctor …`, the slice the runtime adapter
+//! calls, in its JSON shapes. Copied to a file named `gh` or `glab` it
+//! answers `api …` in that forge's shapes, GraphQL for GitHub and REST for
+//! GitLab, rendered from one forge-neutral model under `changes` in its
+//! state. As `curl` it answers Bitbucket Cloud's API, and Slack's Web API
+//! from the model under `slack`.
 //!
 //! Its whole state is one JSON file in `$FLEET_STUB_DIR`, guarded by a lock
 //! file so concurrent fleet processes see one host. Every call is appended to
@@ -22,8 +24,19 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+/// The state directory: `$FLEET_STUB_DIR`, or the path in the `stub-dir`
+/// file beside the executable, for a copy driven by an adapter under test
+/// in-process, which sets no environment of its own.
 fn dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("FLEET_STUB_DIR").expect("FLEET_STUB_DIR is set"))
+    if let Some(d) = std::env::var_os("FLEET_STUB_DIR") {
+        return PathBuf::from(d);
+    }
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|p| p.join("stub-dir")))
+        .and_then(|p| fs::read_to_string(p).ok())
+        .expect("FLEET_STUB_DIR is set, or a stub-dir file is beside the stub");
+    PathBuf::from(beside.trim())
 }
 
 struct Lock(PathBuf);
@@ -658,13 +671,16 @@ mod forge {
     }
 
     pub fn curl(args: &[String]) -> ExitCode {
+        let url = super::opt(args, "--url").unwrap_or_default();
+        if url.starts_with(super::slack::API) {
+            return super::slack::curl(args, &url);
+        }
         let lock = Lock::take();
         let mut state = load();
         let _lock = match faulted(&mut state, lock, "curl", args) {
             Ok(l) => l,
             Err(code) => return code,
         };
-        let url = super::opt(args, "--url").unwrap_or_default();
         let Some(rest) = url.strip_prefix("https://api.bitbucket.org/2.0/") else {
             return fail("stub: curl URL is not the Bitbucket Cloud API");
         };
@@ -1418,4 +1434,245 @@ fn plugin(args: &[String]) -> ExitCode {
         println!("{answer}");
     }
     ExitCode::SUCCESS
+}
+
+/// The Slack role of `curl`: the Web API behind the Slack gateway adapter,
+/// from the model under `slack` in the state: `{team, botUser, botId,
+/// botName, clock, pageSize, messages: {"<channel>": [message, …]},
+/// tombstones: [ts, …], postError, postErrorAfter, posts, calls}`. Each message is in
+/// Slack's own shape (`ts`, `user` or `bot_id`, `text`, `thread_ts`,
+/// `metadata`, `subtype`). `conversations.replies` answers a thread's
+/// messages oldest first, paged by `pageSize` or the call's `limit`, with
+/// the parent only when `oldest` does not exclude it, and a tombstone for a
+/// parent under `tombstones`. `conversations.history` answers a channel's
+/// top-level messages newest first. `chat.postMessage` appends a message at
+/// the clock, which advances one second per post, and records it under
+/// `posts`, or refuses with `postError` when set. Every call is recorded
+/// under `calls` with its method and JSON body, read from stdin. Faults are
+/// armed under the call `curl` as for the forges, rendered in Slack's
+/// shapes: `auth` is `invalid_auth`, `rate-limit` a 429 with `Retry-After`
+/// and `ratelimited`, `malformed` a non-JSON body, `fail` a failed curl,
+/// `hang` a hung process.
+mod slack {
+    use std::io::Read;
+    use std::process::ExitCode;
+
+    use serde_json::{Value, json};
+
+    use super::{Lock, fail, hang, load, save, take_fault};
+
+    pub const API: &str = "https://slack.com/api/";
+    const HEAD: &str = "HTTP/2 200 \r\ncontent-type: application/json; charset=utf-8\r\n\r\n";
+
+    fn answer(head: &str, body: &Value) -> ExitCode {
+        print!("{head}{body}");
+        ExitCode::SUCCESS
+    }
+
+    fn ok_false(error: &str) -> ExitCode {
+        answer(HEAD, &json!({"ok": false, "error": error}))
+    }
+
+    /// A Slack timestamp as (seconds, microseconds), for ordering.
+    fn key(ts: &Value) -> (u64, u64) {
+        let ts = ts.as_str().unwrap_or("0.0");
+        let (secs, frac) = ts.split_once('.').unwrap_or((ts, "0"));
+        (
+            secs.parse().unwrap_or(0),
+            format!("{frac:0<6}").parse().unwrap_or(0),
+        )
+    }
+
+    fn string(v: &Value) -> String {
+        v.as_str().unwrap_or("").to_string()
+    }
+
+    pub fn curl(args: &[String], url: &str) -> ExitCode {
+        let method = url.trim_start_matches(API).to_string();
+        let mut text = String::new();
+        if args.iter().any(|a| a == "@-") {
+            std::io::stdin().read_to_string(&mut text).expect("stdin");
+        }
+        let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        let lock = Lock::take();
+        let mut state = load();
+        if !state["slack"]["calls"].is_array() {
+            state["slack"]["calls"] = json!([]);
+        }
+        state["slack"]["calls"]
+            .as_array_mut()
+            .expect("calls")
+            .push(json!({"method": method, "body": body}));
+        if let Some(mode) = take_fault(&mut state, "curl") {
+            save(&state);
+            drop(lock);
+            let retry = state["retryAfter"].as_u64().unwrap_or(30);
+            return match mode.as_str() {
+                "hang" => hang(),
+                "auth" => ok_false("invalid_auth"),
+                "rate-limit" => answer(
+                    &format!("HTTP/2 429 \r\nretry-after: {retry}\r\n\r\n"),
+                    &json!({"ok": false, "error": "ratelimited"}),
+                ),
+                "malformed" => {
+                    print!("{HEAD}<html>not json");
+                    ExitCode::SUCCESS
+                }
+                _ => fail("curl: (7) stub: curl refused"),
+            };
+        }
+        save(&state);
+        let _lock = lock;
+        let slack = &state["slack"];
+        let team = slack["team"].as_str().unwrap_or("T0123ABCD").to_string();
+        let bot_user = slack["botUser"].as_str().unwrap_or("U0BOT0001").to_string();
+        let bot_id = slack["botId"].as_str().unwrap_or("B0FLEET001").to_string();
+        let bot_name = slack["botName"].as_str().unwrap_or("fleet").to_string();
+        match method.as_str() {
+            "auth.test" => answer(
+                HEAD,
+                &json!({"ok": true, "url": "https://example.slack.com/", "team": "Example",
+                        "user": bot_name, "team_id": team, "user_id": bot_user, "bot_id": bot_id}),
+            ),
+            "conversations.replies" => replies(&state, &body),
+            "conversations.history" => history(&state, &body),
+            "chat.postMessage" => post(&mut state, &body, &bot_user, &bot_id),
+            _ => ok_false("unknown_method"),
+        }
+    }
+
+    /// The messages of `channel`, or `None` for a channel the model lacks.
+    fn channel_messages(state: &Value, channel: &str) -> Option<Vec<Value>> {
+        state["slack"]["messages"][channel].as_array().cloned()
+    }
+
+    /// One page of `all`, under the model's page size or the call's limit,
+    /// after `oldest` (inclusive or not), from the call's cursor.
+    fn page(state: &Value, body: &Value, mut all: Vec<Value>) -> ExitCode {
+        if let Some(oldest) = body["oldest"].as_str() {
+            let bound = key(&json!(oldest));
+            let inclusive = body["inclusive"] == true;
+            all.retain(|m| {
+                let k = key(&m["ts"]);
+                k > bound || (inclusive && k == bound)
+            });
+        }
+        if body["include_all_metadata"] != true {
+            for m in &mut all {
+                if let Some(o) = m.as_object_mut() {
+                    o.remove("metadata");
+                }
+            }
+        }
+        let size = state["slack"]["pageSize"]
+            .as_u64()
+            .or_else(|| body["limit"].as_u64())
+            .unwrap_or(200)
+            .max(1) as usize;
+        let from: usize = body["cursor"]
+            .as_str()
+            .and_then(|c| c.strip_prefix("c:"))
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
+        let to = (from + size).min(all.len());
+        let has_more = to < all.len();
+        let page: Vec<Value> = if from < all.len() {
+            all[from..to].to_vec()
+        } else {
+            Vec::new()
+        };
+        answer(
+            HEAD,
+            &json!({
+                "ok": true,
+                "messages": page,
+                "has_more": has_more,
+                "response_metadata": {"next_cursor": if has_more { format!("c:{to}") } else { String::new() }},
+            }),
+        )
+    }
+
+    fn replies(state: &Value, body: &Value) -> ExitCode {
+        let channel = string(&body["channel"]);
+        let parent = string(&body["ts"]);
+        let Some(all) = channel_messages(state, &channel) else {
+            return ok_false("channel_not_found");
+        };
+        let mut thread: Vec<Value> = all
+            .into_iter()
+            .filter(|m| m["ts"] == parent || m["thread_ts"] == parent)
+            .collect();
+        if thread.is_empty() {
+            return ok_false("thread_not_found");
+        }
+        let deleted = state["slack"]["tombstones"]
+            .as_array()
+            .is_some_and(|t| t.iter().any(|ts| *ts == parent));
+        if deleted {
+            thread.retain(|m| m["ts"] != parent);
+            thread.push(
+                json!({"type": "message", "subtype": "tombstone", "ts": parent, "user": "USLACKBOT",
+                               "text": "This message was deleted.", "thread_ts": parent}),
+            );
+        }
+        thread.sort_by_key(|m| key(&m["ts"]));
+        page(state, body, thread)
+    }
+
+    fn history(state: &Value, body: &Value) -> ExitCode {
+        let channel = string(&body["channel"]);
+        let Some(all) = channel_messages(state, &channel) else {
+            return ok_false("channel_not_found");
+        };
+        let mut top: Vec<Value> = all
+            .into_iter()
+            .filter(|m| m["thread_ts"].is_null() || m["thread_ts"] == m["ts"])
+            .collect();
+        top.sort_by_key(|m| std::cmp::Reverse(key(&m["ts"])));
+        page(state, body, top)
+    }
+
+    fn post(state: &mut Value, body: &Value, bot_user: &str, bot_id: &str) -> ExitCode {
+        let channel = string(&body["channel"]);
+        if channel_messages(state, &channel).is_none() {
+            return ok_false("channel_not_found");
+        }
+        if let Some(error) = state["slack"]["postError"].as_str() {
+            return ok_false(error);
+        }
+        let clock = state["slack"]["clock"].as_u64().unwrap_or(1_730_000_500);
+        state["slack"]["clock"] = json!(clock + 1);
+        let ts = format!("{clock}.000000");
+        let mut message = json!({"type": "message", "ts": ts, "user": bot_user, "bot_id": bot_id,
+                                 "text": body["text"], "team": state["slack"]["team"]});
+        for field in ["thread_ts", "metadata"] {
+            if !body[field].is_null() {
+                message[field] = body[field].clone();
+            }
+        }
+        state["slack"]["messages"][&channel]
+            .as_array_mut()
+            .expect("channel")
+            .push(message.clone());
+        if !state["slack"]["posts"].is_array() {
+            state["slack"]["posts"] = json!([]);
+        }
+        state["slack"]["posts"]
+            .as_array_mut()
+            .expect("posts")
+            .push(json!({
+                "channel": channel, "ts": ts, "thread_ts": body["thread_ts"], "text": body["text"],
+                "metadata": body["metadata"], "mrkdwn": body["mrkdwn"],
+            }));
+        save(state);
+        // `postErrorAfter`: the post landed, and Slack answers an error
+        // anyway, as its `internal_error` and `fatal_error` may.
+        if let Some(error) = state["slack"]["postErrorAfter"].as_str() {
+            return ok_false(error);
+        }
+        answer(
+            HEAD,
+            &json!({"ok": true, "channel": channel, "ts": ts, "message": message}),
+        )
+    }
 }

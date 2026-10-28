@@ -1,0 +1,113 @@
+# Initialization and the VEGA starter
+
+`fleet init` creates the native config and the bundled, editable VEGA
+workspace. `fleet up` starts VEGA and keeps every due Task reconciling.
+This page owns their behaviour. The [native Fleet TOML](fleet-toml.md)
+reference owns the config fields.
+
+## Prerequisites
+
+`init` works offline. To run real sessions, install Thurbox (`thurbox-cli`
+on PATH), configure its local multiplexer, and install and authenticate the
+starter's `codex` harness first. Fleet does not install prerequisites or change
+login state. `up` checks host availability and reports unavailable or unknown
+prerequisites. Harness login/readiness failures remain visible in Task status;
+inspect `fleet status task vega --json` and Thurbox's session before retrying.
+
+## Running `fleet up`
+
+`up` runs in the foreground and continuously reconciles every due Task, even
+while VEGA is busy or idle. Keep it running in a terminal or your own service
+supervisor. Ctrl-C (also SIGTERM on Unix) finishes the bounded sweep, releases
+the manager lease and retains sessions. Run `fleet up` again to reconnect to
+the same ordinary `Task/vega`; a simultaneous manager exits with code 6.
+After a crash, wait for the recorded lease to expire before restarting. Unknown
+session observations never trigger a blind replacement. Stalled, completed or
+deleting VEGA Tasks require inspection and deliberate recovery, not another
+automatic Task identity.
+
+Polling defaults to one bounded sweep per second; `up --poll-ms` accepts 100
+through 10000 ms. Each unfinished Briefed Task costs one bounded session lookup
+per sweep; unchanged Task status is not rewritten. A manual `fleet reconcile`
+remains available for bounded diagnostics while `up` is stopped.
+
+## Configuration and customization
+
+Reference: [native Fleet TOML](fleet-toml.md),
+[Task](../resources/task.md), [TaskConfig](../resources/task-config.md),
+[EnvProvider](../resources/env-provider.md), and
+[environment JSON](environment-json.md).
+
+Config selection is `--config PATH`, then `FLEET_CONFIG`, then exactly one
+native per-user path: `$XDG_CONFIG_HOME/fleet/config.toml` (fallback
+`~/.config/fleet/config.toml`). Fleet never searches the current directory or
+its parents. Explicit paths must exist for commands other than `init`;
+`init --config PATH` creates a separate configuration and a default
+data/workspace root at `<native-data>/fleet/instances/<config-path-hash>/`.
+Relative paths inside TOML resolve beside that file. With no native data-home
+variables, explicit `--config` uses a `fleet-data` directory beside the config
+as its data root. An explicit store must be separate from the config and
+workspace.
+
+Default init writes a workspace at `$XDG_DATA_HOME/fleet/vega` (fallback
+`~/.local/share/fleet/vega`) and a fresh resource store under the same Fleet
+directory at `store-v1`. The config records absolute paths and a generated
+per-instance session key prefix. `[starter] workspace` selects the workspace.
+Its `task.json` is a runnable JSON array containing one Task. Before first
+`up`, edit its harness or brief and customize `AGENTS.md`, prompts and skills.
+To set `spec.model`, first configure the matching `[runtime.modelEnv]`
+harness-to-variable mapping; the starter does not assume a Codex model
+environment variable. After creation, reconnect keeps the stored immutable
+Task inputs. Updated instructions can be read from the workspace; changing
+Task inputs requires deliberate deletion/recreation after session release.
+VEGA's rendered brief names the exact config file for all Task operations and
+child-worker handoffs.
+
+Repeated `init` preserves existing files and config. After updating the binary,
+run `fleet init --update` to offer its bundled content. Unedited managed
+workspace files advance; edits, deletions and private files survive. Config is
+user-owned after creation and is never replaced by an update. Review proposed
+conflicts under `vega/.fleet/conflicts/<content-hash>/`; merge them manually.
+The `.fleet` directory holds instance identity, baseline hashes, manifest and
+source provenance; preserve it with the workspace. Malformed metadata and
+managed symlinks are refused. Initializers serialize with OS locks; a crash
+releases the locks and a repeat init completes missing files conservatively.
+
+The bundled content is MIT licensed at exact source commit
+`27148af18577f954b5c3b17667f2510c5940198e`. The build verifies every allowlisted
+asset against [the provenance hashes](../../crates/fleet-cli/bundle/vega/provenance.json)
+and embeds the assets, source manifest and license in the executable. Runtime
+init/update never fetches a branch or downloads content.
+
+## Resource commands
+
+`apply -f -` reads JSON from stdin. A file can hold one object, an array of
+objects, or an object with `items`. Config uses versioned TOML; resource
+manifests use `apiVersion: fleet/v1alpha1`. Use `fleet --help` and each
+command's `--help` for the flags this build actually serves.
+
+A worker writes its answer with `fleet result TASK --generation N --outcome
+shipped --summary TEXT`; the generation must match the delivered brief, and
+required outputs must match the Task's declared schema. A result is a claim,
+not proof of an artifact landing. `fleet send TASK TEXT` queues a message
+for a running or concluded Task's session; the next reconcile delivers it
+once, when the session is ready.
+
+Tasks can reference a passive `TaskConfig` for harness, host, model and
+environment defaults. `EnvProvider` resources supply stored string maps and
+explicit manager-local JSON files or bounded commands. Explicit Task values
+win; launch values are frozen privately before the first effect and reused
+across retries and restarts. See [execution configuration](../resources/task-config.md)
+for runnable manifests, precedence, security boundaries and snapshot recovery.
+
+Register trusted protocol-1 controller programs under `[plugins.<name>]` in
+the config. Their manifests add schema-validated resource kinds; `fleet apply`,
+`get`, `list`, `status` and `delete` accept those kinds. Inspect registration
+with `fleet list plugins --json`, and run their controllers with
+`fleet reconcile` or `fleet up`. The
+[Plugin controller guide](../controllers/plugin/README.md) defines the
+protocol, admitted operations, effect recovery and environment separation.
+Plugins can create Tasks and, by default, steer only Tasks carrying their
+creator label. Worker results remain the worker's responsibility. Plugin
+programs run as the manager user; controller environment scrubbing is a
+purity contract, not a sandbox.

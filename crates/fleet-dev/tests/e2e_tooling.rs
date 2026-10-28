@@ -64,6 +64,10 @@ impl Env {
         self.git(&["config", "user.name", "Fixture"]);
         self.git(&["config", "user.email", "fixture@example.invalid"]);
         self.git(&["config", "commit.gpgsign", "false"]);
+        // The release decision is cocogitto's, read from the repository's own
+        // configuration.
+        let cog = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cog.toml");
+        self.write("cog.toml", &fs::read_to_string(cog).unwrap());
         self.write("crates/demo.rs", "pub fn shipped() {}\n");
         self.commit("feat: first release");
         self.write(
@@ -84,7 +88,7 @@ impl Drop for Env {
     }
 }
 
-const CI: &str = "on: {pull_request: {branches: [main]}}\njobs:\n  rust:\n    strategy: {matrix: {os: [ubuntu-latest, windows-latest, ubuntu-26.04-arm]}}\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 30\n    steps: [{run: 'cargo xtask check'}]\n  all-checks:\n    if: always()\n    needs: [rust]\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n    steps: [{run: 'cargo xtask verdict'}]\n";
+const CI: &str = "on: {pull_request: {branches: [main]}}\njobs:\n  rust:\n    strategy: {matrix: {os: [ubuntu-latest, ubuntu-26.04-arm]}}\n    runs-on: ${{ matrix.os }}\n    timeout-minutes: 30\n    steps: [{run: 'cargo xtask check'}]\n  all-checks:\n    if: always()\n    needs: [rust]\n    runs-on: ubuntu-latest\n    timeout-minutes: 5\n    steps: [{run: 'cargo xtask verdict'}]\n";
 
 #[test]
 fn workflow_and_verdict_fail_closed_on_mutated_jobs() {
@@ -114,7 +118,7 @@ fn workflow_and_verdict_fail_closed_on_mutated_jobs() {
             "cargo xtask check rust-fmt",
             "rust-test",
         ),
-        ("windows-latest", "macos-latest", "windows"),
+        ("ubuntu-latest, ", "", "ubuntu-latest"),
     ] {
         e.write(".github/workflows/ci.yml", &CI.replace(from, to));
         let (ok, out) = e.call(&["workflow"], &[]);
@@ -155,75 +159,11 @@ fn every_workflow_rejects_injection_and_unpinned_actions() {
 }
 
 #[test]
-fn release_plan_gates_readiness_ref_tags_and_relevance() {
-    let e = Env::new();
-    e.repo();
-    let (ok, out) = e.call(&["release", "plan", "--ref", "refs/heads/main"], &[]);
-    assert!(
-        ok && out.contains("publish=false") && out.contains("version=v0.1.0"),
-        "{out}"
-    );
-    e.write(".github/release-readiness.toml", "ready = true\n");
-    let (ok, out) = e.call(
-        &[
-            "release",
-            "plan",
-            "--ref",
-            "refs/heads/feature",
-            "--version",
-            "1.0.0",
-        ],
-        &[],
-    );
-    assert!(ok && out.contains("publish=false"), "{out}");
-    let (ok, out) = e.call(
-        &[
-            "release",
-            "plan",
-            "--ref",
-            "refs/heads/main",
-            "--version",
-            "1.0.0",
-            "--dry-run",
-        ],
-        &[],
-    );
-    assert!(
-        ok && out.contains("build=true") && out.contains("publish=false"),
-        "{out}"
-    );
-    e.git(&["tag", "v0.1.0"]);
-    let (ok, out) = e.call(
-        &[
-            "release",
-            "plan",
-            "--ref",
-            "refs/heads/main",
-            "--version",
-            "0.1.0",
-        ],
-        &[],
-    );
-    assert!(!ok && out.contains("already"), "{out}");
-    e.write("README.md", "docs only");
-    e.commit("fix: prose");
-    let (ok, out) = e.call(&["release", "plan", "--ref", "refs/heads/main"], &[]);
-    assert!(ok && out.contains("release=false"), "{out}");
-    for v in ["01.2.3", "1.2", "1.2.3-", "1.2.3/../../escape"] {
-        assert!(!e.call(&["release", "plan", "--version", v], &[]).0);
-    }
-}
-
-#[test]
 fn archives_are_reproducible_and_missing_targets_fail_checksums() {
     let e = Env::new();
     e.write("LICENSE", "fixture licence\n");
     e.write("binary", "binary fixture\n");
-    let targets = [
-        "x86_64-unknown-linux-musl",
-        "aarch64-unknown-linux-musl",
-        "x86_64-pc-windows-msvc",
-    ];
+    let targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"];
     for t in targets {
         let args = [
             "release",
@@ -239,55 +179,33 @@ fn archives_are_reproducible_and_missing_targets_fail_checksums() {
         ];
         let (ok, out) = e.call(&args, &[]);
         assert!(ok, "{out}");
-        let suffix = if t.contains("windows") {
-            "zip"
-        } else {
-            "tar.gz"
-        };
-        let p = e.0.join(format!("dist/fleet-v1.2.3-{t}.{suffix}"));
+        let p = e.0.join(format!("dist/fleet-v1.2.3-{t}.tar.gz"));
         let a = fs::read(&p).unwrap();
         assert!(e.call(&args, &[]).0);
         assert_eq!(a, fs::read(&p).unwrap());
         use std::io::Read;
-        if t.contains("windows") {
-            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&a)).unwrap();
-            assert_eq!(archive.len(), 2);
-            for (name, want) in [
-                ("fleet.exe", "binary fixture\n"),
-                ("LICENSE", "fixture licence\n"),
-            ] {
+        let gz = flate2::read::GzDecoder::new(a.as_slice());
+        let mut archive = tar::Archive::new(gz);
+        let entries = archive
+            .entries()
+            .unwrap()
+            .map(|entry| {
+                let mut entry = entry.unwrap();
+                let name = entry.path().unwrap().to_string_lossy().into_owned();
+                let mode = entry.header().mode().unwrap();
                 let mut bytes = String::new();
-                archive
-                    .by_name(name)
-                    .unwrap()
-                    .read_to_string(&mut bytes)
-                    .unwrap();
-                assert_eq!(bytes, want);
-            }
-        } else {
-            let gz = flate2::read::GzDecoder::new(a.as_slice());
-            let mut archive = tar::Archive::new(gz);
-            let entries = archive
-                .entries()
-                .unwrap()
-                .map(|entry| {
-                    let mut entry = entry.unwrap();
-                    let name = entry.path().unwrap().to_string_lossy().into_owned();
-                    let mode = entry.header().mode().unwrap();
-                    let mut bytes = String::new();
-                    entry.read_to_string(&mut bytes).unwrap();
-                    (name, mode, bytes)
-                })
-                .collect::<Vec<_>>();
-            assert_eq!(
-                entries,
-                vec![
-                    ("fleet".into(), 0o755, "binary fixture\n".into()),
-                    ("LICENSE".into(), 0o644, "fixture licence\n".into())
-                ]
-            );
-        }
-        if t != targets[2] {
+                entry.read_to_string(&mut bytes).unwrap();
+                (name, mode, bytes)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            entries,
+            vec![
+                ("fleet".into(), 0o755, "binary fixture\n".into()),
+                ("LICENSE".into(), 0o644, "fixture licence\n".into())
+            ]
+        );
+        if t != targets[1] {
             assert!(
                 !e.call(
                     &["release", "checksums", "--version", "v1.2.3", "dist"],
@@ -303,7 +221,81 @@ fn archives_are_reproducible_and_missing_targets_fail_checksums() {
     );
     assert!(ok, "{out}");
     let sums = fs::read_to_string(e.0.join("dist/fleet-v1.2.3-checksums.txt")).unwrap();
-    assert_eq!(sums.lines().count(), 3);
+    assert_eq!(sums.lines().count(), 2);
+}
+
+#[test]
+fn windows_is_not_a_release_target_and_no_workflow_runs_on_it() {
+    let linux = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"];
+    let e = Env::new();
+    e.write("LICENSE", "fixture licence\n");
+    e.write("binary", "binary fixture\n");
+    let package = |target: &str| {
+        e.call(
+            &[
+                "release",
+                "package",
+                "--version",
+                "v1.2.3",
+                "--target",
+                target,
+                "--binary",
+                "binary",
+                "--out",
+                "dist",
+            ],
+            &[],
+        )
+    };
+    let (ok, out) = package("x86_64-pc-windows-msvc");
+    assert!(!ok && out.contains("unsupported release target"), "{out}");
+    for t in linux {
+        let (ok, out) = package(t);
+        assert!(ok, "{out}");
+    }
+    // The Linux archives alone are a complete release.
+    let (ok, out) = e.call(
+        &["release", "checksums", "--version", "v1.2.3", "dist"],
+        &[],
+    );
+    assert!(ok, "{out}");
+    let sums = fs::read_to_string(e.0.join("dist/fleet-v1.2.3-checksums.txt")).unwrap();
+    assert_eq!(sums.lines().count(), linux.len(), "{sums}");
+    // A Linux-only CI satisfies the workflow gate.
+    e.write(".github/workflows/ci.yml", CI);
+    let (ok, out) = e.call(&["workflow"], &[]);
+    assert!(ok, "{out}");
+    // The repository's own workflows build exactly the supported targets and
+    // run no job on Windows.
+    let workflows = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows");
+    let cd: serde_json::Value =
+        serde_saphyr::from_str(&fs::read_to_string(workflows.join("cd.yml")).unwrap()).unwrap();
+    let targets: Vec<_> = cd["jobs"]["build"]["strategy"]["matrix"]["include"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["target"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(targets, linux);
+    for entry in fs::read_dir(&workflows).unwrap() {
+        let path = entry.unwrap().path();
+        if !matches!(
+            path.extension().and_then(|s| s.to_str()),
+            Some("yml" | "yaml")
+        ) {
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy();
+        let doc: serde_json::Value =
+            serde_saphyr::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        for (job, body) in doc["jobs"].as_object().unwrap() {
+            let runners = [&body["runs-on"], &body["strategy"]["matrix"]];
+            assert!(
+                !runners.iter().any(|r| r.to_string().contains("windows")),
+                "{name}/{job} runs on Windows"
+            );
+        }
+    }
 }
 
 #[test]
@@ -337,24 +329,9 @@ fn installer(e: &Env, args: &[&str]) -> (bool, String) {
 }
 fn installer_with(e: &Env, args: &[&str], version: Option<&str>) -> (bool, String) {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let (program, script) = if cfg!(windows) {
-        ("powershell", "scripts/install-release.ps1")
-    } else {
-        ("sh", "scripts/install-release.sh")
-    };
-    let mut s = Spec::new(program, Duration::from_secs(30));
-    if cfg!(windows) {
-        s = s.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"]);
-    }
-    s = s
-        .arg(repo.join(script).into_os_string())
-        .args(args.iter().map(|a| {
-            if cfg!(windows) && *a == "--uninstall" {
-                "-Uninstall"
-            } else {
-                *a
-            }
-        }));
+    let mut s = Spec::new("sh", Duration::from_secs(30))
+        .arg(repo.join("scripts/install-release.sh").into_os_string())
+        .args(args.iter().copied());
     s.cwd = Some(e.0.clone());
     s.env = vec![
         (
@@ -389,11 +366,7 @@ fn installer_with(e: &Env, args: &[&str], version: Option<&str>) -> (bool, Strin
 }
 fn install_fixture(e: &Env) {
     e.write("LICENSE", "fixture\n");
-    for t in [
-        "x86_64-unknown-linux-musl",
-        "aarch64-unknown-linux-musl",
-        "x86_64-pc-windows-msvc",
-    ] {
+    for t in ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"] {
         let (ok, out) = e.call(
             &[
                 "release",
@@ -429,9 +402,7 @@ fn offline_install_update_tamper_refusal_and_uninstall() {
     install_fixture(&e);
     let (ok, out) = installer(&e, &[]);
     assert!(ok, "{out}");
-    let binary =
-        e.0.join("bin")
-            .join(if cfg!(windows) { "fleet.exe" } else { "fleet" });
+    let binary = e.0.join("bin/fleet");
     let first = fs::read(&binary).unwrap();
     let (ok, out) = installer(&e, &[]);
     assert!(ok, "{out}");
@@ -451,9 +422,7 @@ fn concurrent_install_and_wrong_version_preserve_existing_binary() {
     install_fixture(&e);
     let (ok, out) = installer(&e, &[]);
     assert!(ok, "{out}");
-    let binary =
-        e.0.join("bin")
-            .join(if cfg!(windows) { "fleet.exe" } else { "fleet" });
+    let binary = e.0.join("bin/fleet");
     let before = fs::read(&binary).unwrap();
     fs::create_dir(e.0.join("bin/.fleet-install.lock")).unwrap();
     let (ok, out) = installer(&e, &[]);
@@ -462,11 +431,7 @@ fn concurrent_install_and_wrong_version_preserve_existing_binary() {
     fs::remove_dir(e.0.join("bin/.fleet-install.lock")).unwrap();
     // A correctly checksummed archive carrying the wrong version is still refused.
     fs::rename(e.0.join("releases/v1.2.3"), e.0.join("releases/v2.0.0")).unwrap();
-    for t in [
-        "x86_64-unknown-linux-musl",
-        "aarch64-unknown-linux-musl",
-        "x86_64-pc-windows-msvc",
-    ] {
+    for t in ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"] {
         assert!(
             e.call(
                 &[
@@ -502,14 +467,8 @@ fn concurrent_install_and_wrong_version_preserve_existing_binary() {
     fs::rename(e.0.join("releases/v2.0.0"), e.0.join("releases/v1.2.3")).unwrap();
     // Installer below is explicitly asked for a different release via direct fixture call.
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mut s = if cfg!(windows) {
-        Spec::new("powershell", Duration::from_secs(30))
-            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-            .arg(repo.join("scripts/install-release.ps1").into_os_string())
-    } else {
-        Spec::new("sh", Duration::from_secs(30))
-            .arg(repo.join("scripts/install-release.sh").into_os_string())
-    };
+    let mut s = Spec::new("sh", Duration::from_secs(30))
+        .arg(repo.join("scripts/install-release.sh").into_os_string());
     fs::rename(e.0.join("releases/v1.2.3"), e.0.join("releases/v2.0.0")).unwrap();
     s.env = vec![
         ("FLEET_VERSION".into(), "v2.0.0".into()),
@@ -650,7 +609,7 @@ fn release_and_title_workflows_keep_native_platform_and_trust_promises() {
         "  arm:\n    runs-on: ubuntu-26.04-arm\n    timeout-minutes: 20\n    steps: [{{run: 'cargo xtask check {rust}'}}]\n"
     );
     let complete = CI
-        .replace("windows-latest, ubuntu-26.04-arm", "windows-latest")
+        .replace("ubuntu-latest, ubuntu-26.04-arm", "ubuntu-latest")
         .replace("needs: [rust]", "needs: [rust, arm]")
         + &extra;
     e.write(".github/workflows/ci.yml", &complete);
@@ -661,62 +620,6 @@ fn release_and_title_workflows_keep_native_platform_and_trust_promises() {
     );
     let (ok, out) = e.call(&["workflow"], &[]);
     assert!(!ok && out.contains("rust-deny"), "{out}");
-}
-
-#[test]
-fn release_plan_semver_ordering_prereleases_and_backdated_tags() {
-    let e = Env::new();
-    e.repo();
-    e.write(".github/release-readiness.toml", "ready = true\n");
-    for (v, prerelease, newest) in [
-        ("1.0.0-alpha.2", true, false),
-        ("1.0.0-alpha.10", true, false),
-        ("1.0.0", false, true),
-    ] {
-        let (ok, out) = e.call(
-            &[
-                "release",
-                "plan",
-                "--ref",
-                "refs/heads/main",
-                "--version",
-                v,
-            ],
-            &[],
-        );
-        assert!(
-            ok && out.contains(&format!("prerelease={prerelease}"))
-                && out.contains(&format!("newest={newest}"))
-                && out.contains("publish=true"),
-            "{out}"
-        );
-    }
-    e.git(&["tag", "v9.0.0"]);
-    let (ok, out) = e.call(
-        &[
-            "release",
-            "plan",
-            "--ref",
-            "refs/heads/main",
-            "--version",
-            "1.0.0",
-        ],
-        &[],
-    );
-    assert!(ok && out.contains("newest=false"), "{out}");
-    e.write(".github/release-readiness.toml", "invalid TOML");
-    let (ok, out) = e.call(
-        &[
-            "release",
-            "plan",
-            "--ref",
-            "refs/heads/main",
-            "--version",
-            "10.0.0",
-        ],
-        &[],
-    );
-    assert!(ok && out.contains("publish=false"), "{out}");
 }
 
 #[test]
@@ -873,128 +776,6 @@ fn swallowed_ci_and_release_test_failures_cannot_count_as_validation() {
 }
 
 #[test]
-fn absent_or_invalid_readiness_holds_without_panicking() {
-    let e = Env::new();
-    e.repo();
-    for text in [
-        "",
-        "reason = 'waiting'\n",
-        "ready = 'true'\n",
-        "ready = false\n",
-        "invalid TOML",
-    ] {
-        e.write(".github/release-readiness.toml", text);
-        let (ok, out) = e.call(
-            &["release", "plan", "--ref", "refs/heads/main", "--dry-run"],
-            &[],
-        );
-        assert!(
-            ok && out.contains("publish=false") && out.contains("build=true"),
-            "{out}"
-        );
-    }
-    fs::remove_file(e.0.join(".github/release-readiness.toml")).unwrap();
-    let (ok, out) = e.call(
-        &["release", "plan", "--ref", "refs/heads/main", "--dry-run"],
-        &[],
-    );
-    assert!(ok && out.contains("publish=false"), "{out}");
-}
-
-#[test]
-fn windows_default_path_policy_is_disjoint_and_has_no_effects() {
-    let e = Env::new();
-    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let program = if cfg!(windows) { "powershell" } else { "pwsh" };
-    let spec = Spec::new(program, Duration::from_secs(30))
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-        ])
-        .arg(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/install-paths.ps1")
-                .into_os_string(),
-        )
-        .arg("-Installer")
-        .arg(repo.join("scripts/install-release.ps1").into_os_string())
-        .arg("-Root")
-        .arg(e.0.clone().into_os_string());
-    let outcome = run(&spec);
-    if let Outcome::NotStarted(why) = &outcome {
-        let requirement = if cfg!(windows) {
-            "Windows PowerShell (powershell.exe) is required for the Windows installer path-policy test"
-        } else {
-            "PowerShell 7 (pwsh) is required for the Windows installer path-policy test"
-        };
-        panic!(
-            "{requirement}. Install it and add {program} to PATH; see CONTRIBUTING.md. Could not start: {why}"
-        );
-    }
-    if let Outcome::Exited {
-        code,
-        stdout,
-        stderr,
-    } = &outcome
-    {
-        assert_eq!(
-            *code,
-            Some(0),
-            "{}{}",
-            String::from_utf8_lossy(stdout),
-            String::from_utf8_lossy(stderr)
-        );
-    } else {
-        panic!("{}", outcome.failure());
-    }
-}
-
-#[cfg(unix)]
-#[test]
-fn missing_pwsh_fails_with_an_actionable_gate_prerequisite() {
-    let e = Env::new();
-    let empty = e.0.join("empty-path");
-    fs::create_dir(&empty).unwrap();
-    let mut spec = Spec::new(
-        std::env::current_exe().unwrap().into_os_string(),
-        Duration::from_secs(30),
-    )
-    .args([
-        "--exact",
-        "windows_default_path_policy_is_disjoint_and_has_no_effects",
-        "--nocapture",
-    ]);
-    spec.cwd = Some(e.0.clone());
-    spec.env
-        .push(("PATH".into(), empty.to_string_lossy().into_owned()));
-    let Outcome::Exited {
-        code,
-        stdout,
-        stderr,
-    } = run(&spec)
-    else {
-        panic!("path-policy test child did not exit");
-    };
-    assert_ne!(code, Some(0), "missing PowerShell must fail, never skip");
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&stdout),
-        String::from_utf8_lossy(&stderr)
-    );
-    assert!(
-        text.contains("PowerShell 7 (pwsh) is required for"),
-        "{text}"
-    );
-    assert!(
-        text.contains("PATH") && text.contains("CONTRIBUTING.md"),
-        "{text}"
-    );
-}
-
-#[test]
 fn the_gate_never_rebuilds_the_binary_it_runs_from() {
     // `cargo xtask check` runs fleet-dev while its own `cargo test` rebuilds
     // the workspace, fleet-dev included. Windows refuses to replace a running
@@ -1017,9 +798,7 @@ fn v2_installs_only_when_a_version_is_named() {
     assert!(!ok, "{out}");
     assert!(out.contains("FLEET_VERSION"), "{out}");
     assert!(!out.contains("latest"), "{out}");
-    let binary =
-        e.0.join("bin")
-            .join(if cfg!(windows) { "fleet.exe" } else { "fleet" });
+    let binary = e.0.join("bin/fleet");
     assert!(!binary.exists());
     // Removing an install needs no version.
     let (ok, out) = installer_with(&e, &["--uninstall"], None);
@@ -1034,50 +813,6 @@ fn the_tree_declares_fleet_major_2() {
     let marker = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../FLEET_MAJOR");
     let text = fs::read_to_string(&marker).expect("a root FLEET_MAJOR file");
     assert_eq!(text, "2\n", "FLEET_MAJOR must be exactly \"2\\n\"");
-}
-
-#[test]
-fn stable_tag_release_requires_main_ancestry_version_and_readiness() {
-    let e = Env::new();
-    e.repo();
-    e.write("Cargo.toml", "[workspace.package]\nversion = '2.0.0'\n");
-    e.write(".github/release-readiness.toml", "ready = true\n");
-    e.commit("feat: stable release");
-    e.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
-    e.git(&["tag", "v2.0.0"]);
-    let args = ["release", "plan", "--ref", "refs/tags/v2.0.0"];
-    let (ok, out) = e.call(&args, &[]);
-    assert!(
-        ok && out.contains("publish=true") && out.contains("version=v2.0.0"),
-        "{out}"
-    );
-    assert!(
-        out.contains("newest=true"),
-        "first stable tag is latest: {out}"
-    );
-    let (ok, out) = e.call(
-        &["release", "plan", "--ref", "refs/tags/v2.0.0", "--dry-run"],
-        &[],
-    );
-    assert!(
-        ok && out.contains("publish=false") && out.contains("build=true"),
-        "{out}"
-    );
-    e.write(".github/release-readiness.toml", "ready = false\n");
-    let (ok, out) = e.call(&args, &[]);
-    assert!(ok && out.contains("publish=false"), "{out}");
-    e.write(".github/release-readiness.toml", "ready = true\n");
-    e.write("Cargo.toml", "[workspace.package]\nversion = '2.0.1'\n");
-    let (ok, out) = e.call(&args, &[]);
-    assert!(!ok && out.contains("manifest version"), "{out}");
-    e.write("Cargo.toml", "[workspace.package]\nversion = '2.0.0'\n");
-    e.write("crates/demo.rs", "pub fn unmerged() {}\n");
-    e.commit("fix: unmerged candidate");
-    let (ok, out) = e.call(&args, &[]);
-    assert!(!ok && out.contains("tag does not name HEAD"), "{out}");
-    e.git(&["tag", "v2.0.1"]);
-    let (ok, out) = e.call(&["release", "plan", "--ref", "refs/tags/v2.0.1"], &[]);
-    assert!(!ok && out.contains("main"), "unmerged tag: {out}");
 }
 
 #[test]
@@ -1113,7 +848,6 @@ fn release_checksums_include_published_installers_and_starter_metadata() {
     install_fixture(&e);
     for name in [
         "install-release.sh",
-        "install-release.ps1",
         "vega-provenance.json",
         "vega-starter.toml",
     ] {
@@ -1133,7 +867,6 @@ fn release_checksums_include_published_installers_and_starter_metadata() {
     let sums = fs::read_to_string(e.0.join("releases/v1.2.3/fleet-v1.2.3-checksums.txt")).unwrap();
     for name in [
         "install-release.sh",
-        "install-release.ps1",
         "vega-provenance.json",
         "vega-starter.toml",
     ] {
@@ -1142,7 +875,7 @@ fn release_checksums_include_published_installers_and_starter_metadata() {
 }
 
 #[test]
-fn native_release_fixture_installs_with_binary_mode_checksum_tools() {
+fn release_fixture_checksum_recipe_installs() {
     let e = Env::new();
     install_fixture(&e);
     let fixture = e.0.join("installer-fixture/v1.2.3");
@@ -1163,52 +896,10 @@ fn native_release_fixture_installs_with_binary_mode_checksum_tools() {
         .find(|l| l.contains("sha256sum") && l.contains("checksums.txt"))
         .expect("native release fixture checksum recipe")
         .trim();
-    // On Windows PATH may resolve bash.exe to WSL, not Git Bash. Locate the
-    // shell shipped beside the declared Git prerequisite, as Actions does.
-    #[cfg(windows)]
-    let shell = {
-        let output = run(&Spec::new("git", Duration::from_secs(10)).arg("--exec-path"))
-            .success_text()
-            .expect("Git prerequisite");
-        Path::new(output.trim())
-            .ancestors()
-            .map(|p| p.join("bin/bash.exe"))
-            .find(|p| p.is_file())
-            .expect("Git for Windows Bash is required for native release fixture acceptance")
-    };
-    #[cfg(not(windows))]
-    let shell = PathBuf::from("bash");
     let mut spec =
-        Spec::new(shell, Duration::from_secs(30)).args(["-eo", "pipefail", "-c", recipe]);
+        Spec::new("bash", Duration::from_secs(30)).args(["-eo", "pipefail", "-c", recipe]);
     spec.cwd = Some(e.0.clone());
     spec.env.push(("VERSION".into(), "v1.2.3".into()));
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        // Model Windows' binary default without claiming native Windows evidence.
-        let tool =
-            run(&Spec::new("sh", Duration::from_secs(10)).args(["-c", "command -v sha256sum"]))
-                .success_text()
-                .expect("sha256sum prerequisite");
-        e.write(
-            "checksum-tools/sha256sum",
-            &format!("#!/bin/sh\nexec '{}' --binary \"$@\"\n", tool.trim()),
-        );
-        fs::set_permissions(
-            e.0.join("checksum-tools/sha256sum"),
-            fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
-        let mut paths = vec![e.0.join("checksum-tools")];
-        paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-        spec.env.push((
-            "PATH".into(),
-            std::env::join_paths(paths)
-                .unwrap()
-                .to_string_lossy()
-                .into(),
-        ));
-    }
     let result = run(&spec);
     assert!(result.success_text().is_some(), "{result:?}");
     fs::copy(
@@ -1218,4 +909,310 @@ fn native_release_fixture_installs_with_binary_mode_checksum_tools() {
     .unwrap();
     let (ok, out) = installer(&e, &[]);
     assert!(ok, "native release checksum fixture: {out}");
+}
+
+#[test]
+fn published_installer_installs_its_own_release() {
+    // The README's one-liner fetches the latest release's installer with no
+    // FLEET_VERSION. The copy the release publishes names that release, so
+    // the version stays explicit while the repository script still requires one.
+    let e = Env::new();
+    install_fixture(&e);
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    fs::create_dir_all(e.0.join("scripts")).unwrap();
+    fs::create_dir_all(e.0.join("dist")).unwrap();
+    fs::copy(
+        repo.join("scripts/install-release.sh"),
+        e.0.join("scripts/install-release.sh"),
+    )
+    .unwrap();
+    let recipe = include_str!("../../../.github/workflows/cd.yml")
+        .lines()
+        .find(|l| l.contains("scripts/install-release.sh") && l.contains("dist/"))
+        .expect("the release step that publishes the installer")
+        .trim();
+    let mut spec =
+        Spec::new("bash", Duration::from_secs(30)).args(["-eo", "pipefail", "-c", recipe]);
+    spec.cwd = Some(e.0.clone());
+    spec.env.push(("VERSION".into(), "v1.2.3".into()));
+    let result = run(&spec);
+    assert!(result.success_text().is_some(), "{result:?}");
+    let mut s = Spec::new("sh", Duration::from_secs(30))
+        .arg(e.0.join("dist/install-release.sh").into_os_string());
+    s.env = vec![
+        (
+            "FLEET_RELEASE_BASE".into(),
+            e.0.join("releases").to_string_lossy().into(),
+        ),
+        (
+            "FLEET_INSTALL_DIR".into(),
+            e.0.join("bin").to_string_lossy().into(),
+        ),
+    ];
+    let out = run(&s);
+    assert!(out.success_text().is_some(), "{out:?}");
+    assert!(e.0.join("bin/fleet").exists());
+}
+
+/// Runs one `run:` step of the repository's own cd.yml under bash, the way
+/// the runner does, with the real git and cog and a local fake for `gh`.
+#[cfg(unix)]
+fn release_step(e: &Env, job: &str, step: &str, env: &[(&str, &str)]) -> (bool, String) {
+    use std::os::unix::fs::PermissionsExt;
+    let cd = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/cd.yml");
+    let doc: serde_json::Value = serde_saphyr::from_str(&fs::read_to_string(cd).unwrap()).unwrap();
+    let script = doc["jobs"][job]["steps"]
+        .as_array()
+        .unwrap_or_else(|| panic!("cd.yml has no {job} job"))
+        .iter()
+        .find(|s| s["name"] == step)
+        .and_then(|s| s["run"].as_str())
+        .unwrap_or_else(|| panic!("cd.yml has no {job}/{step} step"))
+        .to_string();
+    // The fake forge behaves like `gh release create --verify-tag`: the tag
+    // must already exist.
+    e.write(
+        "fakes/gh",
+        "#!/bin/sh\nv=$3\ngit rev-parse -q --verify \"refs/tags/$v\" >/dev/null || { echo \"tag $v does not exist\" >&2; exit 1; }\ncase \" $* \" in *\" --verify-tag \"*) ;; *) echo 'gh would create the tag' >&2; exit 1 ;; esac\necho \"released $v\"\n",
+    );
+    fs::set_permissions(e.0.join("fakes/gh"), fs::Permissions::from_mode(0o755)).unwrap();
+    e.write("output", "");
+    let mut paths = vec![e.0.join("fakes")];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let mut s =
+        Spec::new("bash", Duration::from_secs(120)).args(["-eo", "pipefail", "-c", &script]);
+    s.cwd = Some(e.0.clone());
+    s.env = [
+        (
+            "PATH",
+            std::env::join_paths(paths)
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+        ),
+        (
+            "GIT_CONFIG_GLOBAL",
+            e.0.join("no-config").to_string_lossy().to_string(),
+        ),
+        ("GIT_CONFIG_NOSYSTEM", "1".into()),
+        (
+            "GITHUB_OUTPUT",
+            e.0.join("output").to_string_lossy().to_string(),
+        ),
+        (
+            "GITHUB_STEP_SUMMARY",
+            e.0.join("summary").to_string_lossy().to_string(),
+        ),
+        ("GITHUB_REPOSITORY", "owner/fleet".into()),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .chain(env.iter().map(|(k, v)| (k.to_string(), v.to_string())))
+    .collect();
+    match run(&s) {
+        Outcome::Exited {
+            code,
+            stdout,
+            stderr,
+        } => (
+            code == Some(0),
+            format!(
+                "{}{}{}",
+                fs::read_to_string(e.0.join("output")).unwrap(),
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            ),
+        ),
+        o => panic!("{o:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_push_to_main_tags_and_publishes_what_cocogitto_decides() {
+    let cd = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/cd.yml");
+    let doc: serde_json::Value = serde_saphyr::from_str(&fs::read_to_string(cd).unwrap()).unwrap();
+    assert!(
+        doc["on"]["push"]["branches"]
+            .as_array()
+            .is_some_and(|b| b.iter().any(|b| b == "main")),
+        "cd.yml must run on every push to main: {}",
+        doc["on"]
+    );
+    let e = Env::new();
+    e.repo();
+    // Runner files stay out of the status cog checks, as in a clean checkout.
+    e.write(
+        ".git/info/exclude",
+        "fakes/\noutput\nsummary\norigin.git/\ndist/\nno-config\nonly-git/\n",
+    );
+    e.write(".github/release-readiness.toml", "ready = true\n");
+    e.commit("chore: ready");
+    e.git(&["tag", "v2.1.0"]);
+    e.git(&["init", "-q", "--bare", "origin.git"]);
+    e.git(&["remote", "add", "origin", "origin.git"]);
+    e.write("crates/demo.rs", "pub fn shipped() {}\npub fn more() {}\n");
+    e.commit("feat: more");
+    let main = [("GITHUB_REF", "refs/heads/main"), ("FORCED_VERSION", "")];
+    let step = |name: &str, env: &[(&str, &str)]| {
+        let env: Vec<_> = main.iter().chain(env).copied().collect();
+        release_step(&e, "check-release", name, &env)
+    };
+    let (ok, out) = step("Parse release decision", &[]);
+    assert!(
+        ok && out.contains("should_release=true")
+            && out.contains("version=v2.2.0\n")
+            && out.contains("semver=2.2.0\n")
+            && out.contains("bump_args=--auto --disable-bump-commit\n")
+            && out.contains("prerelease=false"),
+        "parse: {out}"
+    );
+    let (ok, out) = step(
+        "Check the release touches a shipped artifact",
+        &[("VERSION", "v2.2.0")],
+    );
+    assert!(ok && out.contains("shipped=true"), "shipped: {out}");
+    let (ok, out) = step("Check publication is allowed", &[]);
+    assert!(ok && out.contains("allowed=true"), "allowed: {out}");
+    let newest = [("TARGET", "v2.2.0"), ("PRERELEASE", "false")];
+    let (ok, out) = step("Is this the highest version ever tagged", &newest);
+    assert!(ok && out.contains("newest=true"), "newest: {out}");
+    // Only main publishes, and readiness fails closed.
+    let (ok, out) = release_step(
+        &e,
+        "check-release",
+        "Check publication is allowed",
+        &[("GITHUB_REF", "refs/heads/feature")],
+    );
+    assert!(ok && out.contains("allowed=false"), "branch: {out}");
+    for text in [
+        "",
+        "reason = 'waiting'\n",
+        "ready = 'true'\n",
+        "ready = false\n",
+        "invalid TOML",
+    ] {
+        e.write(".github/release-readiness.toml", text);
+        let (ok, out) = step("Check publication is allowed", &[]);
+        assert!(ok && out.contains("allowed=false"), "{text:?}: {out}");
+    }
+    fs::remove_file(e.0.join(".github/release-readiness.toml")).unwrap();
+    let (ok, out) = step("Check publication is allowed", &[]);
+    assert!(
+        ok && out.contains("allowed=false"),
+        "missing readiness: {out}"
+    );
+    e.git(&["checkout", "-q", "--", ".github/release-readiness.toml"]);
+    // create-tag: the action runs `cog bump <bump_args>`, then the tag is pushed.
+    let mut bump =
+        Spec::new("cog", Duration::from_secs(60)).args(["bump", "--auto", "--disable-bump-commit"]);
+    bump.cwd = Some(e.0.clone());
+    assert!(run(&bump).success_text().is_some(), "cog bump");
+    // The create-tag job's checkout is thrown away, with the changelog cog
+    // staged there; later jobs check out clean.
+    e.git(&["reset", "-q", "--hard"]);
+    let (ok, out) = release_step(
+        &e,
+        "create-tag",
+        "Push tag to repository",
+        &[("VERSION", "v2.2.0")],
+    );
+    assert!(ok, "push tag: {out}");
+    let rev = |args: &[&str]| {
+        let mut s = Spec::new("git", Duration::from_secs(10)).args(args.iter().copied());
+        s.cwd = Some(e.0.clone());
+        run(&s).success_text().map(|s| s.trim().to_string())
+    };
+    let head = rev(&["rev-parse", "HEAD"]);
+    assert_eq!(
+        rev(&["--git-dir", "origin.git", "rev-parse", "v2.2.0^{commit}"]),
+        head
+    );
+    let mut notes = Spec::new("cog", Duration::from_secs(60)).args(["changelog", "--at", "v2.2.0"]);
+    notes.cwd = Some(e.0.clone());
+    let notes = run(&notes).success_text().unwrap_or_default();
+    assert!(
+        notes.contains("v2.2.0") && notes.contains("more"),
+        "notes: {notes}"
+    );
+    e.write("dist/fleet-v2.2.0-checksums.txt", "");
+    let (ok, out) = release_step(
+        &e,
+        "publish",
+        "Create GitHub Release",
+        &[
+            ("VERSION", "v2.2.0"),
+            ("NEWEST", "true"),
+            ("PRERELEASE", "false"),
+            ("CHANGELOG", &notes),
+            ("GH_TOKEN", "fake"),
+        ],
+    );
+    assert!(ok && out.contains("released v2.2.0"), "publish: {out}");
+    // Re-running the released push releases nothing, and so does a push
+    // with no releasable commit.
+    let (ok, out) = step("Parse release decision", &[]);
+    assert!(ok && out.contains("should_release=false"), "rerun: {out}");
+    e.write("docs/notes.md", "# Notes\n");
+    e.commit("docs: comment");
+    let (ok, out) = step("Parse release decision", &[]);
+    assert!(
+        ok && out.contains("should_release=false"),
+        "docs push: {out}"
+    );
+    // A releasable type that ships nothing is held by the relevance gate.
+    e.write("README.md", "docs only");
+    e.commit("fix: prose");
+    let (ok, out) = step("Parse release decision", &[]);
+    assert!(ok && out.contains("version=v2.2.1\n"), "fix: {out}");
+    let (ok, out) = step(
+        "Check the release touches a shipped artifact",
+        &[("VERSION", "v2.2.1")],
+    );
+    assert!(ok && out.contains("shipped=false"), "docs only: {out}");
+    // A forced prerelease is marked as one and never latest.
+    let (ok, out) = release_step(
+        &e,
+        "check-release",
+        "Parse release decision",
+        &[
+            ("GITHUB_REF", "refs/heads/main"),
+            ("FORCED_VERSION", "3.0.0-rc.1"),
+        ],
+    );
+    assert!(
+        ok && out.contains("version=v3.0.0-rc.1\n")
+            && out.contains("bump_args=--version 3.0.0-rc.1 --disable-bump-commit\n")
+            && out.contains("prerelease=true"),
+        "forced: {out}"
+    );
+    let (ok, out) = step(
+        "Is this the highest version ever tagged",
+        &[("TARGET", "v3.0.0-rc.1"), ("PRERELEASE", "true")],
+    );
+    assert!(
+        ok && out.contains("newest=false"),
+        "prerelease newest: {out}"
+    );
+    let (ok, out) = step(
+        "Is this the highest version ever tagged",
+        &[("TARGET", "v2.1.1"), ("PRERELEASE", "false")],
+    );
+    assert!(
+        ok && out.contains("newest=false"),
+        "maintenance newest: {out}"
+    );
+    // A missing cog is an unknown decision, never "no release".
+    fs::create_dir_all(e.0.join("only-git")).unwrap();
+    for tool in ["bash", "git"] {
+        let found =
+            run(&Spec::new("sh", Duration::from_secs(10))
+                .args(["-c", &format!("command -v {tool}")]))
+            .success_text()
+            .unwrap();
+        std::os::unix::fs::symlink(found.trim(), e.0.join("only-git").join(tool)).unwrap();
+    }
+    let path = e.0.join("only-git").to_string_lossy().to_string();
+    let (ok, out) = step("Parse release decision", &[("PATH", &path)]);
+    assert!(!ok && !out.contains("should_release"), "without cog: {out}");
 }

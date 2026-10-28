@@ -140,7 +140,7 @@ spec.harness        the agent harness, explicit or inherited
 spec.host           the runtime host (default "local")
 spec.model          optional; reaches the harness through its model variable
 spec.brief          the brief, sent once
-spec.workspace.dir  the session's working directory
+spec.workspace      {dir} or {repositories: [{name, url, ref?}]}
 spec.dispatch       nothing spawns while false
 spec.outputs        optional: the structured outputs a result must carry
 spec.forge          optional: relay and draft overrides for declared changes
@@ -149,6 +149,16 @@ spec.forge          optional: relay and draft overrides for declared changes
 The spec is immutable once created, except `dispatch` and `forge`; a
 different brief is a different Task. `harness` and `host` may not start
 with `-`, since both reach the runtime as arguments.
+
+`spec.workspace` names what the session works in. It never says how the
+runtime makes it.
+
+- `{dir}` is a directory that exists before the Task. It may not be empty.
+- `{repositories}` names one or more repositories by identity. Each `name`
+  and each `url` is unique in the Task. Each `url` and optional `ref` is
+  non-empty, has no whitespace and does not start with `-`. Fleet does not
+  interpret `ref`.
+- A workspace has exactly one of the two forms. Unknown fields are refused.
 
 See [execution configuration](../docs/resources/task-config.md) for
 reference validation, deterministic precedence and private launch freezing.
@@ -184,6 +194,11 @@ Guarantees, each with its test:
   runs. Unreadable delivery probes and failed releases raise `NeedsAttention`
   after three attempts but continue after each wait: recovery can confirm
   delivery or remove the finalizer.
+- **Unmapped repository.** A spawn answered `Known(Unmapped { url })` spends
+  no attempt. The Task returns to Pending with `Spawned=False` and
+  `NeedsAttention`, both with reason `RepositoryUnmapped`. The spawn is tried
+  again after `RETRY_DELAY_MS`, without limit, under the same effect key.
+  A later spawn that does not answer `Unmapped` clears that `NeedsAttention`.
 - **Result.** `fleet result` writes `status.result` as field manager
   `worker`, only once the brief has a receipt, only for the generation it
   was briefed for, and only when its outputs match `spec.outputs`. The same
@@ -578,6 +593,44 @@ Each adapter reports its longest single operation (`operation_bound`), and
 - **fake:** a file-backed host for tests and trials, with injectable faults
   (lost answers, refusals, delays, hangs). It runs no process.
 
+The runtime owns the workspace. Fleet passes `spec.workspace` in the spawn
+and deletes the session; every adapter keeps these rules:
+
+- **Materialization.** The adapter decides how a workspace becomes files:
+  a worktree, a clone, a copy or a restored snapshot. Branches, bases,
+  source checkouts and credentials are the adapter's. Fleet sends none.
+- **Whole or nothing.** If a spawn stops partway, the adapter rolls back or
+  completes its own partial state. Fleet acts on `find` alone.
+- **Cleanup.** `release` deletes the session. The runtime then cleans the
+  workspace as it is configured to. Fleet never inspects or deletes a
+  workspace.
+- **Refusal.** A workspace the adapter cannot make, or may not make, is
+  `Known(Failed)` at spawn, never Unknown. A repository the adapter has no
+  source for is `Known(Unmapped { url })`. The adapter answers it before any
+  external call.
+
+Thurbox maps a `{dir}` to `--repo-path`. It maps `{repositories}` to one
+worktree create:
+
+- The first repository's source is `--repo-path`, and its `ref` is
+  `--base-branch`.
+- Each other repository is `--add-repo PATH[@REF]`.
+- Every worktree is on the branch `<keyPrefix>/<session key>`. A source
+  repository with a branch named exactly `<keyPrefix>` cannot hold these
+  branches, so its spawns fail.
+- `runtime.repositories` maps each URL to its source checkout on the host. A
+  relative source is refused when the config loads. An unmapped URL is
+  `Unmapped`. An `@` that `PATH@REF` cannot carry fails the spawn.
+- A running `fleet up` reads `runtime.repositories` again before each sweep.
+  The next spawn uses the new map.
+- `release` runs `session delete --force` by default. Thurbox then removes
+  the window and the worktrees it created.
+- With `runtime.workspaceCleanup = "keep"`, `release` runs
+  `session delete --soft`. The worktrees stay, and thurbox can restore the
+  session.
+- Cleanup is best effort. Fleet reads a delete that exits 0 as released,
+  even when thurbox reports a worktree or remote teardown error.
+
 ## Forge contract
 
 `fleet_api::forge::Forge`: `operation_bound`, `parse`, `whoami`, `change`
@@ -725,7 +778,7 @@ raised to twice the longest operation of the runtime or the forge port.
 `fleet init` installs the pinned embedded VEGA starter offline and creates
 native per-user config; `--update` advances unedited managed workspace files
 and writes conflict candidates for customizations. Config is never replaced.
-The [README](../README.md#configuration-and-customization) specifies precedence,
+The [initialization guide](../docs/configuration/init.md#configuration-and-customization) specifies precedence,
 paths, provenance and recovery. Bootstrap does not read v1 data.
 
 `fleet up` ensures one ordinary `Task/vega` through the manager, then retains
@@ -733,8 +786,18 @@ the manager lease across periodic sweeps for all due Tasks. The poll interval
 must fit inside the lease as well as runtime operations. Ctrl-C/SIGTERM stops
 after bounded work and releases the lease; Tasks and sessions survive. Crash
 recovery waits for lease expiry. Uncertain runtime observations remain Unknown.
+
+`fleet up` reads its config file again before each sweep. It applies
+`runtime.repositories` only:
+
+- A file that cannot be read, parsed or validated changes nothing. The last
+  valid map stays in force, and `fleet up` reports the refusal once.
+- A change to any other setting is not applied. `fleet up` reports it once
+  and asks for a restart. The store, the lease holder, the runtime kind and
+  the key prefix never change in a running process.
 `e2e_bootstrap` covers installed first-run, repeat/concurrent initialization,
-customized updates, resident progress, exclusive startup and crash/reconnect.
+customized updates, resident progress, exclusive startup, crash/reconnect and
+the `runtime.repositories` reload.
 
 ## Tests
 
