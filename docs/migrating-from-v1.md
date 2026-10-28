@@ -83,8 +83,9 @@ See [Workspaces](resources/task.md#workspaces) for the rules.
 
 V1 reads `KEY=value` files in `orchestration/` and `registry/` inside the
 checkout. V2 reads one TOML file. The selection order is `--config PATH`,
-then `FLEET_CONFIG`, then `~/.config/fleet/config.toml`. `fleet init` writes
-that file. V2 refuses unknown fields, so you cannot copy v1 keys into it.
+then `FLEET_CONFIG`, then `$XDG_CONFIG_HOME/fleet/config.toml`, falling back
+to `~/.config/fleet/config.toml`. `fleet init` writes that file. V2 refuses
+unknown fields, so you cannot copy v1 keys into it.
 [Native Fleet TOML](configuration/fleet-toml.md) owns every field.
 
 | v1 file and key | v2 equivalent |
