@@ -115,7 +115,7 @@ config without Git or network. Bootstrap file ownership and conflict copies
 are local file concerns, separate from resource writes. `up` asks the manager
 to create `Task/vega` only when absent, then runs the ordinary Task controller
 for every due Task. VEGA has no extra resource kind, controller or privileges.
-The [README](../README.md#configuration-and-customization) owns config precedence,
+The [initialization guide](configuration/init.md#configuration-and-customization) owns config precedence,
 managed/editable files, source provenance and startup/recovery instructions.
 
 The runtime is chosen in versioned TOML config, not a separate resource.

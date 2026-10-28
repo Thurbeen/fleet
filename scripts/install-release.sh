@@ -2,7 +2,8 @@
 # Install the fleet binary from a GitHub release, or update it: running this
 # again with a newer version replaces the binary in place.
 #
-#   FLEET_VERSION       the release tag, such as v2.0.0 (required: upgrades are explicit)
+#   FLEET_VERSION       the release tag, such as v2.0.0. The copy published with a
+#                       release defaults to that release; this script has no default
 #   FLEET_INSTALL_DIR   where `fleet` goes (default: $HOME/.local/bin)
 #   FLEET_RELEASE_BASE  where releases are fetched from: an https URL laid out as
 #                       GitHub serves them (<base>/<tag>/<asset>), or a local
@@ -55,7 +56,9 @@ case "${1:-}" in
     *) fail "usage: install-release.sh [--uninstall]" ;;
 esac
 
-version=${FLEET_VERSION:-}
+# The release stamps its own tag here, so its published copy installs itself.
+release_version=
+version=${FLEET_VERSION:-$release_version}
 # Pin the version explicitly; never redirect a v1 user to v2 automatically.
 [ -n "$version" ] || fail "Name the release explicitly, for example FLEET_VERSION=v2.0.0; see the README for frozen v1 installs."
 

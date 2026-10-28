@@ -911,6 +911,49 @@ fn release_fixture_checksum_recipe_installs() {
     assert!(ok, "native release checksum fixture: {out}");
 }
 
+#[test]
+fn published_installer_installs_its_own_release() {
+    // The README's one-liner fetches the latest release's installer with no
+    // FLEET_VERSION. The copy the release publishes names that release, so
+    // the version stays explicit while the repository script still requires one.
+    let e = Env::new();
+    install_fixture(&e);
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    fs::create_dir_all(e.0.join("scripts")).unwrap();
+    fs::create_dir_all(e.0.join("dist")).unwrap();
+    fs::copy(
+        repo.join("scripts/install-release.sh"),
+        e.0.join("scripts/install-release.sh"),
+    )
+    .unwrap();
+    let recipe = include_str!("../../../.github/workflows/cd.yml")
+        .lines()
+        .find(|l| l.contains("scripts/install-release.sh") && l.contains("dist/"))
+        .expect("the release step that publishes the installer")
+        .trim();
+    let mut spec =
+        Spec::new("bash", Duration::from_secs(30)).args(["-eo", "pipefail", "-c", recipe]);
+    spec.cwd = Some(e.0.clone());
+    spec.env.push(("VERSION".into(), "v1.2.3".into()));
+    let result = run(&spec);
+    assert!(result.success_text().is_some(), "{result:?}");
+    let mut s = Spec::new("sh", Duration::from_secs(30))
+        .arg(e.0.join("dist/install-release.sh").into_os_string());
+    s.env = vec![
+        (
+            "FLEET_RELEASE_BASE".into(),
+            e.0.join("releases").to_string_lossy().into(),
+        ),
+        (
+            "FLEET_INSTALL_DIR".into(),
+            e.0.join("bin").to_string_lossy().into(),
+        ),
+    ];
+    let out = run(&s);
+    assert!(out.success_text().is_some(), "{out:?}");
+    assert!(e.0.join("bin/fleet").exists());
+}
+
 /// Runs one `run:` step of the repository's own cd.yml under bash, the way
 /// the runner does, with the real git and cog and a local fake for `gh`.
 #[cfg(unix)]

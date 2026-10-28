@@ -293,7 +293,8 @@ jobs:
           merge-multiple: true
       - name: Checksums over every target and pinned installers
         run: |
-          cp scripts/install-release.sh dist/
+          sed "s/^release_version=\$/release_version=$VERSION/" scripts/install-release.sh > dist/install-release.sh
+          grep -qx "release_version=$VERSION" dist/install-release.sh
           cp crates/fleet-cli/bundle/vega/provenance.json dist/vega-provenance.json
           cp crates/fleet-cli/bundle/vega/starter.toml dist/vega-starter.toml
           cargo xtask release checksums --version "$VERSION" dist
