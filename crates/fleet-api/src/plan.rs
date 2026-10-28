@@ -156,6 +156,12 @@ pub enum EffectOutcome {
     Failed {
         why: String,
     },
+    /// The runtime maps no source for a repository the workspace names.
+    /// Nothing was started: the runtime's configuration lacks the mapping,
+    /// and adding it, not a retry, is the fix.
+    Unmapped {
+        url: String,
+    },
 }
 
 /// What the controller needs to know before it can decide. The manager asks

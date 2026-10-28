@@ -25,6 +25,7 @@ logic runs.
 | Spawning | Known Spawned receipt | Spawned | Record returned SessionRef. |
 | Spawning | Missing/Unknown receipt; session key found | Spawned | Adopt the session and recover its receipt. |
 | Spawning | Known failure, or ambiguous outcome with key proven absent; attempts below 3 | Pending | Schedule a wait before another spawn. |
+| Spawning | Known `Unmapped` receipt | Pending | Give the attempt back; set `Spawned=False` and NeedsAttention, both `RepositoryUnmapped`; schedule a wait, then spawn again under the same key. |
 | Spawning | Same failure with 3 spawn attempts spent | Stalled | Raise `Stalled/SpawnAttemptsExhausted` and NeedsAttention. |
 | Spawning | Missing/Unknown receipt; session list unreadable | Spawning | Report Unknown; never infer absence or respawn blindly. |
 | Spawned | Readable lookup lacks the recorded session identity | Spawned | Raise WorkerGone and NeedsAttention; do not send. |
@@ -99,9 +100,10 @@ are last recorded observations; absence of a condition is not a True value.
 | WorkerGone | A readable lookup no longer shows the recorded identity under its key (`SessionGone`). |
 | Concluded | A worker result was accepted and observed (`ResultRecorded`). |
 | Released | A known release completed, or there was nothing to release. |
-| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed or InboxFull. |
+| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, InboxFull or RepositoryUnmapped. |
 
-WorkerGone clears when the exact recorded session is seen again. A successful
+WorkerGone clears when the exact recorded session is seen again.
+RepositoryUnmapped clears when a later spawn answers Spawned or Failed. A successful
 delivery recovery clears attention whose reason is BriefUnconfirmed or
 DeliveryUnconfirmed; an inbox drained back within its bound clears InboxFull.
 DeliveryFailed stays while the failed entry does. A

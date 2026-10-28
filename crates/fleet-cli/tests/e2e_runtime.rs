@@ -711,4 +711,10 @@ fn a_repository_the_runtime_does_not_map_is_refused_at_spawn() {
             .contains("https://example.invalid/org/fleet is not in runtime.repositories"),
         "{full:#}"
     );
+    // The fix is a config change, not a retry: no spawn attempt is spent,
+    // so the Task waits for the mapping instead of stalling.
+    assert_eq!(full["phase"], "Pending", "{full:#}");
+    assert_eq!(full["spawnAttempts"].as_u64().unwrap_or(0), 0, "{full:#}");
+    assert_condition(&full, "Spawned", "False", "RepositoryUnmapped");
+    assert_condition(&full, "NeedsAttention", "True", "RepositoryUnmapped");
 }

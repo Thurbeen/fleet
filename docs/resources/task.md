@@ -89,7 +89,7 @@ typed mutations described under [Inbox](#inbox).
 | `execution` | Frozen execution selection and source identities; environment values are private. |
 | `session` | The session's runtime id, host and key, once spawned or adopted. |
 | `intents`, `receipts` | Each effect's intent, written before it runs, and its outcome, written after. |
-| `spawnAttempts`, `briefSends` | Spawn and brief-send counters, each bounded at 3. |
+| `spawnAttempts`, `briefSends` | Spawn and brief-send counters, each bounded at 3. A spawn refused for an unmapped repository does not count. |
 | `briefProbeFailures`, `releaseAttempts` | Three failures raise `NeedsAttention`; reads and releases continue after each wait. |
 | `notBefore` | Earliest next reconcile after a failed attempt, in Unix milliseconds. The fixed retry delay is 30 seconds and survives manager restarts. |
 | `brief` | The brief's key and the generation it was sent for, once it has a receipt. |

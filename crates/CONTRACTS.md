@@ -188,6 +188,11 @@ Guarantees, each with its test:
   runs. Unreadable delivery probes and failed releases raise `NeedsAttention`
   after three attempts but continue after each wait: recovery can confirm
   delivery or remove the finalizer.
+- **Unmapped repository.** A spawn answered `Known(Unmapped { url })` spends
+  no attempt. The Task returns to Pending with `Spawned=False` and
+  `NeedsAttention`, both with reason `RepositoryUnmapped`. The spawn is tried
+  again after `RETRY_DELAY_MS`, without limit, under the same effect key.
+  A later Spawned or Failed answer clears that `NeedsAttention`.
 - **Result.** `fleet result` writes `status.result` as field manager
   `worker`, only once the brief has a receipt, only for the generation it
   was briefed for, and only when its outputs match `spec.outputs`. The same
@@ -516,7 +521,9 @@ and deletes the session; every adapter keeps these rules:
   workspace as it is configured to. Fleet never inspects or deletes a
   workspace.
 - **Refusal.** A workspace the adapter cannot make, or may not make, is
-  `Known(Failed)` at spawn, never Unknown.
+  `Known(Failed)` at spawn, never Unknown. A repository the adapter has no
+  source for is `Known(Unmapped { url })`. The adapter answers it before any
+  external call.
 
 Thurbox maps a `{dir}` to `--repo-path`. It maps `{repositories}` to one
 worktree create:
@@ -528,8 +535,10 @@ worktree create:
   repository with a branch named exactly `<keyPrefix>` cannot hold these
   branches, so its spawns fail.
 - `runtime.repositories` maps each URL to its source checkout on the host. A
-  relative source is refused when the config loads. An unmapped URL, or an
-  `@` that `PATH@REF` cannot carry, fails the spawn.
+  relative source is refused when the config loads. An unmapped URL is
+  `Unmapped`. An `@` that `PATH@REF` cannot carry fails the spawn.
+- A running `fleet up` reads `runtime.repositories` again before each sweep.
+  The next spawn uses the new map.
 - `release` runs `session delete --force` by default. Thurbox then removes
   the window and the worktrees it created.
 - With `runtime.workspaceCleanup = "keep"`, `release` runs
@@ -693,8 +702,18 @@ the manager lease across periodic sweeps for all due Tasks. The poll interval
 must fit inside the lease as well as runtime operations. Ctrl-C/SIGTERM stops
 after bounded work and releases the lease; Tasks and sessions survive. Crash
 recovery waits for lease expiry. Uncertain runtime observations remain Unknown.
+
+`fleet up` reads its config file again before each sweep. It applies
+`runtime.repositories` only:
+
+- A file that cannot be read, parsed or validated changes nothing. The last
+  valid map stays in force, and `fleet up` reports the refusal once.
+- A change to any other setting is not applied. `fleet up` reports it once
+  and asks for a restart. The store, the lease holder, the runtime kind and
+  the key prefix never change in a running process.
 `e2e_bootstrap` covers installed first-run, repeat/concurrent initialization,
-customized updates, resident progress, exclusive startup and crash/reconnect.
+customized updates, resident progress, exclusive startup, crash/reconnect and
+the `runtime.repositories` reload.
 
 ## Tests
 
