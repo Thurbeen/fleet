@@ -64,6 +64,10 @@ impl Env {
         self.git(&["config", "user.name", "Fixture"]);
         self.git(&["config", "user.email", "fixture@example.invalid"]);
         self.git(&["config", "commit.gpgsign", "false"]);
+        // The release decision is cocogitto's, read from the repository's own
+        // configuration.
+        let cog = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../cog.toml");
+        self.write("cog.toml", &fs::read_to_string(cog).unwrap());
         self.write("crates/demo.rs", "pub fn shipped() {}\n");
         self.commit("feat: first release");
         self.write(
@@ -152,66 +156,6 @@ fn every_workflow_rejects_injection_and_unpinned_actions() {
     );
     let (ok, out) = e.call(&["workflow"], &[]);
     assert!(!ok && out.contains("SHA"), "{out}");
-}
-
-#[test]
-fn release_plan_gates_readiness_ref_tags_and_relevance() {
-    let e = Env::new();
-    e.repo();
-    let (ok, out) = e.call(&["release", "plan", "--ref", "refs/heads/main"], &[]);
-    assert!(
-        ok && out.contains("publish=false") && out.contains("version=v0.1.0"),
-        "{out}"
-    );
-    e.write(".github/release-readiness.toml", "ready = true\n");
-    let (ok, out) = e.call(
-        &[
-            "release",
-            "plan",
-            "--ref",
-            "refs/heads/feature",
-            "--version",
-            "1.0.0",
-        ],
-        &[],
-    );
-    assert!(ok && out.contains("publish=false"), "{out}");
-    let (ok, out) = e.call(
-        &[
-            "release",
-            "plan",
-            "--ref",
-            "refs/heads/main",
-            "--version",
-            "1.0.0",
-            "--dry-run",
-        ],
-        &[],
-    );
-    assert!(
-        ok && out.contains("build=true") && out.contains("publish=false"),
-        "{out}"
-    );
-    e.git(&["tag", "v0.1.0"]);
-    let (ok, out) = e.call(
-        &[
-            "release",
-            "plan",
-            "--ref",
-            "refs/heads/main",
-            "--version",
-            "0.1.0",
-        ],
-        &[],
-    );
-    assert!(!ok && out.contains("already"), "{out}");
-    e.write("README.md", "docs only");
-    e.commit("fix: prose");
-    let (ok, out) = e.call(&["release", "plan", "--ref", "refs/heads/main"], &[]);
-    assert!(ok && out.contains("release=false"), "{out}");
-    for v in ["01.2.3", "1.2", "1.2.3-", "1.2.3/../../escape"] {
-        assert!(!e.call(&["release", "plan", "--version", v], &[]).0);
-    }
 }
 
 #[test]
@@ -664,62 +608,6 @@ fn release_and_title_workflows_keep_native_platform_and_trust_promises() {
 }
 
 #[test]
-fn release_plan_semver_ordering_prereleases_and_backdated_tags() {
-    let e = Env::new();
-    e.repo();
-    e.write(".github/release-readiness.toml", "ready = true\n");
-    for (v, prerelease, newest) in [
-        ("1.0.0-alpha.2", true, false),
-        ("1.0.0-alpha.10", true, false),
-        ("1.0.0", false, true),
-    ] {
-        let (ok, out) = e.call(
-            &[
-                "release",
-                "plan",
-                "--ref",
-                "refs/heads/main",
-                "--version",
-                v,
-            ],
-            &[],
-        );
-        assert!(
-            ok && out.contains(&format!("prerelease={prerelease}"))
-                && out.contains(&format!("newest={newest}"))
-                && out.contains("publish=true"),
-            "{out}"
-        );
-    }
-    e.git(&["tag", "v9.0.0"]);
-    let (ok, out) = e.call(
-        &[
-            "release",
-            "plan",
-            "--ref",
-            "refs/heads/main",
-            "--version",
-            "1.0.0",
-        ],
-        &[],
-    );
-    assert!(ok && out.contains("newest=false"), "{out}");
-    e.write(".github/release-readiness.toml", "invalid TOML");
-    let (ok, out) = e.call(
-        &[
-            "release",
-            "plan",
-            "--ref",
-            "refs/heads/main",
-            "--version",
-            "10.0.0",
-        ],
-        &[],
-    );
-    assert!(ok && out.contains("publish=false"), "{out}");
-}
-
-#[test]
 fn the_gate_refuses_missing_tools() {
     let e = Env::new();
     e.write("Cargo.toml", "[workspace]\nmembers=[]\n");
@@ -873,35 +761,6 @@ fn swallowed_ci_and_release_test_failures_cannot_count_as_validation() {
 }
 
 #[test]
-fn absent_or_invalid_readiness_holds_without_panicking() {
-    let e = Env::new();
-    e.repo();
-    for text in [
-        "",
-        "reason = 'waiting'\n",
-        "ready = 'true'\n",
-        "ready = false\n",
-        "invalid TOML",
-    ] {
-        e.write(".github/release-readiness.toml", text);
-        let (ok, out) = e.call(
-            &["release", "plan", "--ref", "refs/heads/main", "--dry-run"],
-            &[],
-        );
-        assert!(
-            ok && out.contains("publish=false") && out.contains("build=true"),
-            "{out}"
-        );
-    }
-    fs::remove_file(e.0.join(".github/release-readiness.toml")).unwrap();
-    let (ok, out) = e.call(
-        &["release", "plan", "--ref", "refs/heads/main", "--dry-run"],
-        &[],
-    );
-    assert!(ok && out.contains("publish=false"), "{out}");
-}
-
-#[test]
 fn windows_default_path_policy_is_disjoint_and_has_no_effects() {
     let e = Env::new();
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -1034,50 +893,6 @@ fn the_tree_declares_fleet_major_2() {
     let marker = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../FLEET_MAJOR");
     let text = fs::read_to_string(&marker).expect("a root FLEET_MAJOR file");
     assert_eq!(text, "2\n", "FLEET_MAJOR must be exactly \"2\\n\"");
-}
-
-#[test]
-fn stable_tag_release_requires_main_ancestry_version_and_readiness() {
-    let e = Env::new();
-    e.repo();
-    e.write("Cargo.toml", "[workspace.package]\nversion = '2.0.0'\n");
-    e.write(".github/release-readiness.toml", "ready = true\n");
-    e.commit("feat: stable release");
-    e.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
-    e.git(&["tag", "v2.0.0"]);
-    let args = ["release", "plan", "--ref", "refs/tags/v2.0.0"];
-    let (ok, out) = e.call(&args, &[]);
-    assert!(
-        ok && out.contains("publish=true") && out.contains("version=v2.0.0"),
-        "{out}"
-    );
-    assert!(
-        out.contains("newest=true"),
-        "first stable tag is latest: {out}"
-    );
-    let (ok, out) = e.call(
-        &["release", "plan", "--ref", "refs/tags/v2.0.0", "--dry-run"],
-        &[],
-    );
-    assert!(
-        ok && out.contains("publish=false") && out.contains("build=true"),
-        "{out}"
-    );
-    e.write(".github/release-readiness.toml", "ready = false\n");
-    let (ok, out) = e.call(&args, &[]);
-    assert!(ok && out.contains("publish=false"), "{out}");
-    e.write(".github/release-readiness.toml", "ready = true\n");
-    e.write("Cargo.toml", "[workspace.package]\nversion = '2.0.1'\n");
-    let (ok, out) = e.call(&args, &[]);
-    assert!(!ok && out.contains("manifest version"), "{out}");
-    e.write("Cargo.toml", "[workspace.package]\nversion = '2.0.0'\n");
-    e.write("crates/demo.rs", "pub fn unmerged() {}\n");
-    e.commit("fix: unmerged candidate");
-    let (ok, out) = e.call(&args, &[]);
-    assert!(!ok && out.contains("tag does not name HEAD"), "{out}");
-    e.git(&["tag", "v2.0.1"]);
-    let (ok, out) = e.call(&["release", "plan", "--ref", "refs/tags/v2.0.1"], &[]);
-    assert!(!ok && out.contains("main"), "unmerged tag: {out}");
 }
 
 #[test]
@@ -1218,4 +1033,267 @@ fn native_release_fixture_installs_with_binary_mode_checksum_tools() {
     .unwrap();
     let (ok, out) = installer(&e, &[]);
     assert!(ok, "native release checksum fixture: {out}");
+}
+
+/// Runs one `run:` step of the repository's own cd.yml under bash, the way
+/// the runner does, with the real git and cog and a local fake for `gh`.
+#[cfg(unix)]
+fn release_step(e: &Env, job: &str, step: &str, env: &[(&str, &str)]) -> (bool, String) {
+    use std::os::unix::fs::PermissionsExt;
+    let cd = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/cd.yml");
+    let doc: serde_json::Value = serde_saphyr::from_str(&fs::read_to_string(cd).unwrap()).unwrap();
+    let script = doc["jobs"][job]["steps"]
+        .as_array()
+        .unwrap_or_else(|| panic!("cd.yml has no {job} job"))
+        .iter()
+        .find(|s| s["name"] == step)
+        .and_then(|s| s["run"].as_str())
+        .unwrap_or_else(|| panic!("cd.yml has no {job}/{step} step"))
+        .to_string();
+    // The fake forge behaves like `gh release create --verify-tag`: the tag
+    // must already exist.
+    e.write(
+        "fakes/gh",
+        "#!/bin/sh\nv=$3\ngit rev-parse -q --verify \"refs/tags/$v\" >/dev/null || { echo \"tag $v does not exist\" >&2; exit 1; }\ncase \" $* \" in *\" --verify-tag \"*) ;; *) echo 'gh would create the tag' >&2; exit 1 ;; esac\necho \"released $v\"\n",
+    );
+    fs::set_permissions(e.0.join("fakes/gh"), fs::Permissions::from_mode(0o755)).unwrap();
+    e.write("output", "");
+    let mut paths = vec![e.0.join("fakes")];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let mut s =
+        Spec::new("bash", Duration::from_secs(120)).args(["-eo", "pipefail", "-c", &script]);
+    s.cwd = Some(e.0.clone());
+    s.env = [
+        (
+            "PATH",
+            std::env::join_paths(paths)
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+        ),
+        (
+            "GIT_CONFIG_GLOBAL",
+            e.0.join("no-config").to_string_lossy().to_string(),
+        ),
+        ("GIT_CONFIG_NOSYSTEM", "1".into()),
+        (
+            "GITHUB_OUTPUT",
+            e.0.join("output").to_string_lossy().to_string(),
+        ),
+        (
+            "GITHUB_STEP_SUMMARY",
+            e.0.join("summary").to_string_lossy().to_string(),
+        ),
+        ("GITHUB_REPOSITORY", "owner/fleet".into()),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v))
+    .chain(env.iter().map(|(k, v)| (k.to_string(), v.to_string())))
+    .collect();
+    match run(&s) {
+        Outcome::Exited {
+            code,
+            stdout,
+            stderr,
+        } => (
+            code == Some(0),
+            format!(
+                "{}{}{}",
+                fs::read_to_string(e.0.join("output")).unwrap(),
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            ),
+        ),
+        o => panic!("{o:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_push_to_main_tags_and_publishes_what_cocogitto_decides() {
+    let cd = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.github/workflows/cd.yml");
+    let doc: serde_json::Value = serde_saphyr::from_str(&fs::read_to_string(cd).unwrap()).unwrap();
+    assert!(
+        doc["on"]["push"]["branches"]
+            .as_array()
+            .is_some_and(|b| b.iter().any(|b| b == "main")),
+        "cd.yml must run on every push to main: {}",
+        doc["on"]
+    );
+    let e = Env::new();
+    e.repo();
+    // Runner files stay out of the status cog checks, as in a clean checkout.
+    e.write(
+        ".git/info/exclude",
+        "fakes/\noutput\nsummary\norigin.git/\ndist/\nno-config\nonly-git/\n",
+    );
+    e.write(".github/release-readiness.toml", "ready = true\n");
+    e.commit("chore: ready");
+    e.git(&["tag", "v2.1.0"]);
+    e.git(&["init", "-q", "--bare", "origin.git"]);
+    e.git(&["remote", "add", "origin", "origin.git"]);
+    e.write("crates/demo.rs", "pub fn shipped() {}\npub fn more() {}\n");
+    e.commit("feat: more");
+    let main = [("GITHUB_REF", "refs/heads/main"), ("FORCED_VERSION", "")];
+    let step = |name: &str, env: &[(&str, &str)]| {
+        let env: Vec<_> = main.iter().chain(env).copied().collect();
+        release_step(&e, "check-release", name, &env)
+    };
+    let (ok, out) = step("Parse release decision", &[]);
+    assert!(
+        ok && out.contains("should_release=true")
+            && out.contains("version=v2.2.0\n")
+            && out.contains("semver=2.2.0\n")
+            && out.contains("bump_args=--auto --disable-bump-commit\n")
+            && out.contains("prerelease=false"),
+        "parse: {out}"
+    );
+    let (ok, out) = step(
+        "Check the release touches a shipped artifact",
+        &[("VERSION", "v2.2.0")],
+    );
+    assert!(ok && out.contains("shipped=true"), "shipped: {out}");
+    let (ok, out) = step("Check publication is allowed", &[]);
+    assert!(ok && out.contains("allowed=true"), "allowed: {out}");
+    let newest = [("TARGET", "v2.2.0"), ("PRERELEASE", "false")];
+    let (ok, out) = step("Is this the highest version ever tagged", &newest);
+    assert!(ok && out.contains("newest=true"), "newest: {out}");
+    // Only main publishes, and readiness fails closed.
+    let (ok, out) = release_step(
+        &e,
+        "check-release",
+        "Check publication is allowed",
+        &[("GITHUB_REF", "refs/heads/feature")],
+    );
+    assert!(ok && out.contains("allowed=false"), "branch: {out}");
+    for text in [
+        "",
+        "reason = 'waiting'\n",
+        "ready = 'true'\n",
+        "ready = false\n",
+        "invalid TOML",
+    ] {
+        e.write(".github/release-readiness.toml", text);
+        let (ok, out) = step("Check publication is allowed", &[]);
+        assert!(ok && out.contains("allowed=false"), "{text:?}: {out}");
+    }
+    fs::remove_file(e.0.join(".github/release-readiness.toml")).unwrap();
+    let (ok, out) = step("Check publication is allowed", &[]);
+    assert!(
+        ok && out.contains("allowed=false"),
+        "missing readiness: {out}"
+    );
+    e.git(&["checkout", "-q", "--", ".github/release-readiness.toml"]);
+    // create-tag: the action runs `cog bump <bump_args>`, then the tag is pushed.
+    let mut bump =
+        Spec::new("cog", Duration::from_secs(60)).args(["bump", "--auto", "--disable-bump-commit"]);
+    bump.cwd = Some(e.0.clone());
+    assert!(run(&bump).success_text().is_some(), "cog bump");
+    // The create-tag job's checkout is thrown away, with the changelog cog
+    // staged there; later jobs check out clean.
+    e.git(&["reset", "-q", "--hard"]);
+    let (ok, out) = release_step(
+        &e,
+        "create-tag",
+        "Push tag to repository",
+        &[("VERSION", "v2.2.0")],
+    );
+    assert!(ok, "push tag: {out}");
+    let rev = |args: &[&str]| {
+        let mut s = Spec::new("git", Duration::from_secs(10)).args(args.iter().copied());
+        s.cwd = Some(e.0.clone());
+        run(&s).success_text().map(|s| s.trim().to_string())
+    };
+    let head = rev(&["rev-parse", "HEAD"]);
+    assert_eq!(
+        rev(&["--git-dir", "origin.git", "rev-parse", "v2.2.0^{commit}"]),
+        head
+    );
+    let mut notes = Spec::new("cog", Duration::from_secs(60)).args(["changelog", "--at", "v2.2.0"]);
+    notes.cwd = Some(e.0.clone());
+    let notes = run(&notes).success_text().unwrap_or_default();
+    assert!(
+        notes.contains("v2.2.0") && notes.contains("more"),
+        "notes: {notes}"
+    );
+    e.write("dist/fleet-v2.2.0-checksums.txt", "");
+    let (ok, out) = release_step(
+        &e,
+        "publish",
+        "Create GitHub Release",
+        &[
+            ("VERSION", "v2.2.0"),
+            ("NEWEST", "true"),
+            ("PRERELEASE", "false"),
+            ("CHANGELOG", &notes),
+            ("GH_TOKEN", "fake"),
+        ],
+    );
+    assert!(ok && out.contains("released v2.2.0"), "publish: {out}");
+    // Re-running the released push releases nothing, and so does a push
+    // with no releasable commit.
+    let (ok, out) = step("Parse release decision", &[]);
+    assert!(ok && out.contains("should_release=false"), "rerun: {out}");
+    e.write("docs/notes.md", "# Notes\n");
+    e.commit("docs: comment");
+    let (ok, out) = step("Parse release decision", &[]);
+    assert!(
+        ok && out.contains("should_release=false"),
+        "docs push: {out}"
+    );
+    // A releasable type that ships nothing is held by the relevance gate.
+    e.write("README.md", "docs only");
+    e.commit("fix: prose");
+    let (ok, out) = step("Parse release decision", &[]);
+    assert!(ok && out.contains("version=v2.2.1\n"), "fix: {out}");
+    let (ok, out) = step(
+        "Check the release touches a shipped artifact",
+        &[("VERSION", "v2.2.1")],
+    );
+    assert!(ok && out.contains("shipped=false"), "docs only: {out}");
+    // A forced prerelease is marked as one and never latest.
+    let (ok, out) = release_step(
+        &e,
+        "check-release",
+        "Parse release decision",
+        &[
+            ("GITHUB_REF", "refs/heads/main"),
+            ("FORCED_VERSION", "3.0.0-rc.1"),
+        ],
+    );
+    assert!(
+        ok && out.contains("version=v3.0.0-rc.1\n")
+            && out.contains("bump_args=--version 3.0.0-rc.1 --disable-bump-commit\n")
+            && out.contains("prerelease=true"),
+        "forced: {out}"
+    );
+    let (ok, out) = step(
+        "Is this the highest version ever tagged",
+        &[("TARGET", "v3.0.0-rc.1"), ("PRERELEASE", "true")],
+    );
+    assert!(
+        ok && out.contains("newest=false"),
+        "prerelease newest: {out}"
+    );
+    let (ok, out) = step(
+        "Is this the highest version ever tagged",
+        &[("TARGET", "v2.1.1"), ("PRERELEASE", "false")],
+    );
+    assert!(
+        ok && out.contains("newest=false"),
+        "maintenance newest: {out}"
+    );
+    // A missing cog is an unknown decision, never "no release".
+    fs::create_dir_all(e.0.join("only-git")).unwrap();
+    for tool in ["bash", "git"] {
+        let found =
+            run(&Spec::new("sh", Duration::from_secs(10))
+                .args(["-c", &format!("command -v {tool}")]))
+            .success_text()
+            .unwrap();
+        std::os::unix::fs::symlink(found.trim(), e.0.join("only-git").join(tool)).unwrap();
+    }
+    let path = e.0.join("only-git").to_string_lossy().to_string();
+    let (ok, out) = step("Parse release decision", &[("PATH", &path)]);
+    assert!(!ok && !out.contains("should_release"), "without cog: {out}");
 }

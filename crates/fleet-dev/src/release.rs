@@ -18,14 +18,6 @@ pub enum Command {
         title: String,
         number: String,
     },
-    Plan {
-        #[arg(long = "ref")]
-        reference: Option<String>,
-        #[arg(long)]
-        version: Option<String>,
-        #[arg(long)]
-        dry_run: bool,
-    },
     Package {
         #[arg(long)]
         target: String,
@@ -80,164 +72,6 @@ fn conventional(s: &str) -> Option<(&str, bool)> {
     ]
     .contains(&kind)
     .then_some((kind, breaking))
-}
-fn git(args: &[&str]) -> Result<String> {
-    exec("git", args, &[])
-}
-fn tags(extra: &[&str]) -> Result<Vec<(Version, String)>> {
-    let mut args = vec!["tag", "--list", "v*"];
-    args.extend_from_slice(extra);
-    Ok(git(&args)?
-        .lines()
-        .filter_map(|s| version(s).ok().map(|v| (v, s.into())))
-        .collect())
-}
-fn shipped(p: &str) -> bool {
-    p.starts_with("crates/")
-        || p.starts_with("scripts/install-release.")
-        || [
-            "Cargo.toml",
-            "Cargo.lock",
-            "rust-toolchain.toml",
-            "LICENSE",
-            ".github/workflows/cd.yml",
-        ]
-        .contains(&p)
-}
-fn plan(reference: Option<&str>, forced: Option<&str>, dry: bool) -> Result {
-    let all = tags(&[])?;
-    let last = tags(&["--merged", "HEAD"])?
-        .into_iter()
-        .max_by(|a, b| a.0.cmp(&b.0));
-    let span = last
-        .as_ref()
-        .map(|(_, s)| format!("{s}..HEAD"))
-        .unwrap_or("HEAD".into());
-    let mut reason = "no releasable commit".to_string();
-    let tag = reference.and_then(|r| r.strip_prefix("refs/tags/"));
-    let proposed = if let Some(tag) = tag {
-        let v = version(tag)?;
-        if tag != format!("v{v}") {
-            return Err("release tag must use canonical v-prefixed SemVer".into());
-        }
-        let commit = git(&["rev-parse", &format!("refs/tags/{tag}^{{commit}}")])?;
-        if commit.trim() != git(&["rev-parse", "HEAD"])?.trim() {
-            return Err("release tag does not name HEAD".into());
-        }
-        git(&["merge-base", "--is-ancestor", "HEAD", "origin/main"])
-            .map_err(|_| "release tag must name a commit merged into origin/main")?;
-        let manifest: toml::Value = toml::from_str(&fs::read_to_string("Cargo.toml")?)?;
-        if manifest["workspace"]["package"]["version"].as_str() != Some(v.to_string().as_str()) {
-            return Err("release tag differs from workspace manifest version".into());
-        }
-        if forced.is_some_and(|f| version(f).ok().as_ref() != Some(&v)) {
-            return Err("forced version differs from release tag".into());
-        }
-        reason = "checked tag on main".into();
-        Some(v)
-    } else if let Some(v) = forced {
-        reason = "forced by dispatch".into();
-        Some(version(v)?)
-    } else {
-        let messages = git(&["log", "--format=%B%x1e", &span])?;
-        let mut bump = 0;
-        for m in messages.split('\x1e') {
-            let mut lines = m.trim().lines();
-            let Some(subject) = lines.next() else {
-                continue;
-            };
-            if let Some((kind, breaking)) = conventional(subject) {
-                let breaks = breaking
-                    || lines.any(|l| {
-                        l.starts_with("BREAKING CHANGE: ") || l.starts_with("BREAKING-CHANGE: ")
-                    });
-                bump = bump.max(if breaks {
-                    3
-                } else if kind == "feat" {
-                    2
-                } else if ["fix", "perf"].contains(&kind) {
-                    1
-                } else {
-                    0
-                });
-            }
-        }
-        let changed = if last.is_some() {
-            git(&["diff", "--name-only", &span])?
-        } else {
-            git(&["ls-tree", "-r", "--name-only", "HEAD"])?
-        };
-        if bump == 0 || !changed.lines().any(shipped) {
-            None
-        } else {
-            let mut v = last
-                .as_ref()
-                .map(|(v, _)| v.clone())
-                .unwrap_or(Version::new(0, 0, 0));
-            if bump == 3 && v.major == 0 {
-                bump = 2;
-            }
-            match bump {
-                3 => {
-                    v.major += 1;
-                    v.minor = 0;
-                    v.patch = 0;
-                }
-                2 => {
-                    v.minor += 1;
-                    v.patch = 0;
-                }
-                _ => v.patch += 1,
-            }
-            v.pre = semver::Prerelease::EMPTY;
-            v.build = semver::BuildMetadata::EMPTY;
-            reason = "releasable shipped changes".into();
-            Some(v)
-        }
-    };
-    if let Some(v) = &proposed
-        && tag.is_none()
-        && all.iter().any(|(t, _)| t == v)
-    {
-        return Err(format!("v{v} is already a tag; a tag never moves").into());
-    }
-    let ready = fs::read_to_string(".github/release-readiness.toml")
-        .ok()
-        .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
-        .is_some_and(|v| v.get("ready").and_then(toml::Value::as_bool) == Some(true));
-    let release = proposed.is_some();
-    let publish =
-        release && ready && (tag.is_some() || reference == Some("refs/heads/main")) && !dry;
-    let newest = proposed.as_ref().is_some_and(|v| {
-        v.pre.is_empty() && all.iter().all(|(t, _)| v > t || tag.is_some() && v == t)
-    });
-    let prerelease = proposed.as_ref().is_some_and(|v| !v.pre.is_empty());
-    let v = if let Some(v) = proposed {
-        format!("v{v}")
-    } else if dry {
-        format!(
-            "v0.0.0-dryrun.g{}",
-            git(&["rev-parse", "--short=7", "HEAD"])?.trim()
-        )
-    } else {
-        String::new()
-    };
-    if release && !publish {
-        reason = if dry {
-            "dry run"
-        } else if !ready {
-            "release readiness held"
-        } else {
-            "only refs/heads/main publishes"
-        }
-        .into();
-    }
-    println!(
-        "release={release}\nversion={v}\nsemver={}\nnewest={newest}\nprerelease={prerelease}\npublish={publish}\nbuild={}\nreason={reason}",
-        v.trim_start_matches('v'),
-        publish || dry
-    );
-    Ok(())
 }
 fn archive(version: &str, target: &str) -> String {
     format!(
@@ -335,11 +169,6 @@ pub fn run(c: Command) -> Result {
             println!("title accepted: {title} (#{number})");
             Ok(())
         }
-        Command::Plan {
-            reference,
-            version,
-            dry_run,
-        } => plan(reference.as_deref(), version.as_deref(), dry_run),
         Command::Package {
             target,
             version,
