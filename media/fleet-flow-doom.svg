@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="960" height="560" role="img" aria-labelledby="title desc">
+<title id="title">How a Fleet Task runs</title>
+<desc id="desc">A retro first-person-shooter status screen showing the six steps of one Fleet v2 Task. 1, apply: you or VEGA store a Task with fleet apply. 2, reconcile: fleet up holds the manager lease, and the pure Task controller plans each step, which the manager persists as an intent before the effect and a receipt after it. 3, spawn: the thurbox runtime starts the agent session in its own worktree. 4, brief: the brief is delivered once, by key; messages from fleet send queue in the Task inbox. 5, declare: the worker opens a change and runs fleet declare; a ChangeRequest mirrors it on the forge, and reviews and CI are relayed back to the inbox. 6, result: fleet result concludes the Task, and fleet delete releases the session. A status bar cycles through the Task phases Pending, Spawning, Spawned, Briefed, Concluded and Releasing.</desc>
+<defs>
+<linearGradient id="fire" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffe066"/><stop offset=".45" stop-color="#ff8a1f"/><stop offset="1" stop-color="#b3120a"/></linearGradient>
+<style>text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'DejaVu Sans Mono','Liberation Mono',monospace}.bg{fill:#140806}.rim{fill:#3a2114}.frame{fill:none;stroke:#7a4a26;stroke-width:4}.card{fill:#22110a;stroke:#5a361d;stroke-width:3}.hi{stroke:#8f5a30;stroke-width:2;fill:none}.lo{stroke:#0a0402;stroke-width:2;fill:none}.t{fill:#ffb347;font-size:20px;font-weight:700;letter-spacing:1px}.l{fill:#e8d2b8;font-size:15px}.dim{fill:#b08a68;font-size:14px}.hud{fill:#ff3b1f;font-size:30px;font-weight:700;letter-spacing:2px}.lbl{fill:#c79a6b;font-size:13px;font-weight:700;letter-spacing:2px}.wire{fill:none;stroke:#6b3a1c;stroke-width:4;stroke-dasharray:8 6}.relay{fill:none;stroke:#d23a12;stroke-width:3;stroke-dasharray:6 6}.glow{fill:none;stroke:#ff4a14;stroke-width:4;opacity:0}.ph{opacity:0}.tok{animation:tok 16s linear infinite}.flick{animation:flick 2.4s steps(2) infinite}@keyframes flick{0%{opacity:1}50%{opacity:.55}}.rl{animation:rl 16s linear infinite;opacity:0}@media (prefers-color-scheme: light){.rim{fill:#2a160c}}@media (prefers-color-scheme: dark){.rim{fill:#4a2a17}}.g0{animation:g0 16s linear infinite}@keyframes g0{0%,13.4%{opacity:1}14%,100%{opacity:0}}.g1{animation:g1 16s linear infinite}@keyframes g1{0%,13.4%{opacity:0}14%,27.4%{opacity:1}28%,100%{opacity:0}}.g2{animation:g2 16s linear infinite}@keyframes g2{0%,27.4%{opacity:0}28%,41.4%{opacity:1}42%,100%{opacity:0}}.g3{animation:g3 16s linear infinite}@keyframes g3{0%,41.4%{opacity:0}42%,57.4%{opacity:1}58%,100%{opacity:0}}.g4{animation:g4 16s linear infinite}@keyframes g4{0%,57.4%{opacity:0}58%,77.4%{opacity:1}78%,100%{opacity:0}}.g5{animation:g5 16s linear infinite}@keyframes g5{0%,77.4%{opacity:0}78%,95.4%{opacity:1}96%,100%{opacity:0}}.p0{animation:p0 16s linear infinite}@keyframes p0{0%,20.4%{opacity:1}21%,100%{opacity:0}}.p1{animation:p1 16s linear infinite}@keyframes p1{0%,20.4%{opacity:0}21%,29.4%{opacity:1}30%,100%{opacity:0}}.p2{animation:p2 16s linear infinite}@keyframes p2{0%,29.4%{opacity:0}30%,43.4%{opacity:1}44%,100%{opacity:0}}.p3{animation:p3 16s linear infinite}@keyframes p3{0%,43.4%{opacity:0}44%,79.4%{opacity:1}80%,100%{opacity:0}}.p4{animation:p4 16s linear infinite}@keyframes p4{0%,79.4%{opacity:0}80%,89.4%{opacity:1}90%,100%{opacity:0}}.p5{animation:p5 16s linear infinite}@keyframes p5{0%,89.4%{opacity:0}90%,99.4%{opacity:1}}@keyframes rl{0%,65.4%{opacity:0}66%,76.4%{opacity:1}77%,100%{opacity:0}}@keyframes tok{0%{transform:translate(178px,110px)}1.5%{transform:translate(178px,110px)}12%{transform:translate(178px,110px)}15.5%{transform:translate(480px,110px)}26%{transform:translate(480px,110px)}29.5%{transform:translate(782px,110px)}40%{transform:translate(782px,110px)}43.5%{transform:translate(178px,290px)}56%{transform:translate(178px,290px)}59.5%{transform:translate(480px,290px)}76%{transform:translate(480px,290px)}79.5%{transform:translate(782px,290px)}94%{transform:translate(782px,290px)}100%{{transform:translate(782px,290px)}}}@media (prefers-reduced-motion: reduce){.tok,.flick,.rl,.g0,.g1,.g2,.g3,.g4,.g5,.p0,.p1,.p2,.p3,.p4,.p5{animation:none}.glow{opacity:.55}.rl{opacity:1}.p3{opacity:1}.tok{display:none}}</style>
+</defs>
+<rect class="rim" width="960" height="560" rx="10"/>
+<rect class="bg" x="10" y="10" width="940" height="540" rx="4"/>
+<rect class="frame" x="14" y="14" width="932" height="532"/>
+<rect x="23" y="23" width="6" height="6" fill="#8f5a30"/>
+<rect x="23" y="531" width="6" height="6" fill="#8f5a30"/>
+<rect x="931" y="23" width="6" height="6" fill="#8f5a30"/>
+<rect x="931" y="531" width="6" height="6" fill="#8f5a30"/>
+<path d="M48 40h35v7h-35zM48 47h7v7h-7zM48 54h7v7h-7zM48 61h28v7h-28zM48 68h7v7h-7zM48 75h7v7h-7zM48 82h7v7h-7zM90 40h7v7h-7zM90 47h7v7h-7zM90 54h7v7h-7zM90 61h7v7h-7zM90 68h7v7h-7zM90 75h7v7h-7zM90 82h35v7h-35zM132 40h35v7h-35zM132 47h7v7h-7zM132 54h7v7h-7zM132 61h28v7h-28zM132 68h7v7h-7zM132 75h7v7h-7zM132 82h35v7h-35zM174 40h35v7h-35zM174 47h7v7h-7zM174 54h7v7h-7zM174 61h28v7h-28zM174 68h7v7h-7zM174 75h7v7h-7zM174 82h35v7h-35zM216 40h35v7h-35zM230 47h7v7h-7zM230 54h7v7h-7zM230 61h7v7h-7zM230 68h7v7h-7zM230 75h7v7h-7zM230 82h7v7h-7zM300 40h7v7h-7zM328 40h7v7h-7zM300 47h7v7h-7zM328 47h7v7h-7zM300 54h7v7h-7zM328 54h7v7h-7zM300 61h7v7h-7zM328 61h7v7h-7zM300 68h7v7h-7zM328 68h7v7h-7zM307 75h7v7h-7zM321 75h7v7h-7zM314 82h7v7h-7zM349 40h21v7h-21zM342 47h7v7h-7zM370 47h7v7h-7zM370 54h7v7h-7zM356 61h14v7h-14zM349 68h7v7h-7zM342 75h7v7h-7zM342 82h35v7h-35z" fill="#3a0a04" transform="translate(4 4)"/>
+<path d="M48 40h35v7h-35zM48 47h7v7h-7zM48 54h7v7h-7zM48 61h28v7h-28zM48 68h7v7h-7zM48 75h7v7h-7zM48 82h7v7h-7zM90 40h7v7h-7zM90 47h7v7h-7zM90 54h7v7h-7zM90 61h7v7h-7zM90 68h7v7h-7zM90 75h7v7h-7zM90 82h35v7h-35zM132 40h35v7h-35zM132 47h7v7h-7zM132 54h7v7h-7zM132 61h28v7h-28zM132 68h7v7h-7zM132 75h7v7h-7zM132 82h35v7h-35zM174 40h35v7h-35zM174 47h7v7h-7zM174 54h7v7h-7zM174 61h28v7h-28zM174 68h7v7h-7zM174 75h7v7h-7zM174 82h35v7h-35zM216 40h35v7h-35zM230 47h7v7h-7zM230 54h7v7h-7zM230 61h7v7h-7zM230 68h7v7h-7zM230 75h7v7h-7zM230 82h7v7h-7zM300 40h7v7h-7zM328 40h7v7h-7zM300 47h7v7h-7zM328 47h7v7h-7zM300 54h7v7h-7zM328 54h7v7h-7zM300 61h7v7h-7zM328 61h7v7h-7zM300 68h7v7h-7zM328 68h7v7h-7zM307 75h7v7h-7zM321 75h7v7h-7zM314 82h7v7h-7zM349 40h21v7h-21zM342 47h7v7h-7zM370 47h7v7h-7zM370 54h7v7h-7zM356 61h14v7h-14zM349 68h7v7h-7zM342 75h7v7h-7zM342 82h35v7h-35z" fill="url(#fire)"/>
+<text class="lbl" x="916" y="62" text-anchor="end">HOW A TASK RUNS</text>
+<text class="dim" x="916" y="84" text-anchor="end">one agent session per Task</text>
+<path class="wire" d="M312 184.0H346"/>
+<path class="wire" d="M614 184.0H648"/>
+<path class="wire" d="M312 364.0H346"/>
+<path class="wire" d="M614 364.0H648"/>
+<path class="wire" d="M782.0 248V278.0H178.0V282"/>
+<path d="M-9 -7L3 0L-9 7z" fill="#a8622c" transform="translate(343 184.0) rotate(0)"/>
+<path d="M-9 -7L3 0L-9 7z" fill="#a8622c" transform="translate(645 184.0) rotate(0)"/>
+<path d="M-9 -7L3 0L-9 7z" fill="#a8622c" transform="translate(343 364.0) rotate(0)"/>
+<path d="M-9 -7L3 0L-9 7z" fill="#a8622c" transform="translate(645 364.0) rotate(0)"/>
+<path d="M-9 -7L3 0L-9 7z" fill="#a8622c" transform="translate(178.0 296) rotate(90)"/>
+<path class="relay" d="M480.0 428V454H178.0V432"/>
+<path d="M-9 -7L3 0L-9 7z" fill="#d23a12" transform="translate(178.0 431) rotate(-90)"/>
+<text class="dim" x="192.0" y="448">reviews + CI relayed to the inbox</text>
+<path class="relay rl" d="M480.0 428V454H178.0V432" style="stroke:#ffcf4a;stroke-dasharray:none"/>
+<rect class="card" x="44" y="120" width="268" height="128"/>
+<path class="hi" d="M47 245V123H309"/>
+<path class="lo" d="M47 245H309V123"/>
+<rect class="glow g0" x="40" y="116" width="276" height="136"/>
+<text class="t" x="60" y="152">01 APPLY</text>
+<text class="l" x="60" y="182">fleet apply -f task.json</text>
+<text class="l" x="60" y="204">you or VEGA store a Task</text>
+<rect class="card" x="346" y="120" width="268" height="128"/>
+<path class="hi" d="M349 245V123H611"/>
+<path class="lo" d="M349 245H611V123"/>
+<rect class="glow g1" x="342" y="116" width="276" height="136"/>
+<text class="t" x="362" y="152">02 RECONCILE</text>
+<text class="l" x="362" y="182">fleet up holds the lease</text>
+<text class="l" x="362" y="204">pure controller plans,</text>
+<text class="l" x="362" y="226">intent > effect > receipt</text>
+<rect class="card" x="648" y="120" width="268" height="128"/>
+<path class="hi" d="M651 245V123H913"/>
+<path class="lo" d="M651 245H913V123"/>
+<rect class="glow g2" x="644" y="116" width="276" height="136"/>
+<text class="t" x="664" y="152">03 SPAWN</text>
+<text class="l" x="664" y="182">thurbox runtime starts</text>
+<text class="l" x="664" y="204">the agent session in</text>
+<text class="l" x="664" y="226">its own worktree</text>
+<rect class="card" x="44" y="300" width="268" height="128"/>
+<path class="hi" d="M47 425V303H309"/>
+<path class="lo" d="M47 425H309V303"/>
+<rect class="glow g3" x="40" y="296" width="276" height="136"/>
+<text class="t" x="60" y="332">04 BRIEF</text>
+<text class="l" x="60" y="362">brief delivered once,</text>
+<text class="l" x="60" y="384">by key; fleet send</text>
+<text class="l" x="60" y="406">queues to the inbox</text>
+<rect class="card" x="346" y="300" width="268" height="128"/>
+<path class="hi" d="M349 425V303H611"/>
+<path class="lo" d="M349 425H611V303"/>
+<rect class="glow g4" x="342" y="296" width="276" height="136"/>
+<text class="t" x="362" y="332">05 DECLARE</text>
+<text class="l" x="362" y="362">worker opens a change:</text>
+<text class="l" x="362" y="384">fleet declare URL</text>
+<text class="l" x="362" y="406">ChangeRequest mirror</text>
+<rect class="card" x="648" y="300" width="268" height="128"/>
+<path class="hi" d="M651 425V303H913"/>
+<path class="lo" d="M651 425H913V303"/>
+<rect class="glow g5" x="644" y="296" width="276" height="136"/>
+<text class="t" x="664" y="332">06 RESULT</text>
+<text class="l" x="664" y="362">fleet result: Concluded</text>
+<text class="l" x="664" y="384">fleet delete releases</text>
+<text class="l" x="664" y="406">the session</text>
+<g class="tok"><rect x="-9" y="-9" width="18" height="18" fill="#ff4a14"/><rect x="-5" y="-5" width="10" height="10" fill="#ffe066"/></g>
+<rect x="24" y="476" width="912" height="60" fill="#2a160c" stroke="#7a4a26" stroke-width="3"/>
+<path class="hi" d="M27 533V479H351"/>
+<text class="lbl" x="189.0" y="529" text-anchor="middle">PHASE</text>
+<path class="hi" d="M357 533V479H651"/>
+<text class="lbl" x="504.0" y="529" text-anchor="middle">CONTROLLER</text>
+<path class="hi" d="M657 533V479H933"/>
+<text class="lbl" x="795.0" y="529" text-anchor="middle">WORKER</text>
+<path d="M354 476V536" stroke="#7a4a26" stroke-width="3"/>
+<path d="M654 476V536" stroke="#7a4a26" stroke-width="3"/>
+<text class="hud ph p0" x="189" y="510" text-anchor="middle">PENDING</text>
+<text class="hud ph p1" x="189" y="510" text-anchor="middle">SPAWNING</text>
+<text class="hud ph p2" x="189" y="510" text-anchor="middle">SPAWNED</text>
+<text class="hud ph p3" x="189" y="510" text-anchor="middle">BRIEFED</text>
+<text class="hud ph p4" x="189" y="510" text-anchor="middle">CONCLUDED</text>
+<text class="hud ph p5" x="189" y="510" text-anchor="middle">RELEASING</text>
+<text class="l flick" x="504" y="506" text-anchor="middle">owns status, never merges</text>
+<text class="l" x="795" y="506" text-anchor="middle">writes status.result</text>
+</svg>
