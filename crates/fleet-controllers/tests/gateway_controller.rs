@@ -13,7 +13,7 @@ use fleet_api::conversation::{
 use fleet_api::gateway::{
     Author, AuthorKind, GatewayDefaults, Mention, Person, RouteConfig, Verified,
 };
-use fleet_api::inbox::{InboxEntry, MAX_INBOX};
+use fleet_api::inbox::{Deliveries, InboxEntry, MAX_INBOX, check_append};
 use fleet_api::plan::{Plan, Probe};
 use fleet_api::result::{Outcome, TaskResult};
 use fleet_api::talk::{
@@ -1129,6 +1129,85 @@ fn a_full_inbox_holds_a_childs_items_without_reading_past_them() {
         GatewayController::child_due(&gw, &c),
         "due again once the inbox drains"
     );
+}
+
+#[test]
+fn more_unread_items_than_the_inbox_holds_go_out_in_batches_the_store_accepts() {
+    let undelivered = |n: usize| -> Vec<InboxEntry> {
+        (0..n)
+            .map(|i| InboxEntry {
+                key: format!("task/{TASK}/{TASK_UID}/send/{i}"),
+                from: "cli/a".into(),
+                text: "m".into(),
+                about: None,
+                answers: Vec::new(),
+                queued_at: 1,
+            })
+            .collect()
+    };
+    let declared: Vec<Value> = (0..30)
+        .map(|i| json!({"kind": "Comment", "id": format!("c{i}"), "text": "hi"}))
+        .collect();
+    let c = child(
+        "c",
+        "k1",
+        12,
+        TaskStatus {
+            declared,
+            result: Some(TaskResult {
+                generation: 1,
+                outcome: Outcome::Shipped,
+                summary: "done".into(),
+                artifacts: Vec::new(),
+                outputs: BTreeMap::new(),
+            }),
+            ..TaskStatus::default()
+        },
+    );
+    let mut messages = thread();
+    messages.push(person(T0 + 400_000, 2, ALEX, "more"));
+    let obs = || GatewayObservations {
+        conversation: Some(Observation::Known(Some(conversation(2, messages.clone())))),
+        children: Some(Observation::Known(vec![c.clone()])),
+    };
+    // Every planned append passes the store's own check in turn.
+    let accepted = |inbox: &[InboxEntry], plan: &Plan| {
+        let mut inbox = inbox.to_vec();
+        for e in &plan.appends {
+            check_append(&inbox, &Deliveries::default(), e).unwrap();
+            inbox.push(e.clone());
+        }
+    };
+    // Five undelivered: room for sixteen, the relay first.
+    let inbox = undelivered(5);
+    let t = task(
+        tied_at(1),
+        TaskStatus {
+            inbox: inbox.clone(),
+            ..TaskStatus::default()
+        },
+    );
+    let (plan, gw) = run(&t, obs());
+    accepted(&inbox, &plan);
+    assert_eq!(plan.appends.len(), MAX_INBOX + 1 - 5);
+    assert!(
+        plan.appends[0].key.contains("/gateway/"),
+        "{:#?}",
+        plan.appends[0]
+    );
+    assert_eq!(gw.cursor, 2);
+    assert_eq!(gw.children["c"].declared, 15);
+    assert_eq!(gw.children["c"].result, None);
+    assert!(GatewayController::child_due(&gw, &c), "the rest waits");
+    // Delivered: the rest and the result.
+    let t = task(Some(gw), TaskStatus::default());
+    let (plan, gw) = run(&t, obs());
+    accepted(&[], &plan);
+    assert_eq!(plan.appends.len(), 16);
+    assert!(plan.appends[15].key.ends_with("/result/1"));
+    assert_eq!(gw.children["c"].declared, 30);
+    assert_eq!(gw.children["c"].result, Some(1));
+    assert!(!GatewayController::child_due(&gw, &c));
 }
 
 // --- Due. ----------------------------------------------------------------

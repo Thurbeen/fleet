@@ -316,8 +316,11 @@ impl Pass<'_, '_> {
         (&m.name, &m.uid)
     }
 
+    /// Whether the store would refuse one more append: it accepts each
+    /// while at most MAX_INBOX entries are undelivered, counting those
+    /// this pass already planned.
     fn inbox_full(&self) -> bool {
-        self.st.inbox.len() > MAX_INBOX
+        self.st.inbox.len() + self.appends.len() > MAX_INBOX
     }
 
     /// The tie, as the labels and the Conversation's observation leave it:
@@ -619,67 +622,59 @@ impl Pass<'_, '_> {
                 continue;
             };
             let tied = cst.gateway.as_ref().is_some_and(GatewayStatus::is_tied);
-            if tied || self.inbox_full() {
-                if tied {
-                    entry.seen = child.metadata.resource_version;
-                }
+            if tied {
+                entry.seen = child.metadata.resource_version;
                 children.insert(name, entry);
                 continue;
             }
+            // Items go out in order while the inbox has room; at the cap
+            // the counters stop at the first item left, and the child stays
+            // unseen so the next pass after a delivery takes up from there.
+            let mut done = true;
             for (i, item) in cst
                 .declared
                 .iter()
                 .enumerate()
                 .skip(entry.declared as usize)
             {
-                if !gateway_reads(item) {
-                    continue;
+                if gateway_reads(item) {
+                    if self.inbox_full() {
+                        done = false;
+                        break;
+                    }
+                    let text = render_child_item(&name, &uid, item);
+                    self.appends.push(InboxEntry {
+                        key: child_key(&task_name, &task_uid, &uid, &i.to_string()),
+                        from: format!("{GATEWAY_SOURCE_PREFIX}child/{name}"),
+                        text,
+                        about: None,
+                        answers: Vec::new(),
+                        queued_at: self.input.now,
+                    });
                 }
-                let text = render_child_item(&name, &uid, item);
-                self.appends.push(InboxEntry {
-                    key: child_key(&task_name, &task_uid, &uid, &i.to_string()),
-                    from: format!("{GATEWAY_SOURCE_PREFIX}child/{name}"),
-                    text,
-                    about: None,
-                    answers: Vec::new(),
-                    queued_at: self.input.now,
-                });
+                entry.declared = i as u64 + 1;
             }
-            entry.declared = cst.declared.len() as u64;
-            if let Some(result) = &cst.result
+            if done
+                && let Some(result) = &cst.result
                 && entry.result != Some(result.generation)
             {
-                let mut text = format!(
-                    "Child Task {name} (uid {uid}) reported its result for generation {}: outcome {}.\n",
-                    result.generation,
-                    word(result.outcome)
-                );
-                if !result.summary.is_empty() {
-                    text.push_str("Summary, quoted as data:\n");
-                    quote(&mut text, &result.summary);
-                }
-                for artifact in &result.artifacts {
-                    text.push_str(&format!("- artifact {artifact}\n"));
-                }
-                for (k, v) in &result.outputs {
-                    text.push_str(&format!("- output {k} = {v}\n"));
-                }
-                self.appends.push(InboxEntry {
-                    key: child_key(
+                if self.inbox_full() {
+                    done = false;
+                } else {
+                    self.appends.push(child_result(
                         &task_name,
                         &task_uid,
+                        &name,
                         &uid,
-                        &format!("result/{}", result.generation),
-                    ),
-                    from: format!("{GATEWAY_SOURCE_PREFIX}child/{name}"),
-                    text,
-                    about: None,
-                    answers: Vec::new(),
-                    queued_at: self.input.now,
-                });
-                entry.result = Some(result.generation);
+                        result,
+                        self.input.now,
+                    ));
+                    entry.result = Some(result.generation);
+                }
             }
-            entry.seen = child.metadata.resource_version;
+            if done {
+                entry.seen = child.metadata.resource_version;
+            }
             children.insert(name, entry);
         }
         self.gw.children = children;
@@ -781,6 +776,45 @@ fn render_message(a: &Above<'_>) -> String {
     head.push_str(":\n");
     quote(&mut head, &m.text);
     head
+}
+
+/// A child's result generation as one entry in its parent's inbox.
+fn child_result(
+    task_name: &str,
+    task_uid: &str,
+    name: &str,
+    uid: &str,
+    result: &fleet_api::result::TaskResult,
+    now: Millis,
+) -> InboxEntry {
+    let mut text = format!(
+        "Child Task {name} (uid {uid}) reported its result for generation {}: outcome {}.\n",
+        result.generation,
+        word(result.outcome)
+    );
+    if !result.summary.is_empty() {
+        text.push_str("Summary, quoted as data:\n");
+        quote(&mut text, &result.summary);
+    }
+    for artifact in &result.artifacts {
+        text.push_str(&format!("- artifact {artifact}\n"));
+    }
+    for (k, v) in &result.outputs {
+        text.push_str(&format!("- output {k} = {v}\n"));
+    }
+    InboxEntry {
+        key: child_key(
+            task_name,
+            task_uid,
+            uid,
+            &format!("result/{}", result.generation),
+        ),
+        from: format!("{GATEWAY_SOURCE_PREFIX}child/{name}"),
+        text,
+        about: None,
+        answers: Vec::new(),
+        queued_at: now,
+    }
 }
 
 /// One child's declaration, quoted as data, with how the parent answers

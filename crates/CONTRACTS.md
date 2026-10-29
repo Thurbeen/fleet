@@ -481,7 +481,9 @@ Guarantees, each with its test in `gateway_controller`,
   the mirror above the cursor count a gap and raise
   `NeedsAttention/RelayGap` until the next relay that carries something.
   More than 20 undelivered entries hold the relay without moving the
-  cursor or `seen`.
+  cursor or `seen`. One pass plans no more appends than the store accepts
+  in turn: the relay first, then each child's items in order; a child's
+  counters stop at the first item left, and the child stays due.
 - **Answers.** A relay carries `answers` for each Question posted in the
   thread, not yet answered, that an admitted message was written after.
   The store records every `answers` id of any append (`fleet send

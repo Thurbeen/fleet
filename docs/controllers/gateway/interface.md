@@ -434,6 +434,10 @@ again. An item without an `id` is skipped and named in
   how many older ones remain on the platform.
 - While the inbox holds more than 20 undelivered entries, new messages wait.
   Posting goes on meanwhile.
+- One pass appends no more entries than the store accepts. The relay comes
+  first, then each child's items in order.
+- A child's items past that bound wait for the next pass after a delivery.
+  The items that went out are not sent again.
 
 ### Answers
 

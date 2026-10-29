@@ -631,3 +631,67 @@ fn a_child_relays_its_declarations_and_result_into_its_parents_inbox() {
         .stdout_has("gateway children 1");
     env.assert_no_temp();
 }
+
+#[test]
+fn a_parent_relays_more_unread_child_items_than_its_inbox_holds_in_bounded_batches() {
+    let mut env = Env::new("child-burst");
+    env.set_var("USER", "tester");
+    env.apply(support::task("p", true)).ok();
+    env.reconcile().ok();
+    let p_uid = uid_of(&env, "task", "p");
+    env.apply(child_of("c", "p", &p_uid, true)).ok();
+    env.reconcile().ok();
+    let c_uid = uid_of(&env, "task", "c");
+    // More unread items than the store accepts into one inbox: the child
+    // declares them while the parent is not swept, as after a downtime.
+    const BURST: usize = 30;
+    for i in 0..BURST {
+        env.fleet(&[
+            "declare",
+            "c",
+            "--json",
+            &format!(r#"{{"kind":"Comment","id":"c{i}","text":"step {i} done"}}"#),
+        ])
+        .ok();
+    }
+    env.fleet(&[
+        "result",
+        "c",
+        "--generation",
+        "1",
+        "--outcome",
+        "shipped",
+        "--summary",
+        "all steps done",
+        "--output",
+        "prUrl=\"https://example.test/pr/1\"",
+    ])
+    .ok();
+    // Each sweep relays what the inbox has room for and delivers it; no
+    // sweep fails, and the parent drains every item in order.
+    let mut idle = false;
+    for _ in 0..BURST {
+        let report = env.reconcile().ok().json();
+        assert_eq!(report["errors"], json!([]), "{report:#}");
+        let pending = env.status("p")["inbox"].as_array().map_or(0, Vec::len);
+        assert!(pending <= 21, "{pending} undelivered entries");
+        if report["idle"] == true {
+            idle = true;
+            break;
+        }
+    }
+    assert!(idle, "the parent never settled");
+    let keys: Vec<String> = receipts(&env, "p")
+        .iter()
+        .map(|r| r["key"].as_str().unwrap().to_string())
+        .collect();
+    let mut want: Vec<String> = (0..BURST)
+        .map(|i| format!("task/p/{p_uid}/gateway/child/{c_uid}/{i}"))
+        .collect();
+    want.push(format!("task/p/{p_uid}/gateway/child/{c_uid}/result/1"));
+    assert_eq!(keys, want);
+    let gw = gateway(&env, "p");
+    assert_eq!(gw["children"]["c"]["declared"], BURST, "{gw:#}");
+    assert_eq!(gw["children"]["c"]["result"], 1, "{gw:#}");
+    env.assert_no_temp();
+}
