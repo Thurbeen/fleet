@@ -117,6 +117,10 @@ pub struct RuntimeConfig {
     /// thurbox: `delete` (the default) removes a session's worktrees with it;
     /// `keep` leaves them, restorable in thurbox.
     pub workspace_cleanup: Option<String>,
+    /// thurbox: how each harness is trusted in its workspace: `codex`,
+    /// `claude` or `none`, over the built-in entries for those harnesses.
+    #[serde(default)]
+    pub workspace_trust: BTreeMap<String, String>,
 }
 
 impl Config {

@@ -26,7 +26,9 @@ use fleet_manager::{
     apply_conversation, beat, declare, declare_change_request, delete, receive, record_result,
     send,
 };
-use fleet_runtime::{Cleanup, FakeHost, FakeRuntime, Repositories, ThurboxConfig, ThurboxRuntime};
+use fleet_runtime::{
+    Cleanup, FakeHost, FakeRuntime, Repositories, ThurboxConfig, ThurboxRuntime, TrustInterface,
+};
 use fleet_store::{FileStore, SystemClock};
 use serde_json::{Value, json};
 
@@ -974,6 +976,14 @@ fn open_reloadable_runtime(
                     )));
                 }
             };
+            for (harness, name) in &rt.workspace_trust {
+                let Some(interface) = TrustInterface::parse(name) else {
+                    return Err(fail(format!(
+                        "runtime.workspaceTrust.{harness} {name:?}: use codex, claude or none"
+                    )));
+                };
+                cfg.workspace_trust.insert(harness.clone(), interface);
+            }
             let handle = cfg.repositories.clone();
             Ok((Box::new(ThurboxRuntime::new(cfg)), Some(handle)))
         }

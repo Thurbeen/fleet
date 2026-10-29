@@ -44,6 +44,13 @@ fleet up
 [Initialization and the VEGA starter](docs/configuration/init.md) covers the
 config, the workspace and `fleet up` in detail.
 
+Fleet starts a `codex` session that trusts its workspace for that session
+only. It writes nothing to Codex's configuration. Claude Code has no
+per-session trust interface, so a `claude` Task waits at Claude's trust dialog
+with `NeedsAttention/WorkspaceUntrusted` until a person trusts the folder.
+Fleet never answers a trust or permission dialog. See
+[workspace trust](crates/CONTRACTS.md#workspace-trust).
+
 ## First steps
 
 Save a Task as `task.json`. Set `workspace.dir` to an absolute directory that

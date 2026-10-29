@@ -1263,6 +1263,11 @@ impl Manager<'_> {
                 note("ready", o.why());
                 obs.ready = Some(o);
             }
+            Probe::WorkspaceTrust { session, workspace } => {
+                let o = rt.workspace_trust(session, workspace);
+                note("workspaceTrust", o.why());
+                obs.workspace_trust = Some(o);
+            }
             Probe::BriefDelivered { session, key: k } => {
                 let o = rt.brief_delivered(session, k);
                 note("briefDelivered", o.why());

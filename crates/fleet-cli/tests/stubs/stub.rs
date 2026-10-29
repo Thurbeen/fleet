@@ -1241,10 +1241,44 @@ fn answer(
                 env_names.extend(map.into_keys());
             }
 
+            // As thurbox 2.76 reports them: the opaque agent arguments in
+            // order, and with `--worktree-branch` one worktree per
+            // repository, the primary's being the session's cwd.
+            let agent_args: Vec<String> = args
+                .iter()
+                .enumerate()
+                .filter_map(|(i, a)| match a.strip_prefix("--agent-arg=") {
+                    Some(v) => Some(v.to_string()),
+                    None if a == "--agent-arg" => args.get(i + 1).cloned(),
+                    None => None,
+                })
+                .collect();
+            let mut cwd = json!(repo);
+            let mut worktrees = json!([]);
+            if let Some(branch) = opt(args, "--worktree-branch") {
+                let mut sources = vec![repo.clone()];
+                sources.extend(
+                    opts(args, "--add-repo")
+                        .iter()
+                        .map(|r| r.split('@').next().unwrap_or_default().to_string()),
+                );
+                let list: Vec<Value> = sources
+                    .iter()
+                    .enumerate()
+                    .map(|(i, source)| {
+                        json!({"branch": branch, "created_by_thurbox": true, "repo_path": source,
+                               "worktree_path": format!("/stub/worktrees/{n}-{i}/{}", branch.replace('/', "-"))})
+                    })
+                    .collect();
+                cwd = list[0]["worktree_path"].clone();
+                worktrees = json!(list);
+            }
+            let hooked = matches!(ready.as_str(), "idle" | "done" | "working" | "blocked");
             let mut s = json!({
                 "id": format!("00000000-0000-4000-8000-{n:012}"),
                 "name": opt(args, "--name"), "key": key, "host": host,
-                "agent": opt(args, "--agent"), "cwd": opt(args, "--repo-path"),
+                "agent": opt(args, "--agent"), "cwd": cwd, "worktrees": worktrees,
+                "agent_args": agent_args, "hook_reported": hooked,
                 "state": ready, "stopped": false, "meta": {}, "sent": [], "env": env_names
             });
             if let Some(fields) = state["spawnFields"].as_object() {
@@ -1285,7 +1319,9 @@ fn answer(
         "capture" => {
             let id = args.get(2).cloned().unwrap_or_default();
             let mut capture = state["capture"].clone();
-            capture["session_id"] = json!(id);
+            if capture["session_id"].is_null() {
+                capture["session_id"] = json!(id);
+            }
             ok(capture)
         }
         "send" => {
