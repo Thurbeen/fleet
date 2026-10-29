@@ -597,6 +597,10 @@ fn up_flushes_its_sweeps_to_a_collector_when_interrupted() {
         .filter(|s| s.name == "reconcile pass")
         .collect();
     assert!(!passes.is_empty(), "{spans:#?}");
+    assert_eq!(
+        passes[0].resource["service.name"], "fleet",
+        "the default name"
+    );
     assert!(
         passes.iter().all(|p| p.parent.is_empty()),
         "each sweep is a root: {passes:#?}"
