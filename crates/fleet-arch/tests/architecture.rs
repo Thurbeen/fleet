@@ -32,6 +32,7 @@ fn this_workspace_obeys_its_architecture() {
         "fleet-forge",
         "fleet-plugin",
         "fleet-gateway",
+        "fleet-telemetry",
         "fleet-dev",
     ] {
         assert!(
@@ -540,6 +541,82 @@ fn the_rules_keep_spawning_in_fleet_exec() {
             .unwrap_or_else(|| panic!("{path} is not restricted"));
         assert_eq!(r.allowed, vec!["fleet-exec".to_string()], "{path}");
     }
+}
+
+/// Telemetry's rules, against the real rules file: fleet-telemetry is an
+/// adapter on no other Fleet crate, the CLI alone wires it, both pure
+/// crates probe its edge, and the SDK and the OTLP exporter are named by it
+/// alone.
+#[test]
+fn the_rules_keep_the_sdk_and_exporter_in_fleet_telemetry() {
+    let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
+    let telemetry = rules
+        .crates
+        .get("fleet-telemetry")
+        .expect("fleet-telemetry is governed");
+    assert_eq!(telemetry.role, fleet_arch::Role::Adapter);
+    assert!(telemetry.deps.is_empty());
+    let dependants: Vec<&String> = rules
+        .crates
+        .iter()
+        .filter(|(_, r)| r.deps.iter().any(|d| d == "fleet-telemetry"))
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(
+        dependants,
+        vec!["fleet-cli"],
+        "only the edge wires telemetry"
+    );
+    for pure in ["fleet-api", "fleet-controllers"] {
+        assert!(
+            rules.crates[pure]
+                .probes
+                .iter()
+                .any(|p| p == "fleet-telemetry"),
+            "{pure} probes the telemetry edge"
+        );
+    }
+    for path in ["opentelemetry_sdk", "opentelemetry_otlp"] {
+        let r = rules
+            .restricted
+            .iter()
+            .find(|r| r.path == path)
+            .unwrap_or_else(|| panic!("{path} is not restricted"));
+        assert_eq!(r.allowed, vec!["fleet-telemetry".to_string()], "{path}");
+    }
+}
+
+/// The telemetry rule on a fixture: the crate that owns the SDK may name
+/// it; a manager that installs its own provider is caught.
+#[test]
+fn only_the_telemetry_crate_names_the_sdk() {
+    let rules = format!(
+        "{RULES}\n[crates.fx-tel]\nrole = \"adapter\"\ndeps = []\n\n[[restricted]]\npath = \"fx_sdk\"\nallowed = [\"fx-tel\"]\nwhy = \"one crate exports telemetry\"\n"
+    );
+    let base = [
+        ("architecture.toml", rules.as_str()),
+        (
+            "crates/fx-tel/fixture.toml",
+            "[package]\nname = \"fx-tel\"\n\n[dependencies]\nfx-sdk = \"1\"\n",
+        ),
+        (
+            "crates/fx-tel/src/lib.rs",
+            "pub fn init() { fx_sdk::install(); }\n",
+        ),
+    ];
+    expect("telemetry-clean", &base, &[]);
+
+    let mgr_manifest = format!(
+        "{}fx-sdk = \"1\"\n",
+        manifest("fx-mgr", &["fx-api", "fx-ctl"])
+    );
+    let mut dirty: Vec<(&str, &str)> = base.to_vec();
+    dirty.push(("crates/fx-mgr/fixture.toml", &mgr_manifest));
+    dirty.push((
+        "crates/fx-mgr/src/lib.rs",
+        "pub fn run() { let _ = fx_ctl::plan(); let _ = fx_api::FieldManager::Worker; fx_sdk::install(); }\n",
+    ));
+    expect("telemetry-bypass", &dirty, &[("restricted", "fx-mgr")]);
 }
 
 /// The forge follow-on's rules, against the real rules file: fleet-forge is

@@ -39,7 +39,7 @@ Concluded Task whose inbox is empty unless it is being deleted.
 | Pending, `dispatch: false` | None. |
 | Pending, `dispatch: true` | `Host { host }`. |
 | Spawning | `Find { host, key }`. |
-| Spawned | `Find`; `Ready` for the recorded session; `BriefDelivered` when a brief intent exists without a known receipt, else the inbox probes below. |
+| Spawned | `Find`; `WorkspaceTrust` and `Ready` for the recorded session; `BriefDelivered` when a brief intent exists without a known receipt, else the inbox probes below. |
 | Briefed, no worker result | `Find`; the inbox probes below. |
 | Concluded, an inbox entry to deliver | `Find`; the inbox probes below. |
 | Concluded otherwise, or Stalled | None. |
@@ -49,7 +49,8 @@ The inbox probes, for the oldest entry not given up on: `Ready` for the
 recorded session, and `BriefDelivered` under the entry's key when it was
 sent without a known receipt.
 
-`Observations` holds `host`, `find`, `ready`, `brief_delivered` and `at_rest`.
+`Observations` holds `host`, `find`, `ready`, `workspace_trust`,
+`brief_delivered` and `at_rest`.
 Each is optional: `None` means no answer was supplied, not a negative answer.
 Each supplied answer is an [Observation](../../../crates/fleet-api/src/observation.rs):
 
@@ -139,9 +140,10 @@ return `Observation<T>`; a refused effect is
 | `prepare_execution` | Resolved execution | Freeze the runtime model-variable mapping into its private environment, or Unknown. |
 | `env_source` | Explicit file/command source | Bounded manager-local JSON string map, or redacted Unknown. |
 | `host` | Host name | Whether the runtime can reach it. |
-| `spawn` | `SpawnSpec` | `Spawned { session, adopted }`, `Unmapped { url }` for a repository the runtime has no source for, or Failed/Unknown. |
+| `spawn` | `SpawnSpec` | `Spawned { session, adopted }`, `Unmapped { url }` for a repository the runtime has no source for, `TrustUnmapped { harness }` for a harness it knows no workspace-trust interface for, or Failed/Unknown. |
 | `find` | Host and session key | Optional session under that key, or Unknown. |
 | `ready` | `SessionRef` | Whether the session can receive input now. |
+| `workspace_trust` | `SessionRef` and the Task's workspace | `Trusted { how }`, `Untrusted { gap, why }` with gap `Unsupported` or `Mismatch`, or Unknown. |
 | `brief` | Session, text and intent key | `Delivered { already }`, or Failed/Unknown. |
 | `brief_delivered` | Session and intent key | Whether that brief was delivered, or Unknown. |
 | `at_rest` | `SessionRef` | Whether it is safe to release that recorded session, or Unknown. |
@@ -157,6 +159,22 @@ agent. Explicit provider commands still run through the same bounded executor
 with either adapter; command resolution requires a lease above 20000 ms and
 renews it per source. Both implement the same port; neither is called from
 pure code.
+
+### Workspace trust
+
+Workspace trust is an agent's own gate on a folder's project settings. It is
+not a permission policy, and it approves no tool action. The controller sees
+only the port's answer and knows no harness.
+
+- `Trusted` lets the brief proceed to the readiness check.
+- `Untrusted` holds the brief and asks a person, with the adapter's `why`.
+- Unknown holds the brief. It asks nobody, because it proves nothing.
+
+The thurbox adapter reads the harness from the session row's `agent`. It
+takes the harness's interface from `runtime.workspaceTrust`. The
+[runtime contract](../../../crates/CONTRACTS.md#workspace-trust) lists each
+interface and what it proves. The fake adapter answers from each session's
+`trusted` flag and its `workspaceTrust` fault.
 
 ## Store port and write ownership
 

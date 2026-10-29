@@ -42,6 +42,7 @@
 
 mod execution;
 pub mod plugins;
+mod telemetry;
 pub mod verbs;
 
 use std::collections::BTreeMap;
@@ -271,6 +272,7 @@ impl Manager<'_> {
                     return Ok(());
                 }
             };
+            let _pass = telemetry::pass(passes, &tasks);
             let mut busy = false;
             // Fleet's login per forge host, asked once per sweep.
             let mut whoami: BTreeMap<String, Observation<String>> = BTreeMap::new();
@@ -328,7 +330,12 @@ impl Manager<'_> {
                 // conflict on every sweep.
                 let mut moved = false;
                 if task_due {
-                    let step = self.reconcile_task(obj, lease, opts.lease_ttl, report);
+                    let step = telemetry::reconcile(
+                        "TaskController",
+                        obj,
+                        || self.clock.now(),
+                        || self.reconcile_task(obj, lease, opts.lease_ttl, report),
+                    );
                     busy |= self.tally(step, &obj.key(), report)?;
                     moved = true;
                 }
@@ -349,13 +356,20 @@ impl Manager<'_> {
                     let Some(current) = fresh(moved, report) else {
                         continue;
                     };
-                    let step = self.reconcile_forge(
+                    let step = telemetry::reconcile(
+                        "ForgeController",
                         &current,
-                        lease,
-                        opts.lease_ttl,
-                        report,
-                        &mut whoami,
-                        &workers,
+                        || self.clock.now(),
+                        || {
+                            self.reconcile_forge(
+                                &current,
+                                lease,
+                                opts.lease_ttl,
+                                report,
+                                &mut whoami,
+                                &workers,
+                            )
+                        },
                     );
                     busy |= self.tally(step, &obj.key(), report)?;
                     moved = true;
@@ -364,8 +378,12 @@ impl Manager<'_> {
                     let Some(current) = fresh(moved, report) else {
                         continue;
                     };
-                    let step =
-                        self.reconcile_gateway(&current, lease, opts.lease_ttl, report, &tasks);
+                    let step = telemetry::reconcile(
+                        "GatewayController",
+                        &current,
+                        || self.clock.now(),
+                        || self.reconcile_gateway(&current, lease, opts.lease_ttl, report, &tasks),
+                    );
                     busy |= self.tally(step, &obj.key(), report)?;
                 }
             }
@@ -406,7 +424,12 @@ impl Manager<'_> {
         let mut busy = false;
         for obj in due {
             *lease = self.store.renew_lease(lease, ttl)?;
-            let step = self.reconcile_change_request(obj, lease, ttl, report, &mut deferred);
+            let step = telemetry::reconcile(
+                "ChangeRequestController",
+                obj,
+                || self.clock.now(),
+                || self.reconcile_change_request(obj, lease, ttl, report, &mut deferred),
+            );
             busy |= self.tally(step, &obj.key(), report)?;
         }
         Ok(busy)
@@ -452,7 +475,7 @@ impl Manager<'_> {
             *lease = self.store.renew_lease(lease, ttl)?;
             let answer = match deferred.get(&change.host) {
                 Some(d) => d.observation(),
-                None => forge.change(change),
+                None => telemetry::forge_poll(obj, &change.host, || forge.change(change)),
             };
             if let ChangeObservation::Unknown {
                 kind,
@@ -546,7 +569,12 @@ impl Manager<'_> {
         let mut busy = false;
         for obj in due {
             *lease = self.store.renew_lease(lease, ttl)?;
-            let step = self.reconcile_conversation(obj, lease, ttl, report, cache);
+            let step = telemetry::reconcile(
+                "ConversationController",
+                obj,
+                || self.clock.now(),
+                || self.reconcile_conversation(obj, lease, ttl, report, cache),
+            );
             busy |= self.tally(step, &obj.key(), report)?;
         }
         Ok(busy)
@@ -713,7 +741,12 @@ impl Manager<'_> {
         let mut busy = false;
         for obj in objects.iter().filter(|o| ListenerController::due(o, now)) {
             *lease = self.store.renew_lease(lease, ttl)?;
-            let step = self.reconcile_listener(obj, lease, ttl, report, cache);
+            let step = telemetry::reconcile(
+                "ListenerController",
+                obj,
+                || self.clock.now(),
+                || self.reconcile_listener(obj, lease, ttl, report, cache),
+            );
             busy |= self.tally(step, &obj.key(), report)?;
         }
         Ok(busy)
@@ -973,7 +1006,9 @@ impl Manager<'_> {
             // Intent first (written above), effect under a fresh lease,
             // receipt after.
             *lease = self.store.renew_lease(lease, ttl)?;
-            let outcome = forge.mark_ready(change, expect, &effect.key);
+            let outcome = telemetry::effect(obj, effect, || {
+                forge.mark_ready(change, expect, &effect.key)
+            });
             if let Observation::Unknown { why } = &outcome {
                 report
                     .unknowns
@@ -1340,7 +1375,7 @@ impl Manager<'_> {
             // already started when the lease changed hands is adopted or
             // refused by its key.)
             *lease = self.store.renew_lease(lease, ttl)?;
-            let outcome = self.perform(effect);
+            let outcome = telemetry::effect(obj, effect, || self.perform(effect));
             if let Observation::Unknown { why } = &outcome {
                 report
                     .unknowns
@@ -1394,6 +1429,11 @@ impl Manager<'_> {
                 let o = rt.ready(session);
                 note("ready", o.why());
                 obs.ready = Some(o);
+            }
+            Probe::WorkspaceTrust { session, workspace } => {
+                let o = rt.workspace_trust(session, workspace);
+                note("workspaceTrust", o.why());
+                obs.workspace_trust = Some(o);
             }
             Probe::BriefDelivered { session, key: k } => {
                 let o = rt.brief_delivered(session, k);

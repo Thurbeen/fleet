@@ -70,6 +70,8 @@ A Task names its repositories. The runtime decides how they become files.
   `<keyPrefix>/<session key>`. `runtime.repositories` in `fleet.toml` maps
   each URL to its source checkout. An unmapped URL keeps the Task in Pending
   with `RepositoryUnmapped`.
+- With thurbox, a `harness` that `runtime.workspaceTrust` does not map keeps
+  the Task in Pending with `TrustUnmapped`.
 - Deleting the session cleans the workspace. With thurbox, the worktrees go
   with the session by default. `runtime.workspaceCleanup = "keep"` keeps
   them instead.

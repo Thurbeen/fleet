@@ -11,7 +11,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use fleet_api::change_request::ChangeRequestDefaults;
 use fleet_api::follow::ForgeDefaults;
 use fleet_api::forge::Forge;
@@ -26,7 +26,9 @@ use fleet_manager::{
     apply_conversation, beat, declare, declare_change_request, delete, receive, record_result,
     send,
 };
-use fleet_runtime::{Cleanup, FakeHost, FakeRuntime, Repositories, ThurboxConfig, ThurboxRuntime};
+use fleet_runtime::{
+    Cleanup, FakeHost, FakeRuntime, Repositories, ThurboxConfig, ThurboxRuntime, TrustInterface,
+};
 use fleet_store::{FileStore, SystemClock};
 use serde_json::{Value, json};
 
@@ -244,17 +246,31 @@ fn fail(message: impl Into<String>) -> Failure {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    match run(cli) {
-        Ok(()) => ExitCode::SUCCESS,
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    let name = matches.subcommand_name().unwrap_or_default().to_string();
+    let telemetry = fleet_telemetry::init(VERSION).unwrap_or_else(|why| {
+        eprintln!("warning: telemetry is off: {why}");
+        fleet_telemetry::Telemetry::default()
+    });
+    let command = || match run(cli) {
+        Ok(()) => 0,
         Err(f) => {
             eprintln!("error: {}", f.message);
             if let Some(h) = f.hint {
                 eprintln!("hint: {h}");
             }
-            ExitCode::from(f.code)
+            f.code
         }
-    }
+    };
+    // `up` runs until Ctrl-C: each of its sweeps is a trace of its own.
+    let code = if name == "up" {
+        command()
+    } else {
+        telemetry.command(&name, command)
+    };
+    telemetry.shutdown();
+    ExitCode::from(code)
 }
 
 fn run(cli: Cli) -> Result<(), Failure> {
@@ -969,6 +985,14 @@ fn open_reloadable_runtime(
                     )));
                 }
             };
+            for (harness, name) in &rt.workspace_trust {
+                let Some(interface) = TrustInterface::parse(name) else {
+                    return Err(fail(format!(
+                        "runtime.workspaceTrust.{harness} {name:?}: use codex, claude or none"
+                    )));
+                };
+                cfg.workspace_trust.insert(harness.clone(), interface);
+            }
             let handle = cfg.repositories.clone();
             Ok((Box::new(ThurboxRuntime::new(cfg)), Some(handle)))
         }

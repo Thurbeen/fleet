@@ -16,15 +16,15 @@ use std::time::Duration;
 
 use fleet_api::Observation;
 use fleet_api::plan::{EffectOutcome, SpawnSpec};
-use fleet_api::runtime::Runtime;
+use fleet_api::runtime::{Runtime, TrustGap, WorkspaceTrust};
 use fleet_api::task::SessionRef;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Fault {
-    /// `host`, `spawn`, `find`, `list`, `events`, `ready`, `brief`,
-    /// `briefDelivered`, `atRest`, `release`.
+    /// `host`, `spawn`, `find`, `list`, `events`, `ready`, `workspaceTrust`,
+    /// `brief`, `briefDelivered`, `atRest`, `release`.
     pub call: String,
     /// `unknown`, `fail` or `abort`.
     pub outcome: String,
@@ -41,6 +41,10 @@ pub struct Fault {
 
 fn one() -> u32 {
     1
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Fault {
@@ -81,6 +85,10 @@ pub struct FakeSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     pub ready: bool,
+    /// Whether its agent trusts its workspace; a session that does not
+    /// waits for a person, as an agent with no supported trust interface.
+    #[serde(default = "yes")]
+    pub trusted: bool,
     pub at_rest: bool,
     /// Intent keys of every brief delivered, in order.
     pub briefs: Vec<String>,
@@ -104,6 +112,9 @@ pub struct FakeState {
     pub faults: Vec<Fault>,
     /// Whether a new session is ready for input at once.
     pub spawn_not_ready: bool,
+    /// Whether a new session's agent waits for a person to trust its
+    /// workspace.
+    pub spawn_untrusted: bool,
     pub next_id: u64,
     /// One line per effect that happened, in order.
     pub log: Vec<String>,
@@ -381,6 +392,7 @@ impl Runtime for FakeRuntime {
                 workspace: spec.workspace.clone(),
                 model: spec.model.clone(),
                 ready: !s.spawn_not_ready,
+                trusted: !s.spawn_untrusted,
                 at_rest: false,
                 briefs: Vec::new(),
                 texts: Vec::new(),
@@ -410,6 +422,23 @@ impl Runtime for FakeRuntime {
         self.probe("ready", |s| match live(s, &session.key) {
             Some(x) => Observation::Known(x.ready),
             None => Observation::unknown("no such session to capture"),
+        })
+    }
+
+    fn workspace_trust(
+        &self,
+        session: &SessionRef,
+        _workspace: &fleet_api::task::Workspace,
+    ) -> Observation<WorkspaceTrust> {
+        self.probe("workspaceTrust", |s| match live(s, &session.key) {
+            Some(x) if x.trusted => Observation::Known(WorkspaceTrust::Trusted {
+                how: "the fake host trusts every workspace it is told to".into(),
+            }),
+            Some(_) => Observation::Known(WorkspaceTrust::Untrusted {
+                gap: TrustGap::Unsupported,
+                why: "the fake session waits for a person to trust its workspace".into(),
+            }),
+            None => Observation::unknown("no such session to ask"),
         })
     }
 

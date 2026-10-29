@@ -129,6 +129,8 @@ README.md owns installation, resource examples and deliberate cutover.
 AGENTS.md owns working rules. This file owns contribution and release gates.
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) owns the overall structure and
 boundaries.
+[docs/migrating-from-v1.md](docs/migrating-from-v1.md) owns the mapping from
+v1 concepts, configuration and commands to v2.
 [docs/controllers](docs/controllers/README.md) owns controller resources, state
 machines and interfaces. `crates/CONTRACTS.md` owns integration
 guarantees and implementation coverage; `crates/architecture.toml` is the

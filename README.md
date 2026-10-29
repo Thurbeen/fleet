@@ -1,3 +1,10 @@
+<!-- rumdl-disable MD041 -->
+<!-- The banner is the first line by design; MD041 wants a level-1 heading. -->
+
+![Fleet: operators at consoles in a red mission control room, a squadron of fighter craft above them, powered by thurbox][banner]
+
+[banner]: media/fleet-banner.jpg
+
 # Fleet
 
 Fleet runs one AI agent session per Task. A Task is a JSON resource that
@@ -5,6 +12,8 @@ names a harness, a host, a workspace and a brief. Fleet spawns the session,
 sends the brief once, records the worker's result, and releases the session
 when you delete the Task. Fleet v2 is one Linux binary with a bundled
 [VEGA](https://github.com/Thurbeen/vega) starter.
+
+![Animated diagram: the fleet up reconcile loop and the kinds it drives](media/fleet-flow-doom.svg)
 
 ## Setup
 
@@ -34,6 +43,13 @@ fleet up
 `fleet up` starts VEGA and keeps every Task moving until Ctrl-C.
 [Initialization and the VEGA starter](docs/configuration/init.md) covers the
 config, the workspace and `fleet up` in detail.
+
+Fleet starts a `codex` session that trusts its workspace for that session
+only. It writes nothing to Codex's configuration. Claude Code has no
+per-session trust interface, so a `claude` Task waits at Claude's trust dialog
+with `NeedsAttention/WorkspaceUntrusted` until a person trusts the folder.
+Fleet never answers a trust or permission dialog. See
+[workspace trust](crates/CONTRACTS.md#workspace-trust).
 
 ## First steps
 
@@ -92,6 +108,8 @@ fleet --config examples/fleet.toml list task
   thurbox runtime, forges and plugins.
 - [Initialization and the VEGA starter](docs/configuration/init.md): config
   selection, workspace updates, execution defaults and external controllers.
+- [OpenTelemetry export](docs/configuration/telemetry.md): the `OTEL_*`
+  variables, and the spans and metrics Fleet exports.
 - [Contracts](crates/CONTRACTS.md): the integration guarantees.
 
 ## Install, update and uninstall
@@ -132,9 +150,6 @@ never starts services, installs an extension, configures credentials or
 alters data. Uninstall removes the binary only. Stop managers deliberately
 before you update or uninstall an operational deployment; changing an
 executable does not transfer its manager lease.
-
-Every push to main that ships a `feat`, `fix` or `perf` change makes a new
-release.
 
 ## Build and try it
 

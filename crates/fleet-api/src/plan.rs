@@ -163,6 +163,11 @@ pub enum EffectOutcome {
     Unmapped {
         url: String,
     },
+    /// The runtime knows no workspace-trust interface for the harness.
+    /// Nothing was started, for the same reason as `Unmapped`.
+    TrustUnmapped {
+        harness: String,
+    },
 }
 
 /// What the controller needs to know before it can decide. The manager asks
@@ -178,6 +183,11 @@ pub enum Probe {
     },
     Ready {
         session: SessionRef,
+    },
+    /// Whether the session's agent trusts the Task's workspace.
+    WorkspaceTrust {
+        session: SessionRef,
+        workspace: crate::task::Workspace,
     },
     BriefDelivered {
         session: SessionRef,
@@ -236,6 +246,7 @@ pub struct Observations {
     /// `Known(None)` means a readable list showed no such session.
     pub find: Option<Observation<Option<SessionRef>>>,
     pub ready: Option<Observation<bool>>,
+    pub workspace_trust: Option<Observation<crate::runtime::WorkspaceTrust>>,
     pub brief_delivered: Option<Observation<bool>>,
     pub at_rest: Option<Observation<bool>>,
 }
