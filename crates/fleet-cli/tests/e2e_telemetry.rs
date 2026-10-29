@@ -376,7 +376,11 @@ fn a_spawned_session_does_not_inherit_the_managers_otel_identity() {
         .into_iter()
         .filter(|c| c["argv"][0] == "session" && c["argv"][1] == "create")
         .collect();
-    assert!(!creates.is_empty(), "no session create: {:?}", e.stub_calls());
+    assert!(
+        !creates.is_empty(),
+        "no session create: {:?}",
+        e.stub_calls()
+    );
     for c in &creates {
         let names: Vec<&str> = c["envNames"]
             .as_array()
@@ -385,7 +389,10 @@ fn a_spawned_session_does_not_inherit_the_managers_otel_identity() {
             .filter_map(Value::as_str)
             .filter(|n| n.starts_with("OTEL_"))
             .collect();
-        assert!(names.is_empty(), "the manager's {names:?} reached the spawn");
+        assert!(
+            names.is_empty(),
+            "the manager's {names:?} reached the spawn"
+        );
     }
     let declared = e.stub_sessions()[0]["env"].clone();
     for name in [
