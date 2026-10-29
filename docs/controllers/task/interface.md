@@ -140,7 +140,7 @@ return `Observation<T>`; a refused effect is
 | `prepare_execution` | Resolved execution | Freeze the runtime model-variable mapping into its private environment, or Unknown. |
 | `env_source` | Explicit file/command source | Bounded manager-local JSON string map, or redacted Unknown. |
 | `host` | Host name | Whether the runtime can reach it. |
-| `spawn` | `SpawnSpec` | `Spawned { session, adopted }`, `Unmapped { url }` for a repository the runtime has no source for, or Failed/Unknown. |
+| `spawn` | `SpawnSpec` | `Spawned { session, adopted }`, `Unmapped { url }` for a repository the runtime has no source for, `TrustUnmapped { harness }` for a harness it knows no workspace-trust interface for, or Failed/Unknown. |
 | `find` | Host and session key | Optional session under that key, or Unknown. |
 | `ready` | `SessionRef` | Whether the session can receive input now. |
 | `workspace_trust` | `SessionRef` and the Task's workspace | `Trusted { how }`, `Untrusted { gap, why }` with gap `Unsupported` or `Mismatch`, or Unknown. |

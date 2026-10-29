@@ -60,6 +60,8 @@ use conditions::*;
 const SPAWN: &str = "spawn";
 /// The reason a spawn waits for the runtime to map a repository.
 const UNMAPPED: &str = "RepositoryUnmapped";
+/// The reason a spawn waits for the runtime to map the harness's trust.
+const TRUST_UNMAPPED: &str = "TrustUnmapped";
 /// The NeedsAttention reason while a known trust gap holds the brief.
 const WORKSPACE_UNTRUSTED: &str = "WorkspaceUntrusted";
 const BRIEF: &str = "brief";
@@ -327,7 +329,17 @@ impl Pass<'_, '_> {
                 self.adopt(session, "Spawned")
             }
             Some(Observation::Known(EffectOutcome::Failed { why })) => self.spawn_retry(&why),
-            Some(Observation::Known(EffectOutcome::Unmapped { url })) => self.spawn_unmapped(&url),
+            Some(Observation::Known(EffectOutcome::Unmapped { url })) => self.spawn_unmapped(
+                UNMAPPED,
+                format!("repository {url} is not in runtime.repositories"),
+            ),
+            Some(Observation::Known(EffectOutcome::TrustUnmapped { harness })) => self
+                .spawn_unmapped(
+                    TRUST_UNMAPPED,
+                    format!(
+                        "harness {harness} is not in runtime.workspaceTrust; set runtime.workspaceTrust.{harness} to codex, claude or none"
+                    ),
+                ),
             Some(Observation::Known(other)) => {
                 self.spawn_retry(&format!("unexpected outcome {other:?}"))
             }
@@ -366,26 +378,30 @@ impl Pass<'_, '_> {
         self.st.session = Some(session);
         self.st.phase = Phase::Spawned;
         self.cond(SPAWNED, ConditionStatus::True, reason, "");
-        self.settle_attention(UNMAPPED);
+        self.settle_spawn_gaps();
     }
 
-    /// A repository the runtime does not map is a configuration gap, not a
-    /// failed attempt: nothing started, so the attempt is given back. The
-    /// spawn is tried again after [`RETRY_DELAY_MS`], without limit, until
-    /// the runtime maps the repository.
-    fn spawn_unmapped(&mut self, url: &str) {
+    /// A repository or harness the runtime does not map is a configuration
+    /// gap, not a failed attempt: nothing started, so the attempt is given
+    /// back. The spawn is tried again after [`RETRY_DELAY_MS`], without
+    /// limit, until the runtime maps it.
+    fn spawn_unmapped(&mut self, reason: &str, why: String) {
         self.st.spawn_attempts = self.st.spawn_attempts.saturating_sub(1);
         self.st.phase = Phase::Pending;
         self.wait_from(self.now());
-        let why = format!("repository {url} is not in runtime.repositories");
-        self.cond(SPAWNED, ConditionStatus::False, UNMAPPED, why.clone());
-        self.needs_attention(UNMAPPED, why);
+        self.cond(SPAWNED, ConditionStatus::False, reason, why.clone());
+        self.needs_attention(reason, why);
+    }
+
+    fn settle_spawn_gaps(&mut self) {
+        self.settle_attention(UNMAPPED);
+        self.settle_attention(TRUST_UNMAPPED);
     }
 
     /// A spawn proven not to have happened is tried again after
     /// [`RETRY_DELAY_MS`], at most [`MAX_ATTEMPTS`] times in all.
     fn spawn_retry(&mut self, why: &str) {
-        self.settle_attention(UNMAPPED);
+        self.settle_spawn_gaps();
         let attempts = self.st.spawn_attempts;
         if attempts >= MAX_ATTEMPTS {
             self.st.phase = Phase::Stalled;

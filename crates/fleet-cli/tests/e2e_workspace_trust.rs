@@ -283,6 +283,12 @@ fn codex_showing_its_own_trust_dialog_is_never_trusted() {
     assert_eq!(argv_of(&env, "send").len(), 0, "{st:#}");
     assert_condition(&st, "WorkspaceTrusted", "False", "Mismatch");
     assert_condition(&st, "NeedsAttention", "True", "WorkspaceUntrusted");
+    // Codex keeps only the last `-c projects=`: an agent entry or wrapper
+    // passing its own after Fleet's replaces it. The message names both
+    // causes, not only a symlink.
+    let message = condition(&st, "WorkspaceTrusted")["message"].to_string();
+    assert!(message.contains("-c projects="), "{message}");
+    assert!(message.contains("config.toml"), "{message}");
 }
 
 #[test]
@@ -361,6 +367,8 @@ fn claude_at_its_trust_dialog_is_never_briefed_and_asks_for_one_time_trust() {
         message.contains(&path("/src/fleet").replace('\\', "\\\\")),
         "{message}"
     );
+    // Thurbox's own way to trust ahead of launch, for every later session.
+    assert!(message.contains("session.pre_launch"), "{message}");
 
     // Looked at again after the retry wait, not in a hot loop.
     assert!(env.get("r1")["status"]["notBefore"].is_u64());
@@ -423,20 +431,30 @@ fn trust_that_cannot_be_read_is_unknown_never_a_brief_and_recovers() {
 }
 
 #[test]
-fn a_harness_without_a_known_trust_interface_fails_closed_until_configured() {
+fn a_harness_without_a_known_trust_interface_starts_nothing_until_configured() {
     let env = env("trust-unsupported", "");
     env.apply(task("a1", "aider")).ok();
     env.reconcile().ok();
+    // A configuration gap, refused before any session exists: no session is
+    // left behind without the trust a later mapping would have added.
+    assert!(argv_of(&env, "create").is_empty(), "{:?}", env.stub_calls());
     let st = env.status("a1");
-    assert_eq!(argv_of(&env, "send").len(), 0, "{st:#}");
-    assert_condition(&st, "WorkspaceTrusted", "False", "Unsupported");
-    assert_condition(&st, "NeedsAttention", "True", "WorkspaceUntrusted");
+    assert_eq!(st["phase"], "Pending", "{st:#}");
+    assert_condition(&st, "Spawned", "False", "TrustUnmapped");
+    assert_condition(&st, "NeedsAttention", "True", "TrustUnmapped");
     assert!(
-        condition(&st, "WorkspaceTrusted")["message"]
+        condition(&st, "NeedsAttention")["message"]
             .to_string()
-            .contains("runtime.workspaceTrust"),
+            .contains("runtime.workspaceTrust.aider"),
         "{st:#}"
     );
+    // The gap spends no spawn attempt: waiting on it never stalls the Task.
+    for _ in 0..4 {
+        env.expire_wait("a1");
+        env.reconcile().ok();
+    }
+    assert_eq!(env.status("a1")["phase"], "Pending");
+    assert!(argv_of(&env, "create").is_empty());
 
     // The operator declares the harness has no workspace-trust gate.
     let mut cfg = std::fs::read_to_string(&env.config).expect("config");
@@ -457,6 +475,36 @@ fn a_harness_without_a_known_trust_interface_fails_closed_until_configured() {
     bad.fleet(&["reconcile"])
         .code(1)
         .stderr_has("runtime.workspaceTrust");
+}
+
+#[test]
+fn an_aliased_codex_harness_waits_for_its_mapping_then_starts_trusted() {
+    // A thurbox agent entry such as `codex-coder` runs Codex under another
+    // name. Fleet cannot tell its family, so it says so instead of starting
+    // a session Codex would never trust.
+    let env = env("trust-alias", "");
+    initial_codex(&env);
+    env.edit_stub(|s| s["spawnFields"]["agent"] = json!("codex-coder"));
+    env.apply(task("c1", "codex-coder")).ok();
+    env.reconcile().ok();
+    assert!(argv_of(&env, "create").is_empty(), "{:?}", env.stub_calls());
+    assert_condition(&env.status("c1"), "NeedsAttention", "True", "TrustUnmapped");
+
+    let mut cfg = std::fs::read_to_string(&env.config).expect("config");
+    cfg.push_str("\n[runtime.workspaceTrust]\ncodex-coder = \"codex\"\n");
+    std::fs::write(&env.config, cfg).expect("config");
+    env.expire_wait("c1");
+    env.reconcile().ok();
+    let create = &argv_of(&env, "create")[0];
+    assert_eq!(
+        agent_args(create),
+        ["-c".to_string(), codex_trust(&path("/work/c1"))],
+        "{create:?}"
+    );
+    let st = env.status("c1");
+    assert_eq!(st["phase"], "Briefed", "{st:#}");
+    assert_condition(&st, "WorkspaceTrusted", "True", "Trusted");
+    assert_condition(&st, "NeedsAttention", "False", "Resolved");
 }
 
 #[test]

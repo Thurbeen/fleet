@@ -171,6 +171,7 @@ fn effect_outcome(outcome: &Observation<EffectOutcome>) -> &'static str {
             EffectOutcome::Posted { .. } => "posted",
             EffectOutcome::Failed { .. } => "failed",
             EffectOutcome::Unmapped { .. } => "unmapped",
+            EffectOutcome::TrustUnmapped { .. } => "trustUnmapped",
         },
     }
 }

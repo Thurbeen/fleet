@@ -269,23 +269,51 @@ fn an_unmapped_repository_spends_no_attempt_and_never_stalls_the_task() {
 }
 
 #[test]
+fn an_untrusted_harness_waits_like_an_unmapped_repository() {
+    let trust = || EffectOutcome::TrustUnmapped {
+        harness: "codex-coder".into(),
+    };
+    let mut obj = task(true, None);
+    let mut now = NOW;
+    for _ in 0..MAX_ATTEMPTS + 2 {
+        let (next, st) = spawn_once(&obj, trust(), now);
+        assert_eq!(st.phase, Phase::Pending, "{st:#?}");
+        assert_eq!(st.spawn_attempts, 0);
+        assert_eq!(cond(&st, "Spawned").reason, "TrustUnmapped");
+        let attention = cond(&st, "NeedsAttention");
+        assert_eq!(attention.reason, "TrustUnmapped");
+        assert!(
+            attention
+                .message
+                .contains("runtime.workspaceTrust.codex-coder"),
+            "{attention:#?}"
+        );
+        obj = next;
+        now += RETRY_DELAY_MS;
+    }
+}
+
+#[test]
 fn a_mapping_added_while_waiting_spawns_and_resolves_the_attention() {
-    let (obj, _) = spawn_once(
-        &task(true, None),
+    for gap in [
         EffectOutcome::Unmapped {
             url: "https://example.invalid/app".into(),
         },
-        NOW,
-    );
-    let later = NOW + RETRY_DELAY_MS;
-    let spawned = EffectOutcome::Spawned {
-        session: session(),
-        adopted: false,
-    };
-    let (_, st) = spawn_once(&obj, spawned, later);
-    assert_eq!(st.phase, Phase::Spawned);
-    assert_eq!(st.spawn_attempts, 1);
-    assert_eq!(cond(&st, "NeedsAttention").reason, "Resolved");
+        EffectOutcome::TrustUnmapped {
+            harness: "codex-coder".into(),
+        },
+    ] {
+        let (obj, _) = spawn_once(&task(true, None), gap, NOW);
+        let later = NOW + RETRY_DELAY_MS;
+        let spawned = EffectOutcome::Spawned {
+            session: session(),
+            adopted: false,
+        };
+        let (_, st) = spawn_once(&obj, spawned, later);
+        assert_eq!(st.phase, Phase::Spawned);
+        assert_eq!(st.spawn_attempts, 1);
+        assert_eq!(cond(&st, "NeedsAttention").reason, "Resolved");
+    }
 }
 
 fn spawned(extra: impl FnOnce(&mut TaskStatus)) -> Object {

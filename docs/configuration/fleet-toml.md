@@ -73,7 +73,7 @@ Fleet installation talking to the same Thurbox hosts needs a distinct
 | `runtime.modelEnv` | Thurbox: Claude mappings below | Harness name to supported model environment-variable name. |
 | `runtime.repositories` | Thurbox: empty | Repository URL to its source checkout, an absolute path on the hosts thurbox creates worktrees on. A relative path is refused at load. A Task whose `workspace.repositories` names an unmapped URL waits in Pending with `RepositoryUnmapped`; the refusal spends no spawn attempt. A running `fleet up` reloads this table; see [Reloading](#reloading-runtimerepositories). |
 | `runtime.workspaceCleanup` | Thurbox: `delete` | What deleting a session does to its worktrees. `delete` removes them with the session (`session delete --force`). `keep` leaves them, restorable in thurbox (`session delete --soft`). The setting also applies to `dir` Tasks: `delete` overrides thurbox's own `soft_delete`, so a released session cannot be restored. |
-| `runtime.workspaceTrust` | Thurbox: `codex` is `codex`; `claude` and `claude-code` are `claude` | Harness name to its workspace-trust interface: `codex`, `claude` or `none`. Any other value is refused at load. A harness not listed never receives a brief; its Task reports `WorkspaceTrusted=False/Unsupported`. See [workspace trust](../../crates/CONTRACTS.md#workspace-trust). |
+| `runtime.workspaceTrust` | Thurbox: `codex` is `codex`; `claude` and `claude-code` are `claude` | Harness name to its workspace-trust interface: `codex`, `claude` or `none`. Any other value is refused at load. A Task whose harness is not listed starts no session and waits in Pending with `TrustUnmapped`; the refusal spends no spawn attempt. A running `fleet up` applies a new entry after a restart. See [workspace trust](../../crates/CONTRACTS.md#workspace-trust). |
 | `runtime.dir` | Required for `fake` | Isolated fake-host persistence, relative to this config file. |
 | `starter.workspace` | Required for `up` | Initialized VEGA workspace, relative to this config file. |
 
@@ -103,13 +103,17 @@ over the same environment key from providers or Task overrides. For configured
 Tasks, both variable selection and value freeze with the private launch
 snapshot; later TOML mapping changes do not alter that execution.
 
-`runtime.workspaceTrust` extends/overrides the built-in entries. Map `codex`
+`runtime.workspaceTrust` extends/overrides the built-in entries. The keys are
+thurbox agent names, so map each alias of an agent, such as
+`codex-coder = "codex"`. Map `codex`
 only to a harness that runs Codex: the interface puts Codex's `-c` option on
 the harness's command line, and another harness reads `-c` differently.
 Claude Code reads it as `--continue`. Set `none`
 only for a harness that has no workspace-trust gate. `none` approves nothing
 for a harness that has one: that harness can then receive its brief inside a
-trust prompt.
+trust prompt. Codex keeps only the last `-c projects=` it is given. Keep any
+other roots you trust in the `[projects]` table of Codex's `config.toml`,
+which merges with Fleet's override.
 
 Runtime-specific fields apply only to that runtime. Keep the store and native
 configuration user-private; they contain literal manifests and private launch

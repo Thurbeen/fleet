@@ -26,6 +26,7 @@ logic runs.
 | Spawning | Missing/Unknown receipt; session key found | Spawned | Adopt the session and recover its receipt. |
 | Spawning | Known failure, or ambiguous outcome with key proven absent; attempts below 3 | Pending | Schedule a wait before another spawn. |
 | Spawning | Known `Unmapped` receipt | Pending | Give the attempt back; set `Spawned=False` and NeedsAttention, both `RepositoryUnmapped`; schedule a wait, then spawn again under the same key. |
+| Spawning | Known `TrustUnmapped` receipt | Pending | As for `Unmapped`, with reason `TrustUnmapped`. |
 | Spawning | Same failure with 3 spawn attempts spent | Stalled | Raise `Stalled/SpawnAttemptsExhausted` and NeedsAttention. |
 | Spawning | Missing/Unknown receipt; session list unreadable | Spawning | Report Unknown; never infer absence or respawn blindly. |
 | Spawned | Readable lookup lacks the recorded session identity | Spawned | Raise WorkerGone and NeedsAttention; do not send. |
@@ -105,10 +106,11 @@ are last recorded observations; absence of a condition is not a True value.
 | Concluded | A worker result was accepted and observed (`ResultRecorded`). |
 | Released | A known release completed, or there was nothing to release. |
 | WorkspaceTrusted | The session's agent trusts its workspace (`Trusted`). False reasons are `Unsupported` and `Mismatch`; Unknown is `TrustUnknown`. |
-| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, InboxFull, RepositoryUnmapped or WorkspaceUntrusted. |
+| NeedsAttention | Reason is Stalled, WorkerGone, BriefUnconfirmed, ReleaseFailed, DeliveryFailed, DeliveryUnconfirmed, InboxFull, RepositoryUnmapped, TrustUnmapped or WorkspaceUntrusted. |
 
 WorkerGone clears when the exact recorded session is seen again.
-RepositoryUnmapped clears when a later spawn does not answer Unmapped. A successful
+RepositoryUnmapped clears when a later spawn does not answer Unmapped.
+TrustUnmapped clears when a later spawn does not answer TrustUnmapped. A successful
 delivery recovery clears attention whose reason is BriefUnconfirmed or
 DeliveryUnconfirmed; an inbox drained back within its bound clears InboxFull.
 A Trusted answer clears WorkspaceUntrusted.

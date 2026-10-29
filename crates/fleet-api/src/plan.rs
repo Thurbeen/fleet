@@ -162,6 +162,11 @@ pub enum EffectOutcome {
     Unmapped {
         url: String,
     },
+    /// The runtime knows no workspace-trust interface for the harness.
+    /// Nothing was started, for the same reason as `Unmapped`.
+    TrustUnmapped {
+        harness: String,
+    },
 }
 
 /// What the controller needs to know before it can decide. The manager asks

@@ -205,6 +205,9 @@ Guarantees, each with its test:
   `NeedsAttention`, both with reason `RepositoryUnmapped`. The spawn is tried
   again after `RETRY_DELAY_MS`, without limit, under the same effect key.
   A later spawn that does not answer `Unmapped` clears that `NeedsAttention`.
+- **Unmapped trust.** A spawn answered `Known(TrustUnmapped { harness })`
+  follows the same rules with reason `TrustUnmapped`. A later spawn that
+  does not answer `TrustUnmapped` clears that `NeedsAttention`.
 - **Result.** `fleet result` writes `status.result` as field manager
   `worker`, only once the brief has a receipt, only for the generation it
   was briefed for, and only when its outputs match `spec.outputs`. The same
@@ -535,8 +538,9 @@ and deletes the session; every adapter keeps these rules:
   workspace.
 - **Refusal.** A workspace the adapter cannot make, or may not make, is
   `Known(Failed)` at spawn, never Unknown. A repository the adapter has no
-  source for is `Known(Unmapped { url })`. The adapter answers it before any
-  external call.
+  source for is `Known(Unmapped { url })`. A harness the adapter knows no
+  workspace-trust interface for is `Known(TrustUnmapped { harness })`. The
+  adapter answers both before any external call.
 
 Thurbox maps a `{dir}` to `--repo-path`. It maps `{repositories}` to one
 worktree create:
@@ -580,19 +584,30 @@ The trust root is the directory the agent keys the session's trust on:
 
 | Interface | Default harnesses | At spawn | `workspace_trust` answers |
 | --- | --- | --- | --- |
-| `codex` | `codex` | Adds `--agent-arg=-c --agent-arg=projects={"<root>"={trust_level="trusted"}}`. | `Trusted` when the row's `agent_args` are exactly that pair, the row's cwd and worktrees are the Task's workspace, and a readable screen shows no Codex trust dialog before its first hook. `Mismatch` otherwise. Unknown when thurbox does not report them or the screen cannot be read. Readiness also refuses a screen showing that dialog. |
+| `codex` | `codex` | Adds `--agent-arg=-c --agent-arg=projects={"<root>"={trust_level="trusted"}}`. Initial readiness treats the harness as Codex. | `Trusted` when the row's `agent_args` are exactly that pair, the row's cwd and worktrees are the Task's workspace, and a readable screen shows no Codex trust dialog before its first hook. `Mismatch` otherwise. Unknown when thurbox does not report them or the screen cannot be read. Readiness also refuses a screen showing that dialog. |
 | `claude` | `claude`, `claude-code` | Adds nothing. | `Trusted` once Claude reported a hook. `Unsupported` while Claude's trust dialog is current at the cursor. Unknown otherwise. |
 | `none` | none | Adds nothing. | `Trusted`. |
-| not listed | any other | Adds nothing. | `Unsupported`, naming `runtime.workspaceTrust`. |
+| not listed | any other | Starts nothing: `TrustUnmapped`. | `Unsupported`, naming `runtime.workspaceTrust`, for a session that already exists. |
 
 These rules hold for every interface:
 
 - The spawn intent records the harness and workspace. The trust that a spawn
   adds follows from them alone, so a respawn under the same intent adds the
   same trust.
+- The map is keyed by thurbox agent name, not by agent family. Thurbox does
+  not report an agent's family. An agent entry such as `codex-coder` runs
+  no session until `runtime.workspaceTrust` maps it. Its Task waits in
+  Pending with `TrustUnmapped`, and the message names the entry to set.
+  A session started without its trust could not gain it later.
 - Codex's override lives in the session's own arguments. Thurbox keeps it
   and replays it on restart, resume and fork. Fleet writes no Codex
   configuration file.
+- Codex keeps only the last `-c projects=` on its command line. An agent
+  entry or a wrapper that passes its own `projects` override therefore loses
+  it to Fleet's, or replaces Fleet's. A replaced override shows Codex's
+  dialog, which the probe reports as `Mismatch`. The `[projects]` table in
+  Codex's `config.toml` merges with the override, so keep other trusted
+  roots there. Codex 0.165.0 showed this behaviour.
 - An adopted session is checked like any other. A session without the exact
   override, or in another directory, is `Mismatch` and never gets a brief.
   The way out is to delete the Task and apply it again. Deleting only the
@@ -608,7 +623,8 @@ These rules hold for every interface:
 - Fleet never sends a key to a dialog. Claude Code has no per-session trust
   interface; its only documented one persists in `~/.claude.json` on the
   host. A person trusts the repository once, by the dialog or that file.
-  The Task's message names the folder.
+  A thurbox `session.pre_launch` script can write that file before each
+  launch. The Task's message names the folder.
 
 `e2e_workspace_trust` covers each interface, adoption, mismatch, Unknown and
 recovery. Its rows and screens come from thurbox-cli 2.76.1, Codex 0.164.0

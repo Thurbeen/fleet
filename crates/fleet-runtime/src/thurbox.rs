@@ -389,7 +389,7 @@ impl ThurboxRuntime {
             };
             if dialog {
                 return mismatch(format!(
-                    "Codex asks whether to trust {cwd}: it did not take Fleet's trust in {root}, so a symlink or another spelling names that directory. Name the workspace by its resolved path, then delete the Task and apply it again"
+                    "Codex asks whether to trust {cwd}: it did not take Fleet's trust in {root}. Either a symlink or another spelling names that directory, or the agent entry or a wrapper passes its own -c projects= after Fleet's, and Codex keeps only the last. Name the workspace by its resolved path, or move those roots into Codex's config.toml, then delete the Task and apply it again"
                 ));
             }
         }
@@ -431,7 +431,7 @@ impl ThurboxRuntime {
         Observation::Known(WorkspaceTrust::Untrusted {
             gap: TrustGap::Unsupported,
             why: format!(
-                "Claude Code asks whether to trust {cwd} and has no per-session trust interface, so Fleet neither answers it nor edits Claude's state. Trust {root} once on host {}: accept the dialog in the session, or set projects[<path>].hasTrustDialogAccepted in ~/.claude.json. The brief follows.",
+                "Claude Code asks whether to trust {cwd} and has no per-session trust interface, so Fleet neither answers it nor edits Claude's state. Trust {root} once on host {}: accept the dialog in the session, or set projects[<path>].hasTrustDialogAccepted in ~/.claude.json, for example from a thurbox session.pre_launch script. The brief follows.",
                 session.host
             ),
         })
@@ -486,13 +486,16 @@ impl ThurboxRuntime {
     }
 
     /// Before its first turn Codex may not have emitted any lifecycle hook.
-    /// Process liveness is insufficient: prove the initial empty composer at
+    /// A harness `runtime.workspaceTrust` maps to `codex` runs Codex, under
+    /// whatever agent name. Process liveness is insufficient: prove the initial empty composer at
     /// the visible cursor, never by searching scrollback for an old prompt.
     fn initial_codex_ready(&self, session: &SessionRef, row: &Value) -> Observation<bool> {
         if row["id"] != session.id
             || row["key"] != self.thurbox_key(&session.key)
             || row_host(row) != session.host
-            || row["agent"] != "codex"
+            || !row["agent"]
+                .as_str()
+                .is_some_and(|a| self.cfg.workspace_trust.get(a) == Some(&TrustInterface::Codex))
             || row["state"] != "running"
             || row["state_source"] != "process"
             || row["stopped"] != false
@@ -768,6 +771,13 @@ impl Runtime for ThurboxRuntime {
     }
 
     fn spawn(&self, spec: &SpawnSpec) -> Observation<EffectOutcome> {
+        // A session started without its trust stays untrusted: a mapping
+        // added later cannot reach it. Nothing starts until one exists.
+        let Some(trust) = self.cfg.workspace_trust.get(&spec.harness) else {
+            return Observation::Known(EffectOutcome::TrustUnmapped {
+                harness: spec.harness.clone(),
+            });
+        };
         let workspace = match &spec.workspace {
             // thurbox resolves --repo-path as an absolute path on the target
             // host; a relative one would mean whatever directory fleet ran in.
@@ -813,7 +823,7 @@ impl Runtime for ThurboxRuntime {
         if spec.host != LOCAL {
             args.extend(["--host".to_string(), spec.host.clone()]);
         }
-        if self.cfg.workspace_trust.get(&spec.harness) == Some(&TrustInterface::Codex) {
+        if *trust == TrustInterface::Codex {
             let trust = self
                 .trust_root(&spec.host, &spec.workspace)
                 .and_then(|root| codex_override(&root));
