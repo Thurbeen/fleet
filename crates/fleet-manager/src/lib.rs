@@ -37,8 +37,14 @@
 //! through `record_received`, which drains the spool with the status; a
 //! Listener is answered from the port (capabilities and identity, cached)
 //! and decided by ListenerController. Each retires its own object by a
-//! fenced delete. The receive verb that fills the spool and records beats
-//! lives in [`verbs`] and needs no lease.
+//! fenced delete. A Conversation's plan may also create the Task its thread
+//! starts, under a key whose intent the status carries: the manager checks
+//! the create's `exclusive: {workspace}` precondition against the store's
+//! Tasks under the lease immediately before the fenced create, and writes
+//! the receipt back under the key; and it may post the thread's refusal or
+//! busy notice through the Gateway port, intent before and receipt after.
+//! The receive verb that fills the spool and records beats lives in
+//! [`verbs`] and needs no lease.
 
 mod execution;
 pub mod plugins;
@@ -48,14 +54,16 @@ pub mod verbs;
 use std::collections::BTreeMap;
 
 use fleet_api::change_request::{self, ChangeRequestDefaults, ChangeRequestSpec};
-use fleet_api::conversation::{self, ConversationSpec};
+use fleet_api::conversation::{self, CONVERSATION_UID_LABEL, ConversationSpec, ConversationStatus};
 use fleet_api::follow::{ForgeDefaults, ForgeStatus};
 use fleet_api::forge::{ChangeObservation, Forge, Uncertainty};
 use fleet_api::gateway::{
     Capabilities, Gateway, GatewayConfig, HistoryObservation, Identity, ListenerAccount,
 };
 use fleet_api::listener::{self, ListenerSpec};
-use fleet_api::plan::{Action, Effect, EffectOutcome, Observations, Plan, Probe, Receipt};
+use fleet_api::plan::{
+    Action, CREATE_ACTION, Create, Effect, EffectOutcome, Observations, Plan, Probe, Receipt,
+};
 use fleet_api::runtime::Runtime;
 use fleet_api::talk::{PARENT_LABEL, PARENT_UID_LABEL};
 use fleet_api::task;
@@ -132,6 +140,9 @@ pub struct GatewaySide<'a> {
     pub config: GatewayConfig,
     /// Per account, the digest `fleet gateway account NAME --json` prints.
     pub digests: BTreeMap<String, String>,
+    /// Per route, its brief as the CLI read the file when it loaded the
+    /// config: what each Task the route starts carries.
+    pub briefs: BTreeMap<String, String>,
 }
 
 impl std::fmt::Debug for GatewaySide<'_> {
@@ -604,10 +615,10 @@ impl Manager<'_> {
             object: obj,
             observations: ConversationObservations::default(),
             now: self.clock.now(),
-            defaults: gateway
-                .config
-                .defaults()
-                .for_route(gateway.config.routes.get(&spec.route).cloned()),
+            defaults: gateway.config.defaults().for_route(
+                gateway.config.routes.get(&spec.route).cloned(),
+                gateway.briefs.get(&spec.route).cloned(),
+            ),
         };
         if obj.status.get("ref").is_none_or(Value::is_null) {
             let parsed = gateway.port.parse(&spec.account, &spec.address);
@@ -633,7 +644,13 @@ impl Manager<'_> {
                                 .unknowns
                                 .push(format!("{} object {kind}/{name}: {why}", obj.key()));
                         }
-                        input.observations.task = Some(o);
+                        // The tie's Task, or the Task a Fleet-opened
+                        // thread's marker names.
+                        if obj.status["task"]["name"].as_str() == Some(name.as_str()) {
+                            input.observations.task = Some(o);
+                        } else {
+                            input.observations.opener = Some(o);
+                        }
                     }
                     Probe::Capabilities { account } => {
                         let answer = self.capabilities(gateway, &account, lease, ttl, cache)?;
@@ -687,6 +704,7 @@ impl Manager<'_> {
         let name = &obj.metadata.name;
         let mut step = Step::default();
         let mut rv = obj.metadata.resource_version;
+        let mut current = obj.clone();
         if let Some(status) = plan.status {
             match self
                 .store
@@ -694,6 +712,7 @@ impl Manager<'_> {
             {
                 Ok(o) => {
                     rv = o.metadata.resource_version;
+                    current = o;
                     step.wrote += 1;
                 }
                 Err(StoreError::Conflict { .. }) => {
@@ -702,6 +721,55 @@ impl Manager<'_> {
                 }
                 Err(e) => return Err(e),
             }
+        }
+        // Intent first (written above), each effect under a fresh lease,
+        // receipt after, under the effect's key.
+        for create in &plan.creates {
+            *lease = self.store.renew_lease(lease, ttl)?;
+            let outcome = self.perform_create(create, lease);
+            if let Observation::Unknown { why } = &outcome {
+                report
+                    .unknowns
+                    .push(format!("{} {CREATE_ACTION}: {why}", obj.key()));
+            }
+            step.effects += 1;
+            current = self.write_conversation_receipt(
+                &current,
+                &create.key,
+                CREATE_ACTION,
+                outcome,
+                lease,
+            )?;
+            rv = current.metadata.resource_version;
+            step.wrote += 1;
+        }
+        for effect in &plan.effects {
+            let Action::Post {
+                account,
+                conversation: thread,
+                text,
+            } = &effect.action
+            else {
+                // Not this controller's effect: never performed from here.
+                continue;
+            };
+            *lease = self.store.renew_lease(lease, ttl)?;
+            let outcome = gateway.port.post(account, thread, text, &effect.key);
+            if let Observation::Unknown { why } = &outcome {
+                report
+                    .unknowns
+                    .push(format!("{} {}: {why}", obj.key(), effect.action.name()));
+            }
+            step.effects += 1;
+            current = self.write_conversation_receipt(
+                &current,
+                &effect.key,
+                effect.action.name(),
+                outcome,
+                lease,
+            )?;
+            rv = current.metadata.resource_version;
+            step.wrote += 1;
         }
         if plan.delete {
             *lease = self.store.renew_lease(lease, ttl)?;
@@ -720,6 +788,130 @@ impl Manager<'_> {
             }
         }
         Ok(step)
+    }
+
+    /// One keyed create of a Conversation's plan: the precondition is
+    /// checked against the store's Tasks under the lease immediately before
+    /// the fenced create. An object already under the name is adopted when
+    /// it carries this Conversation's uid, since an earlier attempt's
+    /// receipt may have been lost; one with another uid, or none, is a
+    /// refusal. The store's doubt is Unknown, never a refusal.
+    fn perform_create(&self, create: &Create, lease: &LeaseToken) -> Observation<EffectOutcome> {
+        let obj = &create.object;
+        if let Some(exclusive) = &create.exclusive {
+            let wanted = fleet_api::task::normalise_dir(&exclusive.workspace);
+            let tasks = match self.store.list(task::KIND) {
+                Observation::Known(t) => t,
+                Observation::Unknown { why } => {
+                    return Observation::unknown(format!("list Task: {why}"));
+                }
+            };
+            if let Some(holder) = tasks.iter().find(|t| {
+                t.spec["workspace"]["dir"]
+                    .as_str()
+                    .is_some_and(|d| fleet_api::task::normalise_dir(d) == wanted)
+            }) {
+                return Observation::Known(EffectOutcome::WorkspaceBusy {
+                    task: holder.metadata.name.clone(),
+                });
+            }
+        }
+        let by = ConversationController::MANAGER;
+        match self.store.create_fenced(obj.clone(), by, lease) {
+            Ok(o) => Observation::Known(EffectOutcome::Created {
+                uid: o.metadata.uid,
+                adopted: false,
+            }),
+            Err(StoreError::AlreadyExists(_)) => {
+                match self.store.get(&obj.kind, &obj.metadata.name) {
+                    Observation::Known(Some(existing))
+                        if existing.metadata.labels.get(CONVERSATION_UID_LABEL)
+                            == obj.metadata.labels.get(CONVERSATION_UID_LABEL) =>
+                    {
+                        Observation::Known(EffectOutcome::Created {
+                            uid: existing.metadata.uid,
+                            adopted: true,
+                        })
+                    }
+                    Observation::Known(Some(existing)) => {
+                        Observation::Known(EffectOutcome::Failed {
+                            why: format!(
+                                "{} exists and was not created for this thread",
+                                existing.key()
+                            ),
+                        })
+                    }
+                    Observation::Known(None) => Observation::unknown(format!(
+                        "{} was there and is gone; look again",
+                        obj.key()
+                    )),
+                    Observation::Unknown { why } => Observation::unknown(why),
+                }
+            }
+            Err(StoreError::LeaseLost(why)) => Observation::unknown(format!("lease lost: {why}")),
+            Err(StoreError::Unknown(why)) => Observation::unknown(why),
+            Err(e) => Observation::Known(EffectOutcome::Failed { why: e.to_string() }),
+        }
+    }
+
+    /// A Conversation's effect happened (or may have): its receipt must
+    /// land under its key even if the object moved meanwhile, so this
+    /// re-reads and retries on a conflict, through the controller's typed
+    /// write with the spool as it is.
+    fn write_conversation_receipt(
+        &self,
+        current: &Object,
+        key: &str,
+        action: &str,
+        outcome: Observation<EffectOutcome>,
+        lease: &LeaseToken,
+    ) -> Result<Object, StoreError> {
+        let receipt = Receipt {
+            action: action.to_string(),
+            at: self.clock.now(),
+            outcome,
+        };
+        let mut obj = current.clone();
+        for _ in 0..16 {
+            let mut st: ConversationStatus = if obj.status.is_null() {
+                ConversationStatus::default()
+            } else {
+                serde_json::from_value(obj.status.clone()).map_err(|e| {
+                    StoreError::Invalid(format!("{}: Conversation status: {e}", obj.key()))
+                })?
+            };
+            let Some(record) = st.effects.get_mut(key) else {
+                return Err(StoreError::Invalid(format!(
+                    "{}: no effect record holds the intent {key}",
+                    obj.key()
+                )));
+            };
+            record.receipt = Some(receipt.clone());
+            let value =
+                serde_json::to_value(&st).map_err(|e| StoreError::Invalid(e.to_string()))?;
+            let rv = obj.metadata.resource_version;
+            match self.store.record_received(
+                &obj.metadata.name,
+                value,
+                rv,
+                ConversationController::MANAGER,
+                lease,
+            ) {
+                Ok(o) => return Ok(o),
+                Err(StoreError::Conflict { .. }) => {
+                    obj = match self.store.get(conversation::KIND, &obj.metadata.name) {
+                        Observation::Known(Some(o)) => o,
+                        Observation::Known(None) => return Err(StoreError::NotFound(obj.key())),
+                        Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
+                    };
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(StoreError::Busy(format!(
+            "{}: receipt for {key} kept conflicting",
+            obj.key()
+        )))
     }
 
     /// Every due Listener. Returns whether anything changed.
@@ -1461,11 +1653,13 @@ impl Manager<'_> {
             Action::Spawn(spec) => self.runtime.spawn(spec),
             Action::Brief { session, text } => self.runtime.brief(session, text, &effect.key),
             Action::Release { session } => self.runtime.release(session),
-            // The Forge controller's effect, performed by its own sweep;
-            // TaskController never plans it.
-            Action::MarkReady { .. } => Observation::Known(EffectOutcome::Failed {
-                why: "markReady is not a Task controller effect".into(),
-            }),
+            // The Forge and Conversation controllers' effects, performed by
+            // their own sweeps; TaskController never plans them.
+            Action::MarkReady { .. } | Action::Post { .. } => {
+                Observation::Known(EffectOutcome::Failed {
+                    why: format!("{} is not a Task controller effect", effect.action.name()),
+                })
+            }
         }
     }
 

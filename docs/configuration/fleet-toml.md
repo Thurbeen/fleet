@@ -264,11 +264,13 @@ Fleet to execute, as for EnvProvider command sources.
 
 ## The `[gateway]` section
 
-The installed binary reads and validates this section, and opens its
-accounts before a manager run, but the
-[Gateway controller](../controllers/gateway/README.md) that acts on it is a
-design, not implemented. It reads its chat accounts, people and routes from
-here, as the Forge controller reads `[forge.hosts]`.
+The installed binary reads and validates this section, reads each route's
+brief with it, and opens its accounts before a manager run;
+ConversationController starts Tasks from its routes, and GatewayController,
+which relays and posts, is a design, not implemented. The
+[Gateway controller](../controllers/gateway/README.md) reads its chat
+accounts, people and routes from here, as the Forge controller reads
+`[forge.hosts]`.
 
 ```toml
 [gateway]

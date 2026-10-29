@@ -49,26 +49,27 @@ atomic verbs. `e2e_plugin_controller` and `plugin_gate` exercise the host.
 SDKs and issue-specific plugins remain separate projects.
 
 The [Gateway controller](../docs/controllers/gateway/README.md) is a design
-whose first and third steps are built. The first: the `Gateway` port in
+whose first three steps are built. The first: the `Gateway` port in
 `fleet_api::gateway`, with the `[gateway]` section's types, its validation
 and the pure admission function; the `fleet-gateway` adapter crate,
 depending on `fleet-api` and `fleet-exec` only, with a file-backed fake
 that models every `capabilities` combination; the `[gateway]` config,
-loaded and validated by the CLI, whose accounts are opened before a manager
-run so the lease outlasts the port's worst case; the `Conversation` and
-`Listener` kinds with their controllers ([the
-mirror](#the-conversation-mirror)); and the `fleet gateway receive`,
-`account` and `status` verbs. The third: `GatewayController`, the third
-controller over the Task, which owns `status.gateway`, keeps the tie to the
-Conversation its labels name, relays the thread into the inbox under a
-cursor and a child's words into its parent's inbox, from `gateway/`
-sources ([talking in a conversation](#talking-in-a-conversation));
-`status.answered`, written only by an inbox append that carries `answers`;
-and the parent labels, which the store checks at creation. As designed,
-the remaining steps add admission and Task creation to
-ConversationController, and posting (the manager performing `Open`,
-`Receive` and `Post` actions) to GatewayController. None of those
-guarantees hold until implemented with their tests.
+loaded and validated by the CLI, each route's brief read with it, whose
+accounts are opened before a manager run so the lease outlasts the port's
+worst case; the `Conversation` and `Listener` kinds with their controllers
+([the mirror](#the-conversation-mirror)); and the `fleet gateway receive`,
+`account` and `status` verbs. The second: ConversationController's
+admission, Task creation under the workspace precondition, busy notice and
+refusal post. The third: `GatewayController`, the third controller over the
+Task, which owns `status.gateway`, keeps the tie to the Conversation its
+labels name, relays the thread into the inbox under a cursor and a child's
+words into its parent's inbox, from `gateway/` sources ([talking in a
+conversation](#talking-in-a-conversation)); `status.answered`, written only
+by an inbox append that carries `answers`; and the parent labels, which the
+store checks at creation. As designed, the remaining step adds posting (the
+manager performing `Open`, `Receive` and `Post` actions) to
+GatewayController. None of those guarantees hold until implemented with
+their tests.
 
 ## Crates and the allowed graph
 
@@ -391,11 +392,17 @@ Conditions: `Reachable`, `Mergeable`, `Settled`.
 
 ConversationController is a pure function from the Conversation, the
 deliveries the receive verb spooled on it, one read of the thread's
-history, the account's capabilities and the Task it is tied to, to a plan:
-the whole status, with the spool drained of what it numbered, and after
-retention whether to delete its own object. It has no effects and no
-finalizer in this step; starting a Task, admission and the refusal post are
-the next step's. Guarantees, each with its test in
+history, the account's capabilities, the Task it is tied to or is creating,
+and the Task a Fleet-opened thread's marker names, to a plan: the whole
+status, with the spool drained of what it numbered and the intent of every
+effect it asks for; at most one Task to create, under the route's
+`exclusive: {workspace}` precondition; the refusal and busy-notice posts;
+and after retention whether to delete its own object. It has no finalizer.
+Every create and post is a keyed effect under `status.effects`: the manager
+writes the receipt back under the key, a key with a Known receipt is never
+performed again, and a missing or Unknown receipt is answered by looking
+for the Task, or for the post's marker in the mirror, never by repeating
+the effect blindly. Guarantees, each with its test in
 `conversation_controller`, `e2e_gateway` and `store_contract`:
 
 - **Receive.** `fleet gateway receive --account NAME` reads one envelope
@@ -439,9 +446,57 @@ the next step's. Guarantees, each with its test in
 - **One write.** The status lands through `record_received`, which checks
   the controller's fields as `update_status` does and lets `received`,
   which nobody owns, only lose entries, never gain or alter one.
+- **Admission.** Every message numbered above `judged` is judged once, by
+  `admit` over the route and the people table, and only a message the
+  listener delivered (`via` `connection` or `signature`) can start a Task
+  or earn a refusal: one read from history alone is context. A delivery of
+  a message a history read numbered first takes over its `via`, and in an
+  untied thread numbers it again, so it is judged once. Judging waits
+  for the thread's starter where the account has history, for the Task a
+  Fleet-opened thread's marker names, and for the route while it left the
+  config; `judged` then moves to the revision judged.
+- **Start.** In an Untied thread, an admitted message that meets
+  `route.mention` (`required`: it mentions Fleet; `top-level`: it is the
+  thread's starter) starts the thread's next Task, `<conversation>-<n>`,
+  exactly the interface page's JSON (the route's `taskConfig`, brief and
+  workspace, `dispatch` true, the three labels), under
+  `conversation/<uid>/task/<n>` with the tie `pending` and the trigger
+  kept; in an Orphaned thread any admitted message does. One Task per
+  pass, and never while a tie is pending, busy or created. A thread whose
+  starter carries a marker naming a Task that exists with that uid is tied
+  to it (`n` 0) and starts nothing; one whose Task is readably gone, or
+  whose starter was removed, may; one whose Task is Unknown, or whose
+  starter is Fleet's without a readable marker, ignores mentions.
+- **Workspace.** The manager lists the store's Tasks under the lease
+  immediately before the fenced create and answers `WorkspaceBusy` naming
+  the Task whose `spec.workspace.dir` normalises to the route's, creating
+  nothing; the tie turns `busy`, `NeedsAttention/WorkspaceBusy` is raised,
+  one notice is posted under `conversation/<uid>/busy/<n>`, retention is
+  held, and the create is planned again under the same key every `pollMs`,
+  not counted as an attempt, until it lands. A busy tie whose trigger
+  message left the mirror is withdrawn, and the next Task takes the next
+  number.
+- **Adopt.** A create with no receipt, or an Unknown one, asks for the Task
+  under the name: one carrying this Conversation's uid label is adopted
+  (`Created { adopted }`), one with another label is a refusal, readable
+  absence is one more attempt under the same key, and Unknown waits. Three
+  refused creates raise `NeedsAttention/TaskCreateFailed` and stop; a
+  refusal waits `RETRY_DELAY_MS` first. Only the controller's fenced create
+  may set the `gateway.fleet.dev/conversation` labels, and nothing changes
+  them afterwards.
+- **Refuse.** A person not on the allowlist who mentions Fleet gets one
+  refusal post per author and thread, the route's `refusal` or the default,
+  under `conversation/<uid>/refuse/<author id>`; past 200 refused authors
+  none is sent. A refused post is tried again under the same key after
+  `RETRY_DELAY_MS`, at most `MAX_ATTEMPTS` times, then
+  `NeedsAttention/PostFailed`. An Unknown post is found again by its marker
+  in the mirror, or by one `since` read where the platform reads markers
+  back, a complete read without it being one more attempt; where it cannot
+  be found, `NeedsAttention/PostUnconfirmed` and no repeat.
 
-Conditions: `Reachable`, `Tied`, `NeedsAttention` (`RouteUnknown`,
-`MentionsOnly`).
+Conditions: `Reachable`, `Tied`, `NeedsAttention` (`TaskCreateFailed`,
+`WorkspaceBusy`, `RouteUnknown`, `MentionsOnly`, `PostFailed`,
+`PostUnconfirmed`).
 
 ## Talking in a conversation
 
@@ -580,7 +635,10 @@ refused.
   `create` takes `apply`, or the account's listener for a Conversation or
   a Listener, and checks a Task's parent labels under the lock, as
   [talking in a conversation](#talking-in-a-conversation) says; a spec
-  update may not change them.
+  update may not change them. `create_fenced`, under the lease, takes the
+  Conversation's controller for the Task a thread starts, the one create
+  that may carry the `gateway.fleet.dev/conversation` labels, which no
+  other create or spec update sets or changes.
 - Deleting marks a Task while its finalizer remains; only its controller,
   holding the lease, removes the finalizer, and only from a deleting Task.
 - A controller deletes its own object (`delete_fenced`) only with the

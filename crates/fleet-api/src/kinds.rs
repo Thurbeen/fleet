@@ -53,15 +53,25 @@ pub fn status_owner(kind: &str, field: &str) -> Option<FieldManager> {
     }
 }
 
-/// Who may create an object of a kind (`Store::create`): `apply` for any
-/// kind, and an account's listener, through the receive verb, for the
-/// Conversation of a thread it delivers for and for its own Listener.
+/// Who may create an object of a kind (`Store::create`, and
+/// `Store::create_fenced` under the lease): `apply` for any kind; an
+/// account's listener, through the receive verb, for the Conversation of a
+/// thread it delivers for and for its own Listener; and the Conversation's
+/// controller for the Task a thread starts.
 pub fn may_create(kind: &str, by: &FieldManager) -> bool {
     match by {
         FieldManager::Apply => true,
         FieldManager::Listener(_) => matches!(kind, conversation::KIND | listener::KIND),
+        FieldManager::ConversationController => kind == task::KIND,
         _ => false,
     }
+}
+
+/// Who may set the `gateway.fleet.dev/conversation` and `-uid` labels on a
+/// Task it creates: the Conversation's controller only. Nobody changes them
+/// afterwards.
+pub fn may_set_conversation_labels(by: &FieldManager) -> bool {
+    *by == FieldManager::ConversationController
 }
 
 /// Who may spool a delivery on a Conversation (`Store::receive_event`) and

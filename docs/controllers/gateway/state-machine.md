@@ -3,11 +3,11 @@
 Two things change state: a [Conversation](../../resources/conversation.md),
 which ConversationController owns, and the tie on each Task, which
 GatewayController keeps under `status.gateway`. TaskController still owns
-the Task's own `status.phase`. The Conversation phases, orphaning and
-retention are implemented, and so are the `waiting` and `tied` states of
-the tie on a Task, its `ConversationGone`, the join and the relay. The
-transitions that create a Task, the `opening`, `opened`, `abandoned` and
-`child` states, and posting are design, not implemented.
+the Task's own `status.phase`. The Conversation phases, the transitions
+that create a Task, orphaning and retention are implemented, and so are
+the `waiting` and `tied` states of the tie on a Task, its
+`ConversationGone`, the join and the relay. The `opening`, `opened`,
+`abandoned` and `child` states, and posting are design, not implemented.
 
 ![A Conversation starts Untied. The receive verb creates it, or Fleet creates it when it opens a thread for a Task's Question. A thread that Fleet opened is tied at once to the Task that its opening post's marker names. An admitted mention in an Untied thread creates a Task and ties it. When a tied Task is readably gone, the Conversation becomes Orphaned. The next admitted message there creates a new Task with the thread's history. When an Untied or Orphaned Conversation has no message for its retention, its own controller deletes it. While the Conversation is Tied, GatewayController relays new messages into the Task's inbox and posts what the Task declares.](state-machine.svg)
 
@@ -126,7 +126,7 @@ On a Conversation:
 | --- | --- |
 | `Reachable` | The platform's history answered. |
 | `Tied` | A live Task is tied. |
-| `NeedsAttention` | One of `TaskCreateFailed`, `SpoolFull` (the thread's queue of unread events is full), `RouteUnknown` (the route left the config), `MentionsOnly` (the platform delivers only mentions, so only mentions are relayed), `WorkspaceBusy`. |
+| `NeedsAttention` | One of `TaskCreateFailed`, `SpoolFull` (the thread's queue of unread events is full), `RouteUnknown` (the route left the config), `MentionsOnly` (the platform delivers only mentions, so only mentions are relayed), `WorkspaceBusy`, `PostFailed` (three attempts at a refusal or busy notice were refused), `PostUnconfirmed` (a refusal or busy notice has an unknown outcome on a platform where Fleet cannot find it again). |
 
 On a Task, under `status.gateway.conditions`:
 

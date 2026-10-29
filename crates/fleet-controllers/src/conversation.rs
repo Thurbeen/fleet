@@ -1,33 +1,47 @@
 //! ConversationController: the mirror of one chat thread. From the stored
 //! mirror, the deliveries the receive verb spooled, one read of the thread's
 //! history and the Task the thread is tied to, it numbers what is new,
-//! keeps the tie honest, and retires the object after its retention. It
-//! performs no effect in this step: the platform is read, never written,
-//! from here, and the Tasks a thread starts are a later step's.
+//! keeps the tie honest, admits each message by the route's rules, starts
+//! one Task for an admitted message that meets the mention rule, refuses a
+//! stranger once, and retires the object after its retention.
 //!
 //! Pure: it reads the Conversation and what the probes saw, and returns a
 //! Plan whose `status` is the whole Conversation status with the spool
-//! drained of what was numbered, and whose `delete` retires the object.
-//! The manager performs the plan through `record_received` and the fenced
-//! delete.
+//! drained of what was numbered and the intent of every effect it asks
+//! for, whose `creates` is the Task a thread starts under the route's
+//! `exclusive: {workspace}` precondition, whose `effects` are the refusal
+//! and busy-notice posts, and whose `delete` retires the object. The
+//! manager performs the plan through `record_received`, the fenced create,
+//! the Gateway port and the fenced delete, and writes each receipt back
+//! under its key. A key that has a receipt is never performed again; a
+//! missing or Unknown receipt is answered by looking for the Task, or for
+//! the post in the mirror, never by repeating the effect blindly.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use fleet_api::condition::{ConditionStatus, condition, set_condition, settle_transitions};
 use fleet_api::conversation::{
-    self, ConversationSpec, ConversationStatus, MESSAGE_CAP, Phase, SEEN_EVENTS_CAP, StoredMessage,
-    TieState, Via,
+    self, CONVERSATION_LABEL, CONVERSATION_UID_LABEL, ConversationSpec, ConversationStatus,
+    EFFECTS_CAP, EffectRecord, MESSAGE_CAP, Phase, REFUSALS_CAP, ROUTE_LABEL, SEEN_EVENTS_CAP,
+    StoredMessage, Tie, TieState, Via, busy_key, busy_notice, refusal_key, task_key, task_name,
 };
 use fleet_api::gateway::{
-    Capabilities, ConversationRef, Delivery, Event, GatewayDefaults, HISTORY_FIRST_READ, History,
-    HistoryObservation, HistoryQuery, Message, Starter, Verified,
+    Admission, AuthorKind, Capabilities, ConversationRef, Delivery, Event, GatewayDefaults,
+    HISTORY_FIRST_READ, History, HistoryObservation, HistoryQuery, Marker, Message, RouteConfig,
+    Starter, Verified, admit, earns_refusal, starts_task,
 };
-use fleet_api::meta::{Millis, Object};
-use fleet_api::plan::{Plan, Probe};
+use fleet_api::meta::{API_VERSION, Millis, Object, ObjectMeta};
+use fleet_api::plan::{
+    Action, CREATE_ACTION, Create, Effect, EffectOutcome, Exclusive, Intent, Plan, Probe, Receipt,
+    task_of_key,
+};
 use fleet_api::store::FieldManager;
 use fleet_api::task;
 use fleet_api::validate::typed;
 use fleet_api::{Observation, StoreError};
+use serde_json::json;
+
+use crate::task::{MAX_ATTEMPTS, RETRY_DELAY_MS};
 
 /// What one reconcile of one Conversation reads. Every outside fact arrives
 /// here as a value; nothing is read from the world inside the controller.
@@ -36,8 +50,8 @@ pub struct ConversationInput<'a> {
     pub object: &'a Object,
     pub observations: ConversationObservations,
     pub now: Millis,
-    /// The `[gateway]` timings, and the route the spec names while the
-    /// config has it.
+    /// The `[gateway]` timings, the people table, and the route the spec
+    /// names with its brief while the config has it.
     pub defaults: GatewayDefaults,
 }
 
@@ -49,9 +63,12 @@ pub struct ConversationObservations {
     pub parsed: Option<Observation<ConversationRef>>,
     /// The answer to `Probe::History`.
     pub history: Option<HistoryObservation>,
-    /// The answer to `Probe::Object` for the tied Task: `Known(None)` is
-    /// readable absence.
+    /// The answer to `Probe::Object` for the Task the tie names, created or
+    /// pending: `Known(None)` is readable absence.
     pub task: Option<Observation<Option<Object>>>,
+    /// The answer to `Probe::Object` for the Task the starter's marker
+    /// names, when the thread is one Fleet opened for a Question.
+    pub opener: Option<Observation<Option<Object>>>,
     /// The answer to `Probe::Capabilities` for the account.
     pub capabilities: Option<Observation<Capabilities>>,
 }
@@ -65,7 +82,8 @@ pub mod conditions {
     pub const REACHABLE: &str = "Reachable";
     /// A live Task is tied.
     pub const TIED: &str = "Tied";
-    /// `RouteUnknown`, `MentionsOnly`.
+    /// `TaskCreateFailed`, `WorkspaceBusy`, `RouteUnknown`, `MentionsOnly`,
+    /// `PostFailed`, `PostUnconfirmed`.
     pub const NEEDS_ATTENTION: &str = "NeedsAttention";
 }
 use conditions::*;
@@ -74,6 +92,15 @@ use conditions::*;
 const ROUTE_UNKNOWN: &str = "RouteUnknown";
 /// The platform delivers only mentions, so only mentions are relayed.
 const MENTIONS_ONLY: &str = "MentionsOnly";
+/// Three creates of the thread's Task were refused.
+const TASK_CREATE_FAILED: &str = "TaskCreateFailed";
+/// The create waits for the route's workspace.
+const WORKSPACE_BUSY: &str = "WorkspaceBusy";
+/// Three attempts at one post were refused.
+const POST_FAILED: &str = "PostFailed";
+/// A post's outcome stays unknown on a platform where Fleet cannot find it
+/// again; it waits for a person.
+const POST_UNCONFIRMED: &str = "PostUnconfirmed";
 
 impl ConversationController {
     /// The kind this controller reconciles and the field manager it writes as.
@@ -81,8 +108,8 @@ impl ConversationController {
     pub const MANAGER: FieldManager = FieldManager::ConversationController;
 
     /// Whether the manager should run this controller on the object now:
-    /// the thread has unread events, or `notBefore` passed. A deleting
-    /// Conversation is never due.
+    /// the thread has unread events, `notBefore` passed, or the create the
+    /// tie waits on has its receipt. A deleting Conversation is never due.
     pub fn due(object: &Object, now: Millis) -> bool {
         if object.is_deleting() {
             return false;
@@ -92,13 +119,16 @@ impl ConversationController {
             // reconcile, not skipped silently.
             return true;
         };
-        !st.received.is_empty() || st.not_before.is_none_or(|t| t <= now)
+        !st.received.is_empty()
+            || st.not_before.is_none_or(|t| t <= now)
+            || create_receipt_waiting(&object.metadata.uid, &st)
     }
 
     /// What the next `reconcile` needs observed and does not have yet: the
-    /// tied Task, then, when a history read is due, the account's
-    /// capabilities and the read itself. The manager answers what is asked
-    /// and asks again until nothing is.
+    /// tied or pending Task, the Task a Fleet-opened thread's marker
+    /// names, then, when a history read is due, the account's capabilities
+    /// and the read itself. The manager answers what is asked and asks
+    /// again until nothing is.
     pub fn probes(&self, input: &ConversationInput<'_>) -> Result<Vec<Probe>, StoreError> {
         if input.object.is_deleting() {
             return Ok(Vec::new());
@@ -107,12 +137,22 @@ impl ConversationController {
         let obs = &input.observations;
         let mut probes = Vec::new();
         if let Some(tie) = &st.task
-            && tie.state == TieState::Created
+            && matches!(tie.state, TieState::Created | TieState::Pending)
             && obs.task.is_none()
         {
             probes.push(Probe::Object {
                 kind: task::KIND.to_string(),
                 name: tie.name.clone(),
+            });
+        }
+        if obs.opener.is_none()
+            && st.task.is_none()
+            && !unjudged(&st).is_empty()
+            && let Some(name) = opener_of(&st)
+        {
+            probes.push(Probe::Object {
+                kind: task::KIND.to_string(),
+                name: name.to_string(),
             });
         }
         let reference = st
@@ -122,7 +162,8 @@ impl ConversationController {
         let Some(reference) = reference else {
             return Ok(probes);
         };
-        if let Some(query) = history_due(&spec, &st, input) {
+        let query = history_due(&spec, &st, input).or_else(|| recovery_due(&st, obs));
+        if let Some(query) = query {
             match &obs.capabilities {
                 None => probes.push(Probe::Capabilities {
                     account: spec.account.clone(),
@@ -154,7 +195,10 @@ impl ConversationController {
             st: before.clone(),
             attention: Attention::carried(&before),
             retry_after: None,
+            wake: None,
             delete: false,
+            creates: Vec::new(),
+            effects: Vec::new(),
         };
         pass.advance();
         settle_transitions(&mut pass.st.conditions, &before.conditions);
@@ -170,6 +214,8 @@ impl ConversationController {
         Ok(Plan {
             status,
             delete: pass.delete,
+            creates: pass.creates,
+            effects: pass.effects,
             ..Plan::default()
         })
     }
@@ -213,6 +259,81 @@ fn history_due(
     })
 }
 
+/// The recovery read a post with an unknown outcome wants: everything
+/// since its intent, so the marker is found or proven absent. Only where
+/// the platform reads markers back.
+fn recovery_due(st: &ConversationStatus, obs: &ConversationObservations) -> Option<HistoryQuery> {
+    let readable = match &obs.capabilities {
+        Some(Observation::Known(caps)) => caps.history && caps.marker == Marker::Metadata,
+        // Not asked yet: ask, and decide once answered.
+        None => true,
+        Some(Observation::Unknown { .. }) => false,
+    };
+    if !readable {
+        return None;
+    }
+    unconfirmed_posts(st)
+        .into_iter()
+        .map(|(_, record)| record.intent.at)
+        .min()
+        .map(|at| HistoryQuery::Since { at })
+}
+
+/// The post records whose outcome is not known and whose marker the mirror
+/// does not hold.
+fn unconfirmed_posts(st: &ConversationStatus) -> Vec<(&String, &EffectRecord)> {
+    st.effects
+        .iter()
+        .filter(|(key, record)| {
+            is_post_key(key)
+                && !matches!(&record.receipt, Some(r) if !r.outcome.is_unknown())
+                && find_post(st, key).is_none()
+        })
+        .collect()
+}
+
+fn is_post_key(key: &str) -> bool {
+    key.contains("/refuse/") || key.contains("/busy/")
+}
+
+/// Fleet's own post carrying `key` as its marker, or a split of it, if the
+/// mirror holds one.
+fn find_post<'a>(st: &'a ConversationStatus, key: &str) -> Option<&'a StoredMessage> {
+    let split = format!("{key}/");
+    st.messages.iter().find(|m| {
+        m.author.kind == AuthorKind::Fleet
+            && m.key
+                .as_deref()
+                .is_some_and(|k| k == key || k.starts_with(&split))
+    })
+}
+
+/// The tie waits on a create whose receipt has landed and is not judged.
+fn create_receipt_waiting(uid: &str, st: &ConversationStatus) -> bool {
+    st.task
+        .as_ref()
+        .filter(|t| t.state == TieState::Pending)
+        .and_then(|t| st.effects.get(&task_key(uid, t.n)))
+        .is_some_and(|r| r.receipt.is_some())
+}
+
+/// The Task the starter's marker names, for a thread Fleet opened.
+fn opener_of(st: &ConversationStatus) -> Option<&str> {
+    let starter = st.starter.as_ref()?;
+    if starter.removed {
+        return None;
+    }
+    task_of_key(starter.key.as_deref()?).map(|(name, _)| name)
+}
+
+/// The messages numbered since the last judgement, oldest first.
+fn unjudged(st: &ConversationStatus) -> Vec<&StoredMessage> {
+    st.messages
+        .iter()
+        .filter(|m| m.first_seq > st.judged)
+        .collect()
+}
+
 fn decode(obj: &Object) -> Result<(ConversationSpec, ConversationStatus), StoreError> {
     let spec: ConversationSpec = typed(conversation::KIND, &obj.spec)?;
     let st: ConversationStatus = if obj.status.is_null() {
@@ -244,7 +365,8 @@ impl Attention {
     }
 
     fn raise(&mut self, reason: &str, text: impl Into<String>) {
-        self.0.insert(reason.to_string(), text.into());
+        let text: String = text.into();
+        self.0.insert(reason.to_string(), text.replace('\n', " "));
     }
 
     fn clear(&mut self, reason: &str) {
@@ -276,7 +398,11 @@ struct Pass<'a, 'b> {
     attention: Attention,
     /// What the platform asked Fleet to wait after an Unknown read.
     retry_after: Option<Millis>,
+    /// The earliest moment a retry or a recovery wants another pass.
+    wake: Option<Millis>,
     delete: bool,
+    creates: Vec<Create>,
+    effects: Vec<Effect>,
 }
 
 /// A message first seen this pass, before it is numbered.
@@ -286,9 +412,34 @@ struct Fresh {
     edited_at: Option<Millis>,
 }
 
+/// Whether a message reached the mirror from the listener: what admission
+/// judges. A message read from history alone is context, never a trigger:
+/// a mention lost in an untied thread is not recovered.
+fn delivered(via: &Via) -> bool {
+    matches!(via.verified, Verified::Connection | Verified::Signature)
+}
+
+/// A stored message in the port's shape, for admission: it starts its
+/// thread when it is the thread's starter.
+fn as_message(m: &StoredMessage, starter: Option<&Starter>) -> Message {
+    Message {
+        id: m.id.clone(),
+        author: m.author.clone(),
+        mentions_fleet: m.mentions_fleet,
+        at: m.at,
+        text: m.text.clone(),
+        key: m.key.clone(),
+        starts_thread: starter.is_some_and(|s| s.id.as_deref() == Some(&m.id)),
+    }
+}
+
 impl Pass<'_, '_> {
     fn now(&self) -> Millis {
         self.input.now
+    }
+
+    fn uid(&self) -> &str {
+        &self.input.object.metadata.uid
     }
 
     fn cond(&mut self, t: &str, s: ConditionStatus, reason: &str, message: impl Into<String>) {
@@ -302,6 +453,10 @@ impl Pass<'_, '_> {
             generation,
             now,
         );
+    }
+
+    fn wake_at(&mut self, at: Millis) {
+        self.wake = Some(self.wake.map_or(at, |w| w.min(at)));
     }
 
     fn advance(&mut self) {
@@ -320,6 +475,12 @@ impl Pass<'_, '_> {
         let history = self.history();
         let spooled = std::mem::take(&mut self.st.received);
         self.number(history, spooled);
+        self.settle_create();
+        self.settle_posts();
+        self.withdraw();
+        self.retry_busy();
+        self.admit();
+        self.trim_effects();
         self.phase();
         self.conditions();
     }
@@ -345,9 +506,16 @@ impl Pass<'_, '_> {
     }
 
     fn route(&mut self) {
-        match &self.input.defaults.route {
-            Some(_) => self.attention.clear(ROUTE_UNKNOWN),
-            None => self.attention.raise(
+        match (&self.input.defaults.route, &self.input.defaults.brief) {
+            (Some(_), Some(_)) => self.attention.clear(ROUTE_UNKNOWN),
+            (Some(_), None) => self.attention.raise(
+                ROUTE_UNKNOWN,
+                format!(
+                    "route {:?} has no brief loaded; nothing starts from this thread",
+                    self.spec.route
+                ),
+            ),
+            (None, _) => self.attention.raise(
                 ROUTE_UNKNOWN,
                 format!(
                     "route {:?} is no longer under [gateway.routes]; nothing starts from this thread",
@@ -370,13 +538,23 @@ impl Pass<'_, '_> {
         }
     }
 
+    /// Whether this pass's history read, if any, was a post's recovery
+    /// read rather than the first read or the backstop.
+    fn read_was_recovery(&self) -> bool {
+        self.input.observations.history.is_some()
+            && history_due(self.spec, &self.input.object_status(), self.input).is_none()
+    }
+
     /// The history read, when one was made: Known numbers below and marks
     /// the thread Reachable; Unknown leaves the mirror untouched and waits.
     fn history(&mut self) -> Option<History> {
+        let recovery = self.read_was_recovery();
         match self.input.observations.history.clone()? {
             HistoryObservation::Known(h) => {
                 self.cond(REACHABLE, ConditionStatus::True, "Observed", "");
-                self.st.observed_at = Some(self.now());
+                if !recovery {
+                    self.st.observed_at = Some(self.now());
+                }
                 Some(h)
             }
             HistoryObservation::Unsupported => {
@@ -408,6 +586,13 @@ impl Pass<'_, '_> {
     /// delivery ids are remembered so a redelivery is still a no-op.
     fn number(&mut self, history: Option<History>, spooled: Vec<Delivery>) {
         let next = self.st.revision + 1;
+        // Only an untied thread judges a message to start a Task; a tied
+        // one keeps its numbers, so the relay does not carry it twice.
+        let untied = self
+            .st
+            .task
+            .as_ref()
+            .is_none_or(|t| t.state == TieState::Gone);
         let mut messages = std::mem::take(&mut self.st.messages);
         let mut fresh: Vec<Fresh> = Vec::new();
         let mut changed = false;
@@ -441,21 +626,48 @@ impl Pass<'_, '_> {
                         Some(stored) => {
                             // Seen from history already: one message.
                             changed |= refresh(stored, &message, next);
-                        }
-                        None if fresh.iter().any(|f| f.message.id == message.id) => {}
-                        None => {
-                            if message.starts_thread && self.st.starter.is_none() {
-                                self.st.starter = Some(Starter::message(&message));
-                                changed = true;
-                            }
-                            fresh.push(Fresh {
-                                message,
-                                via: Via {
+                            if !delivered(&stored.via) {
+                                // The listener delivered what a history
+                                // read numbered first: it is a trigger now.
+                                stored.via = Via {
                                     verified: delivery.verified,
                                     received_at: delivery.received_at,
-                                },
-                                edited_at: None,
-                            });
+                                };
+                                stored.mentions_fleet |= message.mentions_fleet;
+                                if untied {
+                                    // Numbered again, so it is judged once.
+                                    stored.seq = next;
+                                    stored.first_seq = next;
+                                    changed = true;
+                                }
+                            }
+                        }
+                        None => {
+                            if let Some(f) = fresh.iter_mut().find(|f| f.message.id == message.id) {
+                                // Read from history and delivered in one
+                                // pass: one message, which the listener
+                                // delivered.
+                                if !delivered(&f.via) {
+                                    f.via = Via {
+                                        verified: delivery.verified,
+                                        received_at: delivery.received_at,
+                                    };
+                                    f.message.mentions_fleet |= message.mentions_fleet;
+                                }
+                            } else {
+                                if message.starts_thread && self.st.starter.is_none() {
+                                    self.st.starter = Some(Starter::message(&message));
+                                    changed = true;
+                                }
+                                fresh.push(Fresh {
+                                    message,
+                                    via: Via {
+                                        verified: delivery.verified,
+                                        received_at: delivery.received_at,
+                                    },
+                                    edited_at: None,
+                                });
+                            }
                         }
                     }
                 }
@@ -563,6 +775,621 @@ impl Pass<'_, '_> {
         true
     }
 
+    // ------------------------------------------------------------------
+    // Effects: the create and the posts, each a keyed record.
+    // ------------------------------------------------------------------
+
+    fn intent(&self, action: &str) -> Intent {
+        Intent {
+            action: action.to_string(),
+            at: self.now(),
+            generation: self.input.object.metadata.generation,
+        }
+    }
+
+    /// Write a fresh intent under `key`: the first, or one more attempt
+    /// (`counted`) under the same key.
+    fn renew_intent(&mut self, key: &str, action: &str, counted: bool) {
+        let intent = self.intent(action);
+        let record = self
+            .st
+            .effects
+            .entry(key.to_string())
+            .or_insert_with(|| EffectRecord {
+                intent: intent.clone(),
+                receipt: None,
+                attempts: 0,
+                recovery: 0,
+            });
+        record.intent = intent;
+        record.receipt = None;
+        if counted {
+            record.attempts += 1;
+        }
+    }
+
+    /// Record a receipt this controller recovered itself, by observation.
+    fn recover_receipt(&mut self, key: &str, action: &str, outcome: EffectOutcome) {
+        let receipt = Receipt {
+            action: action.to_string(),
+            at: self.now(),
+            outcome: Observation::Known(outcome),
+        };
+        if let Some(record) = self.st.effects.get_mut(key) {
+            record.receipt = Some(receipt);
+        }
+    }
+
+    /// Ask the manager to post `text` under `key`, intent first.
+    fn plan_post(&mut self, key: &str, text: String, counted: bool) {
+        let Some(reference) = self.st.reference.clone() else {
+            return;
+        };
+        self.renew_intent(key, "post", counted);
+        self.effects.push(Effect {
+            key: key.to_string(),
+            action: Action::Post {
+                account: self.spec.account.clone(),
+                conversation: reference,
+                text,
+            },
+        });
+    }
+
+    /// The next Task number: past every one the tie or the effect records
+    /// name, so a key never repeats.
+    fn next_n(&self) -> u64 {
+        let recorded = self
+            .st
+            .effects
+            .keys()
+            .filter_map(|k| {
+                k.rsplit_once('/')
+                    .filter(|(head, _)| head.ends_with("/task") || head.ends_with("/busy"))
+                    .and_then(|(_, n)| n.parse::<u64>().ok())
+            })
+            .max()
+            .unwrap_or(0);
+        self.st.task.as_ref().map_or(0, |t| t.n).max(recorded) + 1
+    }
+
+    /// The Task the thread starts, as the interface page gives it.
+    fn task_object(&self, name: &str, route: &RouteConfig, brief: &str) -> Object {
+        Object {
+            api_version: API_VERSION.to_string(),
+            kind: task::KIND.to_string(),
+            metadata: ObjectMeta {
+                name: name.to_string(),
+                labels: BTreeMap::from([
+                    (
+                        CONVERSATION_LABEL.to_string(),
+                        self.input.object.metadata.name.clone(),
+                    ),
+                    (CONVERSATION_UID_LABEL.to_string(), self.uid().to_string()),
+                    (ROUTE_LABEL.to_string(), self.spec.route.clone()),
+                ]),
+                ..ObjectMeta::default()
+            },
+            spec: json!({
+                "configRef": {"name": route.task_config},
+                "brief": brief,
+                "workspace": route.workspace,
+                "dispatch": true,
+            }),
+            status: serde_json::Value::Null,
+        }
+    }
+
+    /// Ask the manager to create the tie's Task under its key, intent
+    /// first, with a `dir` route's workspace as the precondition. A
+    /// `repositories` route shares no directory, so its create has none.
+    fn plan_create(&mut self, counted: bool) {
+        let (Some(route), Some(brief)) = (
+            self.input.defaults.route.clone(),
+            self.input.defaults.brief.clone(),
+        ) else {
+            return;
+        };
+        let Some(tie) = self.st.task.clone() else {
+            return;
+        };
+        let key = task_key(self.uid(), tie.n);
+        self.renew_intent(&key, CREATE_ACTION, counted);
+        if let Some(t) = self.st.task.as_mut() {
+            t.state = TieState::Pending;
+            t.uid.clear();
+        }
+        let object = self.task_object(&tie.name, &route, &brief);
+        self.creates.push(Create {
+            key,
+            object,
+            exclusive: route.workspace.dir().map(|dir| Exclusive {
+                workspace: dir.to_string(),
+            }),
+        });
+        // The receipt lands in the same manager step; should it not, look
+        // for the Task after one interval.
+        let poll = self.spec.poll_ms(self.input.defaults.poll_ms);
+        self.wake_at(self.now().saturating_add(poll));
+    }
+
+    /// Start the thread's next Task for `trigger`.
+    fn start(&mut self, trigger: &str) {
+        let n = self.next_n();
+        self.st.task = Some(Tie {
+            name: task_name(&self.input.object.metadata.name, n),
+            uid: String::new(),
+            n,
+            state: TieState::Pending,
+            trigger: Some(trigger.to_string()),
+        });
+        self.plan_create(true);
+    }
+
+    /// The create's receipt, as the manager or a recovery left it: Created
+    /// ties the thread; WorkspaceBusy holds it, with one notice; Failed is
+    /// tried again, three times; a missing or Unknown receipt is answered
+    /// by looking for the Task, never by creating it again.
+    fn settle_create(&mut self) {
+        let Some(tie) = self.st.task.clone() else {
+            return;
+        };
+        if tie.state != TieState::Pending {
+            return;
+        }
+        let key = task_key(self.uid(), tie.n);
+        let Some(record) = self.st.effects.get(&key).cloned() else {
+            // A pending tie with no intent: write one.
+            self.plan_create(true);
+            return;
+        };
+        match record.receipt.as_ref().map(|r| &r.outcome) {
+            Some(Observation::Known(EffectOutcome::Created { uid, .. })) => {
+                let uid = uid.clone();
+                self.tied(&uid);
+            }
+            Some(Observation::Known(EffectOutcome::WorkspaceBusy { task })) => {
+                let holder = task.clone();
+                if let Some(t) = self.st.task.as_mut() {
+                    t.state = TieState::Busy;
+                }
+                let dir = self
+                    .input
+                    .defaults
+                    .route
+                    .as_ref()
+                    .and_then(|r| r.workspace.dir().map(str::to_string))
+                    .unwrap_or_default();
+                self.attention.raise(
+                    WORKSPACE_BUSY,
+                    format!(
+                        "Task/{holder} has the route's workspace {dir}; the request waits for it"
+                    ),
+                );
+                let notice = busy_key(self.uid(), tie.n);
+                if !self.st.effects.contains_key(&notice) {
+                    self.plan_post(&notice, busy_notice(&holder), true);
+                }
+            }
+            Some(Observation::Known(EffectOutcome::Failed { why })) => {
+                let why = why.clone();
+                let at = record.receipt.as_ref().map_or(self.now(), |r| r.at);
+                self.failed_create(&key, record.attempts, at, &why);
+            }
+            Some(Observation::Known(other)) => {
+                let why = format!("the create answered {other:?}");
+                let at = record.receipt.as_ref().map_or(self.now(), |r| r.at);
+                self.failed_create(&key, record.attempts, at, &why);
+            }
+            Some(Observation::Unknown { .. }) | None => self.recover_create(&key, record.attempts),
+        }
+    }
+
+    /// A refused create: one more attempt after the delay, up to the cap.
+    fn failed_create(&mut self, key: &str, attempts: u32, at: Millis, why: &str) {
+        if attempts >= MAX_ATTEMPTS {
+            self.attention.raise(
+                TASK_CREATE_FAILED,
+                format!("{attempts} creates of the thread's Task were refused: {why}"),
+            );
+            return;
+        }
+        let retry_at = at.saturating_add(RETRY_DELAY_MS);
+        if self.now() >= retry_at {
+            let _ = key;
+            self.plan_create(true);
+        } else {
+            self.wake_at(retry_at);
+        }
+    }
+
+    /// A create whose outcome is not known: the Task under the name, with
+    /// this thread's uid label, is adopted; one with another is a refusal;
+    /// readable absence means the create never happened, so it is tried
+    /// once more under the same key; an unreadable store waits.
+    fn recover_create(&mut self, key: &str, attempts: u32) {
+        match self.input.observations.task.clone() {
+            Some(Observation::Known(Some(obj))) => {
+                if obj.metadata.labels.get(CONVERSATION_UID_LABEL) == Some(&self.uid().to_string())
+                {
+                    let uid = obj.metadata.uid.clone();
+                    self.recover_receipt(
+                        key,
+                        CREATE_ACTION,
+                        EffectOutcome::Created {
+                            uid: uid.clone(),
+                            adopted: true,
+                        },
+                    );
+                    self.tied(&uid);
+                } else {
+                    let why = format!("{} exists and was not created for this thread", obj.key());
+                    self.recover_receipt(
+                        key,
+                        CREATE_ACTION,
+                        EffectOutcome::Failed { why: why.clone() },
+                    );
+                    self.failed_create(key, attempts, self.now(), &why);
+                }
+            }
+            Some(Observation::Known(None)) => {
+                if attempts >= MAX_ATTEMPTS {
+                    self.attention.raise(
+                        TASK_CREATE_FAILED,
+                        format!("{attempts} creates of the thread's Task left nothing behind"),
+                    );
+                } else {
+                    self.plan_create(true);
+                }
+            }
+            Some(Observation::Unknown { .. }) => {
+                if let Some(record) = self.st.effects.get_mut(key) {
+                    record.recovery += 1;
+                }
+                let poll = self.spec.poll_ms(self.input.defaults.poll_ms);
+                self.wake_at(self.now().saturating_add(poll));
+            }
+            None => {
+                // Not asked this pass: ask on the next.
+                let poll = self.spec.poll_ms(self.input.defaults.poll_ms);
+                self.wake_at(self.now().saturating_add(poll));
+            }
+        }
+    }
+
+    /// The Task exists: the thread is tied to it.
+    fn tied(&mut self, uid: &str) {
+        if let Some(t) = self.st.task.as_mut() {
+            t.uid = uid.to_string();
+            t.state = TieState::Created;
+            t.trigger = None;
+        }
+        self.attention.clear(WORKSPACE_BUSY);
+        self.attention.clear(TASK_CREATE_FAILED);
+    }
+
+    /// Each post's receipt: Posted settles it; Failed is tried again,
+    /// three times; a missing or Unknown outcome is looked for in the
+    /// mirror, then by one recovery read where the platform reads markers
+    /// back, and otherwise waits for a person.
+    fn settle_posts(&mut self) {
+        let keys: Vec<String> = self
+            .st
+            .effects
+            .keys()
+            .filter(|k| is_post_key(k))
+            .cloned()
+            .collect();
+        let recovery_read = self.read_was_recovery();
+        // Whether the platform reads markers back; `None` while the
+        // capabilities were not asked or could not be read.
+        let readable = match &self.input.observations.capabilities {
+            Some(Observation::Known(caps)) => Some(caps.history && caps.marker == Marker::Metadata),
+            _ => None,
+        };
+        let mut any_unconfirmed = false;
+        for key in keys {
+            if self.effects.iter().any(|e| e.key == key) {
+                // Planned this pass: its receipt is the manager's to write.
+                continue;
+            }
+            let record = self.st.effects[&key].clone();
+            match record.receipt.as_ref().map(|r| &r.outcome) {
+                Some(Observation::Known(EffectOutcome::Posted { .. })) => {}
+                Some(Observation::Known(EffectOutcome::Failed { why })) => {
+                    let at = record.receipt.as_ref().map_or(self.now(), |r| r.at);
+                    if record.attempts >= MAX_ATTEMPTS {
+                        self.attention.raise(
+                            POST_FAILED,
+                            format!("{} attempts at {key} were refused: {why}", record.attempts),
+                        );
+                        continue;
+                    }
+                    let retry_at = at.saturating_add(RETRY_DELAY_MS);
+                    if self.now() >= retry_at {
+                        if let Some(text) = self.post_text(&key) {
+                            self.plan_post(&key, text, true);
+                        }
+                    } else {
+                        self.wake_at(retry_at);
+                    }
+                }
+                Some(Observation::Known(other)) => {
+                    let why = format!("the post answered {other:?}");
+                    self.attention.raise(POST_FAILED, format!("{key}: {why}"));
+                }
+                Some(Observation::Unknown { .. }) | None => {
+                    if let Some(found) = find_post(&self.st, &key) {
+                        let outcome = EffectOutcome::Posted {
+                            message: found.id.clone(),
+                            at: found.at,
+                        };
+                        self.recover_receipt(&key, "post", outcome);
+                        continue;
+                    }
+                    if readable == Some(false) {
+                        any_unconfirmed = true;
+                        continue;
+                    }
+                    let poll = self.spec.poll_ms(self.input.defaults.poll_ms);
+                    self.wake_at(self.now().saturating_add(poll));
+                    if readable.is_none() || !recovery_read {
+                        // No recovery read this pass: ask on the next.
+                        continue;
+                    }
+                    let read = self.input.observations.history.clone();
+                    if read.as_ref().is_some_and(|h| h.known().is_some())
+                        && record.intent.at >= self.recovery_since()
+                    {
+                        // A complete read since the intent lacks the marker:
+                        // the post never landed.
+                        if record.attempts >= MAX_ATTEMPTS {
+                            self.attention.raise(
+                                POST_FAILED,
+                                format!(
+                                    "{} attempts at {key} left no post behind",
+                                    record.attempts
+                                ),
+                            );
+                        } else if let Some(text) = self.post_text(&key) {
+                            self.plan_post(&key, text, true);
+                        }
+                        continue;
+                    }
+                    if let Some(r) = self.st.effects.get_mut(&key) {
+                        r.recovery += 1;
+                    }
+                }
+            }
+        }
+        if any_unconfirmed {
+            self.attention.raise(
+                POST_UNCONFIRMED,
+                "a post's outcome is unknown and the platform cannot find it again; a person decides",
+            );
+        } else {
+            self.attention.clear(POST_UNCONFIRMED);
+        }
+    }
+
+    /// The `since` the recovery read asked for, as `probes` derived it.
+    fn recovery_since(&self) -> Millis {
+        match recovery_due(&self.input.object_status(), &self.input.observations) {
+            Some(HistoryQuery::Since { at }) => at,
+            _ => Millis::MAX,
+        }
+    }
+
+    /// What a post under `key` says, derived again for a retry.
+    fn post_text(&self, key: &str) -> Option<String> {
+        let route = self.input.defaults.route.as_ref()?;
+        if key.contains("/refuse/") {
+            return Some(route.refusal().to_string());
+        }
+        let n: u64 = key.rsplit_once('/')?.1.parse().ok()?;
+        let holder = self
+            .st
+            .effects
+            .get(&task_key(self.uid(), n))
+            .and_then(|r| r.receipt.as_ref())
+            .and_then(|r| match &r.outcome {
+                Observation::Known(EffectOutcome::WorkspaceBusy { task }) => Some(task.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| "another".to_string());
+        Some(busy_notice(&holder))
+    }
+
+    /// A busy tie whose trigger message is gone from the mirror, removed
+    /// or rotated out, is withdrawn: nothing starts for a request nobody
+    /// can read any more.
+    fn withdraw(&mut self) {
+        let Some(tie) = self.st.task.clone() else {
+            return;
+        };
+        if tie.state != TieState::Busy {
+            return;
+        }
+        let present = tie
+            .trigger
+            .as_deref()
+            .is_some_and(|id| self.st.messages.iter().any(|m| m.id == id));
+        if !present {
+            self.st.task = None;
+            self.attention.clear(WORKSPACE_BUSY);
+        }
+    }
+
+    /// A busy tie is planned again: the manager checks the directory under
+    /// the lease, and a refusal is not an attempt.
+    fn retry_busy(&mut self) {
+        let Some(tie) = self.st.task.clone() else {
+            return;
+        };
+        if tie.state != TieState::Busy {
+            return;
+        }
+        if self
+            .input
+            .object_status()
+            .not_before
+            .is_some_and(|t| t > self.now())
+        {
+            // Woken early by a delivery: the interval still runs.
+            return;
+        }
+        self.plan_create(false);
+    }
+
+    /// Whether the thread may start a Task from a message that meets the
+    /// mention rule: not while it belongs to a Question's Task that still
+    /// exists, and not while Fleet cannot tell whose it is.
+    fn opener_allows(&self) -> bool {
+        let Some(starter) = &self.st.starter else {
+            return true;
+        };
+        if starter.removed {
+            return true;
+        }
+        let Some(key) = starter.key.as_deref() else {
+            // Fleet opened the thread but its marker was not read back:
+            // ignore mentions rather than guess.
+            return starter.kind != Some(AuthorKind::Fleet);
+        };
+        let Some((_, uid)) = task_of_key(key) else {
+            return starter.kind != Some(AuthorKind::Fleet);
+        };
+        match &self.input.observations.opener {
+            Some(Observation::Known(Some(obj))) => obj.metadata.uid != uid,
+            Some(Observation::Known(None)) => true,
+            Some(Observation::Unknown { .. }) | None => false,
+        }
+    }
+
+    /// A thread Fleet opened for a Question is tied to that Task while it
+    /// exists with the uid the marker names.
+    fn tie_by_marker(&mut self) {
+        if self.st.task.is_some() {
+            return;
+        }
+        let Some(key) = self.st.starter.as_ref().and_then(|s| s.key.clone()) else {
+            return;
+        };
+        let Some((name, uid)) = task_of_key(&key) else {
+            return;
+        };
+        if let Some(Observation::Known(Some(obj))) = &self.input.observations.opener
+            && obj.metadata.uid == uid
+            && obj.metadata.name == name
+        {
+            self.st.task = Some(Tie {
+                name: name.to_string(),
+                uid: uid.to_string(),
+                n: 0,
+                state: TieState::Created,
+                trigger: None,
+            });
+        }
+    }
+
+    /// Admission over the messages numbered since the last judgement: a
+    /// stranger's mention earns one refusal per author; in an Untied
+    /// thread an admitted message that meets the mention rule starts a
+    /// Task, in an Orphaned one any admitted message does. Judging waits
+    /// for the thread's starter where the account has history, and for the
+    /// route while it is not in the config.
+    fn admit(&mut self) {
+        let (Some(route), Some(_)) = (
+            self.input.defaults.route.clone(),
+            self.input.defaults.brief.as_ref(),
+        ) else {
+            return;
+        };
+        if self.st.reference.is_none() {
+            return;
+        }
+        let pending = unjudged(&self.st).into_iter().cloned().collect::<Vec<_>>();
+        if pending.is_empty() {
+            return;
+        }
+        if self.st.observed_at.is_none() {
+            // The first read is still owed, so the starter is not known:
+            // judge once it is, unless the platform has no history.
+            match &self.input.observations.capabilities {
+                Some(Observation::Known(caps)) if !caps.history => {}
+                _ => return,
+            }
+        }
+        if self.st.task.is_none()
+            && opener_of(&self.st).is_some()
+            && !matches!(&self.input.observations.opener, Some(Observation::Known(_)))
+        {
+            // Fleet opened the thread: judge once its Task is known, and
+            // never guess whose it is.
+            return;
+        }
+        self.tie_by_marker();
+        let people = self.input.defaults.people.clone();
+        let starter = self.st.starter.clone();
+        let mut started = false;
+        for m in pending {
+            if !delivered(&m.via) {
+                continue;
+            }
+            let message = as_message(&m, starter.as_ref());
+            let admission = admit(&route, &people, &message);
+            if earns_refusal(admission, &message) {
+                self.refuse(&m.author.id, &route);
+                continue;
+            }
+            if started || admission != Admission::Admitted {
+                continue;
+            }
+            let may_start = match self.st.task.as_ref().map(|t| t.state) {
+                None => starts_task(&route, admission, &message) && self.opener_allows(),
+                Some(TieState::Gone) => true,
+                Some(TieState::Pending | TieState::Busy | TieState::Created) => false,
+            };
+            if may_start {
+                self.start(&m.id);
+                started = true;
+            }
+        }
+        self.st.judged = self.st.revision;
+    }
+
+    /// One refusal per author and thread, up to the cap.
+    fn refuse(&mut self, author: &str, route: &RouteConfig) {
+        if self.st.refusals.iter().any(|a| a == author) {
+            return;
+        }
+        if self.st.refusals.len() >= REFUSALS_CAP {
+            return;
+        }
+        self.st.refusals.push(author.to_string());
+        let key = refusal_key(self.uid(), author);
+        self.plan_post(&key, route.refusal().to_string(), true);
+    }
+
+    /// Every unsettled record stays; of the settled, the newest 100.
+    fn trim_effects(&mut self) {
+        let mut settled: Vec<(String, Millis)> = self
+            .st
+            .effects
+            .iter()
+            .filter(|(_, r)| matches!(&r.receipt, Some(rc) if !rc.outcome.is_unknown()))
+            .map(|(k, r)| (k.clone(), r.intent.at))
+            .collect();
+        if settled.len() <= EFFECTS_CAP {
+            return;
+        }
+        settled.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        let excess = settled.len() - EFFECTS_CAP;
+        for (key, _) in settled.into_iter().take(excess) {
+            self.st.effects.remove(&key);
+        }
+    }
+
     fn phase(&mut self) {
         self.st.phase = match self.st.task.as_ref().map(|t| t.state) {
             Some(TieState::Created) => Phase::Tied,
@@ -586,6 +1413,18 @@ impl Pass<'_, '_> {
                     tie.name
                 ),
             ),
+            (_, Some(tie)) if tie.state == TieState::Pending => self.cond(
+                TIED,
+                ConditionStatus::False,
+                "Starting",
+                format!("Task/{} is being created", tie.name),
+            ),
+            (_, Some(tie)) if tie.state == TieState::Busy => self.cond(
+                TIED,
+                ConditionStatus::False,
+                "Waiting",
+                format!("Task/{} waits for the route's workspace", tie.name),
+            ),
             _ => self.cond(TIED, ConditionStatus::False, "Untied", ""),
         }
         if !self.attention.0.is_empty() {
@@ -598,26 +1437,33 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// When to look again: the backstop interval while Tied, the end of
+    /// When to look again: the backstop interval while Tied, one interval
+    /// while a create is pending or waits for the workspace, the end of
     /// the retention while Untied or Orphaned, and past it the delete; an
-    /// Unknown read's `retryAfter`, or one interval, before either.
+    /// Unknown read's `retryAfter`, or one interval, before either; and
+    /// never later than a retry or a recovery wants.
     fn schedule(&mut self) {
         let now = self.now();
         let poll = self.spec.poll_ms(self.input.defaults.poll_ms);
-        let retry = self.retry_after.filter(|_| {
-            condition(&self.st.conditions, REACHABLE)
-                .is_some_and(|c| c.status == ConditionStatus::Unknown)
-        });
         let unknown_read = condition(&self.st.conditions, REACHABLE)
             .is_some_and(|c| c.status == ConditionStatus::Unknown);
+        let retry = self.retry_after.filter(|_| unknown_read);
         let next_read = now.saturating_add(retry.unwrap_or(poll));
         let waiting = self
             .st
             .task
             .as_ref()
-            .is_some_and(|t| t.state == TieState::Busy);
-        if self.st.phase == Phase::Tied || waiting {
-            self.st.not_before = Some(next_read);
+            .is_some_and(|t| matches!(t.state, TieState::Busy | TieState::Pending));
+        let wake = self.wake;
+        let at_latest = |t: Millis| wake.map_or(t, |w| w.min(t));
+        if waiting {
+            // A pending or busy create: when its retry or recovery asks,
+            // else one interval.
+            self.st.not_before = Some(wake.unwrap_or(next_read));
+            return;
+        }
+        if self.st.phase == Phase::Tied {
+            self.st.not_before = Some(at_latest(next_read));
             return;
         }
         let orphaned_at = (self.st.phase == Phase::Orphaned)
@@ -634,13 +1480,20 @@ impl Pass<'_, '_> {
         .unwrap_or(now);
         let until = since.saturating_add(self.input.defaults.retain_ms);
         if until <= now {
-            self.delete = true;
-            self.st.not_before = Some(until);
+            self.delete = self.creates.is_empty() && self.effects.is_empty();
+            self.st.not_before = Some(at_latest(until));
         } else if unknown_read {
-            self.st.not_before = Some(until.min(next_read));
+            self.st.not_before = Some(at_latest(until.min(next_read)));
         } else {
-            self.st.not_before = Some(until);
+            self.st.not_before = Some(at_latest(until));
         }
+    }
+}
+
+impl ConversationInput<'_> {
+    /// The status as stored, before this pass changed anything.
+    fn object_status(&self) -> ConversationStatus {
+        decode(self.object).map(|(_, st)| st).unwrap_or_default()
     }
 }
 
@@ -689,5 +1542,34 @@ mod tests {
         assert_eq!(a.reason(), "Multiple");
         a.clear(ROUTE_UNKNOWN);
         assert_eq!(a.reason(), MENTIONS_ONLY);
+        a.raise(WORKSPACE_BUSY, "two\nlines");
+        assert!(!a.message().contains("two\nlines"), "one line per reason");
+    }
+
+    #[test]
+    fn post_keys_and_task_numbers_are_read_back_from_effect_keys() {
+        assert!(is_post_key("conversation/c7/refuse/U1"));
+        assert!(is_post_key("conversation/c7/busy/2"));
+        assert!(!is_post_key("conversation/c7/task/2"));
+        let mut st = ConversationStatus::default();
+        assert!(unjudged(&st).is_empty());
+        st.effects.insert(
+            "conversation/c7/refuse/U1".into(),
+            EffectRecord {
+                intent: Intent {
+                    action: "post".into(),
+                    at: 1,
+                    generation: 1,
+                },
+                receipt: None,
+                attempts: 1,
+                recovery: 0,
+            },
+        );
+        assert_eq!(unconfirmed_posts(&st).len(), 1);
+        assert_eq!(
+            recovery_due(&st, &ConversationObservations::default()),
+            Some(HistoryQuery::Since { at: 1 })
+        );
     }
 }

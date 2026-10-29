@@ -2338,6 +2338,137 @@ fn the_gateway_kinds_are_reserved_against_plugin_manifests_and_validated_on_writ
     ));
 }
 
+/// The Task a thread starts: created by the Conversation's controller alone,
+/// under the lease, as the one create that may carry the conversation
+/// labels; nobody sets or changes those labels otherwise.
+#[test]
+fn a_conversation_task_is_created_fenced_by_its_controller_and_its_labels_are_fixed() {
+    use fleet_api::conversation::{CONVERSATION_LABEL, CONVERSATION_UID_LABEL};
+    let dir = Dir::new("conversation-task");
+    let store = FileStore::open(&dir.0).unwrap();
+    let mut labelled = task("conv-1");
+    labelled
+        .metadata
+        .labels
+        .insert(CONVERSATION_LABEL.into(), "conv".into());
+    labelled
+        .metadata
+        .labels
+        .insert(CONVERSATION_UID_LABEL.into(), "c7".into());
+    let by = FieldManager::ConversationController;
+    // Unfenced, a controller creates nothing; apply and a listener never
+    // set the labels.
+    assert!(matches!(
+        store.create(labelled.clone(), by.clone()),
+        Err(StoreError::Forbidden(_))
+    ));
+    assert!(matches!(
+        store.create(labelled.clone(), FieldManager::Apply),
+        Err(StoreError::Forbidden(_))
+    ));
+    assert!(matches!(
+        store.create(labelled.clone(), listener_of("fake-main")),
+        Err(StoreError::Forbidden(_))
+    ));
+    let lease = store.acquire_lease("m", 60_000).unwrap();
+    for other in [
+        FieldManager::TaskController,
+        FieldManager::ForgeController,
+        FieldManager::ListenerController,
+    ] {
+        assert!(
+            matches!(
+                store.create_fenced(labelled.clone(), other.clone(), &lease),
+                Err(StoreError::Forbidden(_))
+            ),
+            "{other:?}"
+        );
+    }
+    assert!(
+        store
+            .create_fenced(task("not-a-conversation-kind"), by.clone(), &lease)
+            .is_ok()
+    );
+    let stale = fleet_api::LeaseToken {
+        holder: "m".into(),
+        token: lease.token + 1,
+        expires_at: lease.expires_at,
+    };
+    assert!(matches!(
+        store.create_fenced(labelled.clone(), by.clone(), &stale),
+        Err(StoreError::LeaseLost(_))
+    ));
+    let created = store
+        .create_fenced(labelled.clone(), by.clone(), &lease)
+        .unwrap();
+    assert_eq!(created.metadata.labels, labelled.metadata.labels);
+    assert_eq!(
+        created.metadata.finalizers,
+        vec!["fleet.dev/release".to_string()]
+    );
+    assert!(matches!(
+        store.create_fenced(labelled.clone(), by.clone(), &lease),
+        Err(StoreError::AlreadyExists(_))
+    ));
+    // Apply may change the spec's mutable fields but not those labels.
+    let rv = created.metadata.resource_version;
+    let mut changed = labelled.metadata.labels.clone();
+    changed.insert(CONVERSATION_UID_LABEL.into(), "c8".into());
+    assert!(matches!(
+        store.update_spec(
+            "Task",
+            "conv-1",
+            created.spec.clone(),
+            Some(changed),
+            rv,
+            FieldManager::Apply
+        ),
+        Err(StoreError::Forbidden(_))
+    ));
+    let mut dropped = labelled.metadata.labels.clone();
+    dropped.remove(CONVERSATION_LABEL);
+    assert!(matches!(
+        store.update_spec(
+            "Task",
+            "conv-1",
+            created.spec.clone(),
+            Some(dropped),
+            rv,
+            FieldManager::Apply
+        ),
+        Err(StoreError::Forbidden(_))
+    ));
+    let mut same = labelled.metadata.labels.clone();
+    same.insert("topic".into(), "x".into());
+    let kept = store
+        .update_spec(
+            "Task",
+            "conv-1",
+            created.spec.clone(),
+            Some(same.clone()),
+            rv,
+            FieldManager::Apply,
+        )
+        .unwrap();
+    assert_eq!(kept.metadata.labels, same);
+    let mut plain = task("plain");
+    plain.metadata.labels.insert("topic".into(), "x".into());
+    let plain = store.create(plain, FieldManager::Apply).unwrap();
+    let mut adding = plain.metadata.labels.clone();
+    adding.insert(CONVERSATION_LABEL.into(), "conv".into());
+    assert!(matches!(
+        store.update_spec(
+            "Task",
+            "plain",
+            plain.spec.clone(),
+            Some(adding),
+            plain.metadata.resource_version,
+            FieldManager::Apply
+        ),
+        Err(StoreError::Forbidden(_))
+    ));
+}
+
 // --- Answers: an append records what it answers, in the same write. ------
 
 /// A Task briefed as its controller would leave it, with two declared

@@ -674,6 +674,7 @@ fn gateway_side<'a>(
         port,
         config: section.clone(),
         digests,
+        briefs: config.gateway_briefs.clone(),
     })
 }
 
@@ -1355,6 +1356,7 @@ fn status_summary(obj: &Object) -> Value {
             "ref",
             "task",
             "revision",
+            "judged",
             "starter",
             "droppedBefore",
             "observedAt",

@@ -52,7 +52,9 @@ fn person(id: &str, at: u64, text: &str) -> Message {
 }
 
 /// A gateway environment whose fake platform holds one thread with one
-/// earlier message from Sam, and the name its Conversation takes.
+/// earlier message from Sam, with the route's TaskConfig applied so the
+/// Task an admitted mention starts can run, and the name its Conversation
+/// takes.
 fn mirror(name: &str) -> (Env, String) {
     let env = Env::gateway(name);
     env.fake_gateway()
@@ -61,7 +63,33 @@ fn mirror(name: &str) -> (Env, String) {
             vec![person(SAM_ID, T0, "The nightly export failed again.")],
         )
         .unwrap();
+    env.apply(task_config()).ok();
     (env, conversation_name(GATEWAY_ACCOUNT, THREAD))
+}
+
+/// The TaskConfig the route names.
+fn task_config() -> Value {
+    support::object(
+        "TaskConfig",
+        "conversation",
+        json!({"harness": "claude-code", "host": "local"}),
+    )
+}
+
+/// Let a conversation Task's session rest, delete the Task, and reconcile
+/// until it is released.
+fn delete_task(env: &Env, name: &str) {
+    env.host()
+        .set_at_rest(&env.session_key(name), true)
+        .unwrap();
+    env.fleet(&["delete", "task", name]).ok();
+    for _ in 0..3 {
+        env.reconcile().ok();
+        if env.fleet(&["get", "task", name]).code == Some(3) {
+            return;
+        }
+    }
+    env.get_absent(name);
 }
 
 fn mention(id: &str, at: u64) -> Value {
@@ -352,7 +380,7 @@ fn a_mention_creates_the_conversation_and_the_first_pass_numbers_it_with_the_his
     let report = env.reconcile().ok().json();
     assert_eq!(report["errors"], json!([]), "{report:#}");
     let st = env.conversation_status(&conv);
-    assert_eq!(st["phase"], "Untied", "{st:#}");
+    assert_eq!(st["phase"], "Tied", "the mention started a Task: {st:#}");
     assert_eq!(
         st["ref"],
         json!({"platform": "fake", "chat": GATEWAY_CHANNEL, "thread": "1730000000000"})
@@ -383,10 +411,10 @@ fn a_mention_creates_the_conversation_and_the_first_pass_numbers_it_with_the_his
     assert_eq!(st["droppedBefore"], 0);
     assert_eq!(st["lastMessageAt"], T0 + 300_000);
     assert_condition(&st, "Reachable", "True", "Observed");
-    assert_condition(&st, "Tied", "False", "Untied");
+    assert_condition(&st, "Tied", "True", "TaskKnown");
     assert!(
         st["notBefore"].as_u64().unwrap() > st["observedAt"].as_u64().unwrap(),
-        "retention is the next look: {st:#}"
+        "the backstop is the next look: {st:#}"
     );
     env.fleet(&["status", "conversation", &conv])
         .ok()
@@ -394,13 +422,13 @@ fn a_mention_creates_the_conversation_and_the_first_pass_numbers_it_with_the_his
         .stdout_has("2 message(s)");
     env.fleet(&["list", "conversations"])
         .ok()
-        .stdout_has("Untied");
+        .stdout_has("Tied");
     assert_eq!(
         env.fake_gateway().calls("history").unwrap(),
         1,
         "one first read"
     );
-    // Quiet: an Untied thread is not read again until something arrives.
+    // Quiet: the thread is not read again before its backstop interval.
     env.reconcile().ok();
     assert_eq!(env.conversation_status(&conv), st);
     env.assert_no_temp();
@@ -829,20 +857,8 @@ fn an_orphaned_conversation_keeps_its_messages_and_is_retired_after_its_retentio
     env.receive("Ev01", mention("1730000300000", T0 + 300_000))
         .ok();
     env.reconcile().ok();
-    // The tie is task 2's to make; here it is written into the record.
     let task_name = format!("{conv}-1");
-    env.apply(support::task(&task_name, false)).ok();
-    let uid = env.get(&task_name)["metadata"]["uid"]
-        .as_str()
-        .unwrap()
-        .to_string();
     let path = env.object_path("Conversation", &conv);
-    let mut obj: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    obj["status"]["phase"] = json!("Tied");
-    obj["status"]["task"] = json!({"name": task_name, "uid": uid, "n": 1, "state": "created"});
-    obj["status"]["notBefore"] = json!(0);
-    fs::write(&path, obj.to_string()).unwrap();
-    env.reconcile().ok();
     let st = env.conversation_status(&conv);
     assert_eq!(st["phase"], "Tied", "{st:#}");
     assert_condition(&st, "Tied", "True", "TaskKnown");
@@ -866,9 +882,7 @@ fn an_orphaned_conversation_keeps_its_messages_and_is_retired_after_its_retentio
     fs::write(&task_path, &bytes).unwrap();
     // Readably gone: Orphaned, the messages kept through a retention that
     // counts from the orphaning, not from the thread's last message.
-    env.fleet(&["delete", "task", &task_name]).ok();
-    env.reconcile().ok();
-    env.get_absent(&task_name);
+    delete_task(&env, &task_name);
     env.expire_wait_of("Conversation", &conv);
     env.reconcile().ok();
     let st = env.conversation_status(&conv);
@@ -1547,4 +1561,432 @@ fn the_slack_adapters_unknowns_carry_slacks_reasons() {
         3,
         "a timed-out post landed nothing"
     );
+}
+
+// ----------------------------------------------------------------------
+// Step 2: admission, Task creation under the workspace precondition, the
+// busy notice and the refusal post.
+// ----------------------------------------------------------------------
+
+/// A gateway environment ready to start Tasks.
+fn admitting(name: &str) -> (Env, String) {
+    mirror(name)
+}
+
+fn uid_of(env: &Env, kind: &str, name: &str) -> String {
+    env.fleet(&["get", kind, name]).ok().json()["metadata"]["uid"]
+        .as_str()
+        .expect("uid")
+        .to_string()
+}
+
+#[test]
+fn an_admitted_mention_starts_one_task_tied_to_the_thread() {
+    let (env, conv) = admitting("admit");
+    env.receive("Ev01", mention("1730000300000", T0 + 300_000))
+        .ok();
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let conv_uid = uid_of(&env, "conversation", &conv);
+    let task_name = format!("{conv}-1");
+    let task = env.get(&task_name);
+    assert_eq!(
+        task["metadata"]["labels"],
+        json!({
+            "gateway.fleet.dev/conversation": conv,
+            "gateway.fleet.dev/conversation-uid": conv_uid,
+            "gateway.fleet.dev/route": GATEWAY_ROUTE,
+        }),
+        "{task:#}"
+    );
+    assert_eq!(
+        task["spec"],
+        json!({
+            "configRef": {"name": "conversation"},
+            "brief": support::GATEWAY_BRIEF,
+            "workspace": {"dir": env.gateway_workspace()},
+            "dispatch": true,
+        }),
+        "the Task is the interface page's JSON: {task:#}"
+    );
+    let task_uid = task["metadata"]["uid"].as_str().unwrap().to_string();
+    let st = env.conversation_status(&conv);
+    assert_eq!(st["phase"], "Tied", "{st:#}");
+    assert_condition(&st, "Tied", "True", "TaskKnown");
+    assert_eq!(
+        st["task"],
+        json!({"name": task_name, "uid": task_uid, "n": 1, "state": "created"})
+    );
+    let key = format!("conversation/{conv_uid}/task/1");
+    let record = &st["effects"][&key];
+    assert_eq!(record["intent"]["action"], "create", "{st:#}");
+    assert_eq!(record["receipt"]["outcome"]["known"]["type"], "created");
+    assert_eq!(record["receipt"]["outcome"]["known"]["uid"], task_uid);
+    assert_eq!(record["attempts"], 1);
+    assert_eq!(
+        st["judged"], st["revision"],
+        "every message was judged: {st:#}"
+    );
+    // One Task, however many passes: the key has its receipt.
+    env.expire_wait_of("Conversation", &conv);
+    env.reconcile().ok();
+    let tasks = env.fleet(&["list", "tasks", "--json"]).ok().json();
+    assert_eq!(tasks.as_array().unwrap().len(), 1, "{tasks:#}");
+    assert_eq!(env.conversation_status(&conv)["task"]["n"], 1);
+    // A second mention in the tied thread is a turn for the relay, not a
+    // new Task.
+    env.receive("Ev02", mention("1730000400000", T0 + 400_000))
+        .ok();
+    env.reconcile().ok();
+    let st = env.conversation_status(&conv);
+    assert_eq!(st["task"]["n"], 1, "{st:#}");
+    assert_eq!(st["revision"], 2);
+    assert_eq!(
+        env.fleet(&["list", "tasks", "--json"])
+            .ok()
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        env.fake_gateway().calls("post").unwrap(),
+        0,
+        "nothing was posted"
+    );
+    // The labels are the controller's: apply refuses them on another Task.
+    let mut labelled = support::task("labelled", false);
+    labelled["metadata"]["labels"]["gateway.fleet.dev/conversation-uid"] = json!(conv_uid);
+    env.apply(labelled)
+        .code(1)
+        .stderr_has("gateway.fleet.dev/conversation-uid");
+    env.assert_no_temp();
+}
+
+#[test]
+fn a_mention_from_someone_not_on_the_allowlist_earns_one_refusal() {
+    let (env, conv) = admitting("refusal");
+    let stranger = |id: &str, delivery: &str, at: u64| {
+        env.receive(
+            delivery,
+            message_event(THREAD, &at.to_string(), id, at, &format!("<@{BOT}> hi")),
+        )
+        .ok();
+    };
+    stranger("U0999ZZZZ", "Ev01", T0 + 300_000);
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    assert_eq!(report["effects"], 1, "{report:#}");
+    let conv_uid = uid_of(&env, "conversation", &conv);
+    let posts = env.fake_gateway().posts().unwrap();
+    assert_eq!(posts.len(), 1, "{posts:#?}");
+    let key = format!("conversation/{conv_uid}/refuse/U0999ZZZZ");
+    assert_eq!(posts[0].key, key);
+    assert_eq!(posts[0].conversation.address(), THREAD);
+    assert_eq!(posts[0].text, fleet_api::gateway::DEFAULT_REFUSAL);
+    let st = env.conversation_status(&conv);
+    assert_eq!(st["phase"], "Untied", "{st:#}");
+    assert_eq!(st["refusals"], json!(["U0999ZZZZ"]));
+    assert_eq!(st["effects"][&key]["intent"]["action"], "post");
+    assert_eq!(
+        st["effects"][&key]["receipt"]["outcome"]["known"]["type"],
+        "posted"
+    );
+    assert!(st["task"].is_null(), "no Task starts: {st:#}");
+    assert_eq!(
+        env.fleet(&["list", "tasks", "--json"])
+            .ok()
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    // The same author again: no second refusal. Another stranger: one more.
+    stranger("U0999ZZZZ", "Ev02", T0 + 400_000);
+    env.reconcile().ok();
+    assert_eq!(env.fake_gateway().posts().unwrap().len(), 1);
+    stranger("U0888YYYY", "Ev03", T0 + 500_000);
+    env.reconcile().ok();
+    let posts = env.fake_gateway().posts().unwrap();
+    assert_eq!(posts.len(), 2);
+    assert_eq!(
+        posts[1].key,
+        format!("conversation/{conv_uid}/refuse/U0888YYYY")
+    );
+    let st = env.conversation_status(&conv);
+    assert_eq!(st["refusals"], json!(["U0999ZZZZ", "U0888YYYY"]));
+    // Fleet's own post reached the mirror through history and is never a
+    // candidate for anything.
+    assert!(st["task"].is_null());
+    env.assert_no_temp();
+}
+
+#[test]
+fn an_orphaned_thread_starts_the_next_task_on_any_admitted_message() {
+    let (env, conv) = admitting("orphan-next");
+    env.receive("Ev01", mention("1730000300000", T0 + 300_000))
+        .ok();
+    env.reconcile().ok();
+    let first = format!("{conv}-1");
+    env.get(&first);
+    delete_task(&env, &first);
+    env.expire_wait_of("Conversation", &conv);
+    env.reconcile().ok();
+    let st = env.conversation_status(&conv);
+    assert_eq!(st["phase"], "Orphaned", "{st:#}");
+    assert_eq!(st["task"]["state"], "gone");
+    // Context from a stranger starts nothing; an admitted message without a
+    // mention starts Task 2 with the whole thread behind it.
+    env.receive(
+        "Ev02",
+        message_event(THREAD, "1730000400000", "U0999ZZZZ", T0 + 400_000, "me too"),
+    )
+    .ok();
+    env.reconcile().ok();
+    let st = env.conversation_status(&conv);
+    assert_eq!(st["phase"], "Orphaned", "{st:#}");
+    env.receive(
+        "Ev03",
+        message_event(
+            THREAD,
+            "1730000500000",
+            SAM_ID,
+            T0 + 500_000,
+            "still broken",
+        ),
+    )
+    .ok();
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let second = format!("{conv}-2");
+    let task = env.get(&second);
+    assert_eq!(
+        task["metadata"]["labels"]["gateway.fleet.dev/conversation"],
+        conv
+    );
+    let st = env.conversation_status(&conv);
+    assert_eq!(st["phase"], "Tied", "{st:#}");
+    assert_eq!(st["task"]["name"], second);
+    assert_eq!(st["task"]["n"], 2);
+    assert_eq!(st["task"]["state"], "created");
+    assert_eq!(st["messages"].as_array().unwrap().len(), 4, "{st:#}");
+    env.get_absent(&first);
+    env.assert_no_temp();
+}
+
+#[test]
+fn a_busy_workspace_holds_the_thread_says_so_once_and_starts_when_free() {
+    let (env, conv) = admitting("busy");
+    // Another Task already runs in the route's directory, spelled with a
+    // trailing slash: the same directory.
+    let mut holder = support::task("holder", false);
+    holder["spec"]["workspace"]["dir"] = json!(format!("{}/", env.gateway_workspace()));
+    env.apply(holder).ok();
+    env.receive("Ev01", mention("1730000300000", T0 + 300_000))
+        .ok();
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let conv_uid = uid_of(&env, "conversation", &conv);
+    let task_name = format!("{conv}-1");
+    env.get_absent(&task_name);
+    let st = env.conversation_status(&conv);
+    assert_eq!(st["phase"], "Untied", "{st:#}");
+    assert_eq!(
+        st["task"],
+        json!({"name": task_name, "n": 1, "state": "busy", "trigger": "1730000300000"})
+    );
+    assert_condition(&st, "NeedsAttention", "True", "WorkspaceBusy");
+    assert!(
+        support::condition(&st, "NeedsAttention")["message"]
+            .as_str()
+            .unwrap()
+            .contains("Task/holder"),
+        "{st:#}"
+    );
+    let create_key = format!("conversation/{conv_uid}/task/1");
+    assert_eq!(
+        st["effects"][&create_key]["receipt"]["outcome"]["known"]["type"],
+        "workspaceBusy"
+    );
+    let busy_key = format!("conversation/{conv_uid}/busy/1");
+    let posts = env.fake_gateway().posts().unwrap();
+    assert_eq!(posts.len(), 1, "one busy notice: {posts:#?}");
+    assert_eq!(posts[0].key, busy_key);
+    assert!(posts[0].text.contains("queued"), "{}", posts[0].text);
+    assert_eq!(
+        st["effects"][&busy_key]["receipt"]["outcome"]["known"]["type"],
+        "posted"
+    );
+    // Planned again every pollMs, still busy: no second notice, and no
+    // retention while it waits.
+    env.expire_wait_of("Conversation", &conv);
+    env.reconcile().ok();
+    env.get_absent(&task_name);
+    let st = env.conversation_status(&conv);
+    assert_eq!(st["task"]["state"], "busy", "{st:#}");
+    assert_eq!(env.fake_gateway().posts().unwrap().len(), 1);
+    let now = support::now_ms();
+    let poll = 300_000u64;
+    assert!(
+        st["notBefore"].as_u64().unwrap() <= now + poll + 5_000,
+        "the next look is one pollMs away, not the retention: {st:#}"
+    );
+    // The directory frees: the Task starts, with the whole thread.
+    env.fleet(&["delete", "task", "holder"]).ok();
+    env.reconcile().ok();
+    env.get_absent("holder");
+    env.expire_wait_of("Conversation", &conv);
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let task = env.get(&task_name);
+    let st = env.conversation_status(&conv);
+    assert_eq!(st["phase"], "Tied", "{st:#}");
+    assert_eq!(st["task"]["state"], "created");
+    assert_eq!(st["task"]["uid"], task["metadata"]["uid"]);
+    assert_condition(&st, "NeedsAttention", "False", "Resolved");
+    assert_eq!(
+        st["effects"][&create_key]["attempts"], 1,
+        "a busy refusal is not an attempt: {st:#}"
+    );
+    assert_eq!(env.fake_gateway().posts().unwrap().len(), 1);
+    env.assert_no_temp();
+}
+
+#[test]
+fn a_crash_between_the_create_intent_and_its_receipt_adopts_the_task() {
+    let (env, conv) = admitting("adopt");
+    env.receive("Ev01", mention("1730000300000", T0 + 300_000))
+        .ok();
+    env.reconcile().ok();
+    let task_name = format!("{conv}-1");
+    let task_uid = uid_of(&env, "task", &task_name);
+    let conv_uid = uid_of(&env, "conversation", &conv);
+    let key = format!("conversation/{conv_uid}/task/1");
+    // The manager wrote the intent and created the Task, then died before
+    // the receipt: the record holds the intent alone and the tie is still
+    // pending.
+    let path = env.object_path("Conversation", &conv);
+    let mut obj: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    obj["status"]["effects"][&key]
+        .as_object_mut()
+        .unwrap()
+        .remove("receipt");
+    obj["status"]["task"] =
+        json!({"name": task_name, "n": 1, "state": "pending", "trigger": "1730000300000"});
+    obj["status"]["phase"] = json!("Untied");
+    obj["status"]["notBefore"] = json!(0);
+    fs::write(&path, obj.to_string()).unwrap();
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let st = env.conversation_status(&conv);
+    assert_eq!(st["phase"], "Tied", "{st:#}");
+    assert_eq!(st["task"]["state"], "created");
+    assert_eq!(
+        st["task"]["uid"], task_uid,
+        "the Task was adopted, not made again"
+    );
+    let receipt = &st["effects"][&key]["receipt"];
+    assert_eq!(receipt["outcome"]["known"]["type"], "created", "{st:#}");
+    assert_eq!(receipt["outcome"]["known"]["adopted"], true);
+    assert_eq!(st["effects"][&key]["attempts"], 1);
+    assert_eq!(
+        env.fleet(&["list", "tasks", "--json"])
+            .ok()
+            .json()
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    env.assert_no_temp();
+}
+
+#[test]
+fn a_mention_read_from_history_before_the_listener_delivers_it_still_starts_a_task() {
+    let env = Env::gateway("history-then-delivery");
+    let mut stranger = person("U0999ZZZZ", T0 + 100_000, "<@B0FLEET001> me too");
+    stranger.mentions_fleet = true;
+    let mut alex = person(ALEX_ID, T0 + 300_000, "<@B0FLEET001> can you look into it?");
+    alex.mentions_fleet = true;
+    env.fake_gateway()
+        .seed(
+            &ConversationRef::split(THREAD).unwrap(),
+            vec![
+                person(SAM_ID, T0, "The nightly export failed again."),
+                stranger.clone(),
+                alex,
+            ],
+        )
+        .unwrap();
+    env.apply(task_config()).ok();
+    let conv = conversation_name(GATEWAY_ACCOUNT, THREAD);
+    // A stranger's mention opens the mirror; its first history read
+    // numbers Alex's mention before the listener delivers it.
+    env.receive(
+        "Ev01",
+        message_event(
+            THREAD,
+            "1730000100000",
+            "U0999ZZZZ",
+            T0 + 100_000,
+            "<@B0FLEET001> me too",
+        ),
+    )
+    .ok();
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let st = env.conversation_status(&conv);
+    assert_eq!(st["messages"].as_array().map(Vec::len), Some(3), "{st:#}");
+    assert!(st["task"].is_null(), "history alone starts nothing: {st:#}");
+    // The listener's delivery of that mention arrives one pass later.
+    env.receive("Ev02", mention("1730000300000", T0 + 300_000))
+        .ok();
+    env.expire_wait_of("Conversation", &conv);
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let st = env.conversation_status(&conv);
+    assert_eq!(
+        st["task"]["n"], 1,
+        "the delivered mention was judged: {st:#}"
+    );
+    env.fleet(&["get", "task", &format!("{conv}-1")]).ok();
+    env.assert_no_temp();
+}
+
+#[test]
+fn a_same_named_task_created_for_another_thread_is_never_adopted() {
+    let (env, conv) = admitting("adopt-refused");
+    // `<conversation>-1` exists already, in another directory, labelled for
+    // another Conversation's uid, as that one's create would leave it.
+    let task_name = format!("{conv}-1");
+    env.apply(support::task(&task_name, false)).ok();
+    let other_uid = uid_of(&env, "task", &task_name);
+    let path = env.object_path("Task", &task_name);
+    let mut task: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_ne!(
+        task["spec"]["workspace"]["dir"],
+        json!(env.gateway_workspace())
+    );
+    task["metadata"]["labels"]["gateway.fleet.dev/conversation"] = json!(conv);
+    task["metadata"]["labels"]["gateway.fleet.dev/conversation-uid"] = json!("u0-another");
+    fs::write(&path, task.to_string()).unwrap();
+    env.receive("Ev01", mention("1730000300000", T0 + 300_000))
+        .ok();
+    env.reconcile().ok();
+    let conv_uid = uid_of(&env, "conversation", &conv);
+    let st = env.conversation_status(&conv);
+    let receipt = &st["effects"][&format!("conversation/{conv_uid}/task/1")]["receipt"];
+    assert_eq!(receipt["outcome"]["known"]["type"], "failed", "{st:#}");
+    assert!(
+        receipt["outcome"]["known"]["why"]
+            .as_str()
+            .is_some_and(|w| w.contains("was not created for this thread")),
+        "{st:#}"
+    );
+    assert_ne!(st["task"]["state"], "created", "{st:#}");
+    assert_ne!(st["task"]["uid"], json!(other_uid), "{st:#}");
+    assert_eq!(uid_of(&env, "task", &task_name), other_uid);
+    env.assert_no_temp();
 }

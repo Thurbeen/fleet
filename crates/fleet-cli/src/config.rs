@@ -34,6 +34,11 @@ pub struct Config {
     /// when the gateway opens.
     #[serde(default)]
     pub gateway: Option<GatewayConfig>,
+    /// Per `[gateway.routes]` entry, its brief as read from the file the
+    /// route names when the config loaded: what each Task the route
+    /// starts carries. An unreadable brief refuses the config.
+    #[serde(skip)]
+    pub gateway_briefs: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -179,6 +184,23 @@ impl Config {
                     account.dir = Some(base.join(d));
                 }
             }
+            for (name, route) in &gateway.routes {
+                let brief = std::fs::read_to_string(&route.brief).map_err(|e| {
+                    format!(
+                        "config {}: gateway.routes.{name}: brief {}: {e}",
+                        path.display(),
+                        route.brief.display()
+                    )
+                })?;
+                if brief.trim().is_empty() {
+                    return Err(format!(
+                        "config {}: gateway.routes.{name}: brief {} is empty",
+                        path.display(),
+                        route.brief.display()
+                    ));
+                }
+                config.gateway_briefs.insert(name.clone(), brief);
+            }
         }
         for (name, plugin) in &config.plugins {
             fleet_api::validate::validate_name(name).map_err(|e| e.to_string())?;
@@ -213,6 +235,7 @@ impl Config {
             forge: None,
             plugins: BTreeMap::new(),
             gateway: None,
+            gateway_briefs: BTreeMap::new(),
         }
     }
 }

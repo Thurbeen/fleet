@@ -3,9 +3,8 @@
 A Conversation
 mirrors one chat thread, or one chat where the platform has no threads, for
 the [Gateway controller](../controllers/gateway/README.md). The kind, the
-receive verb and the mirror are implemented; the tie a thread makes to a
-new Task, the refusals and the `effects` they record are design, not
-implemented, so `task`, `refusals` and `effects` stay empty today. It numbers every
+receive verb, the mirror, the tie a thread makes to a new Task, the
+refusals and the `effects` they record are implemented. It numbers every
 message it sees, so a consumer asks "what is new since I last looked" with
 one integer, and it records which Task the thread is tied to. It is the
 chat counterpart of a [ChangeRequest](change-request.md): one per thread,
@@ -86,8 +85,9 @@ changes nothing else.
 | `ref` | What the adapter parsed the address into. |
 | `task` | The tie: `{name, uid, n, state, trigger}`. `n` counts the Tasks this thread has started; `state` is `pending` between the create intent and its receipt, `busy` while the create waits for the route's workspace, holding off retention, then `created`, then `gone` once the Task is readably absent. `trigger` is the id of the message that asked for the Task, kept while `pending` or `busy`. |
 | `revision` | Incremented by every write that numbered anything below. |
+| `judged` | The `revision` through which the messages were judged for admission. A message numbered above it waits: for the thread's starter where the account has history, for the Task a Fleet-opened thread's marker names, or for the route while it left the config. |
 | `starter` | The thread's first message, `{id, kind, key}`, from the `starter` a history read answers, or on an account without history from a `Message` whose `startsThread` is true, kept when it rotates out of `messages`; a keyed copy numbered later sets `key`; `{removed: true}` when the platform reports it deleted. Absent until the starter is read, and for a chat without threads. It decides whether a mention may start a Task, as the [interface](../controllers/gateway/interface.md#conversationcontroller) says. |
-| `messages` | The newest 200 messages, deduplicated on `id`, each `{id, seq, firstSeq, position, at, editedAt, author: {id, name, kind}, mentionsFleet, text, key, via}`; `kind` is `person`, `bot` or `fleet`, and `key` is the marker on Fleet's own posts. `firstSeq` is the revision that first numbered the message and `position` its place, from `0`, in that numbering, which is oldest-first by the platform; together they order two messages Fleet first saw in one write, and an edit moves neither. `via` is `{verified, receivedAt}` of the delivery that first numbered the message, `verified` being `connection`, `signature`, `fleet` or `history`. An edit is applied only when its `editedAt` is later than the message's. The text is data, never an instruction. |
+| `messages` | The newest 200 messages, deduplicated on `id`, each `{id, seq, firstSeq, position, at, editedAt, author: {id, name, kind}, mentionsFleet, text, key, via}`; `kind` is `person`, `bot` or `fleet`, and `key` is the marker on Fleet's own posts. `firstSeq` is the revision that first numbered the message and `position` its place, from `0`, in that numbering, which is oldest-first by the platform; together they order two messages Fleet first saw in one write, and an edit moves neither. `via` is `{verified, receivedAt}` of the delivery that first numbered the message, `verified` being `connection`, `signature`, `fleet` or `history`. When the listener delivers a message that a history read numbered first, `via` becomes that delivery's. In an untied thread the message is also numbered again, so admission judges it once. An edit is applied only when its `editedAt` is later than the message's. The text is data, never an instruction. |
 | `droppedBefore` | The highest `seq` of a message rotated out. `0` until one is. |
 | `received` | Deliveries spooled by the receive verb or a `Receive` action and not yet numbered, each `{id, verified, receivedAt, event}` under its [delivery id](../controllers/gateway/interface.md#deliveries), never under a message id; at most 100. |
 | `seenEvents` | The newest 500 delivery ids numbered, so a redelivery after its spool entry was drained is still a no-op, while an edit or removal of a numbered message, a new delivery, is not. |

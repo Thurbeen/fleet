@@ -77,7 +77,7 @@ role = "edge"
 deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store", "fleet-forge", "fleet-plugin", "fleet-gateway", "fleet-telemetry"]
 # Every write is the manager's: the CLI parses, calls a verb, and prints.
 forbidden_methods = [
-  "create", "update_spec", "update_status", "append_inbox", "record_delivery",
+  "create", "create_fenced", "update_spec", "update_status", "append_inbox", "record_delivery",
   "record_relay", "remove_finalizer", "delete", "delete_fenced", "acquire_lease",
   "renew_lease", "release_lease", "reconcile", "probes", "spawn", "release",
   "change", "mark_ready", "whoami", "call", "admit", "plugin_mutate",
@@ -114,7 +114,10 @@ clippy_guards = [
 # speaking through the manager's receive verb: it spools deliveries on a
 # Conversation and records beats on its Listener, and owns nothing;
 # `ConversationController` and `ListenerController` own the rest of those
-# two kinds and are named by the controllers alone.
+# two kinds and are named by the controllers alone; `ConversationController`
+# is also the one creator of a conversation Task, through the manager's
+# fenced create, and the only writer that may set the
+# `gateway.fleet.dev/conversation` labels.
 [status_writers]
 "fleet_api::store::FieldManager::Plugin" = ["fleet-api", "fleet-controllers"]
 "fleet_api::store::FieldManager::TaskController" = ["fleet-api", "fleet-controllers"]
