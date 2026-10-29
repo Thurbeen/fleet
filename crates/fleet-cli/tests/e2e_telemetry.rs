@@ -284,6 +284,18 @@ fn nothing_is_exported_unless_an_endpoint_is_set_and_the_sdk_enabled() {
     assert!(report.stderr.is_empty(), "{report:#?}");
     assert_eq!(report.json()["effects"], 2);
 
+    // One signal's exporter cannot be built: the warning says export is
+    // off, and it is off for both signals.
+    let mut broken = Env::new("otel-broken");
+    exporting(&mut broken, &collector.endpoint);
+    broken.set_var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "not a url");
+    // Batches leave every 10 ms, as a long `fleet up` would send them.
+    broken.set_var("OTEL_BSP_SCHEDULE_DELAY", "10");
+    broken.apply(task("t1", true)).ok();
+    let report = broken.reconcile();
+    report.ok().stderr_has("warning: telemetry is off");
+    assert_eq!(report.json()["effects"], 2);
+
     assert!(collector.paths().is_empty(), "{:?}", collector.paths());
 }
 

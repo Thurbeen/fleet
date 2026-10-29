@@ -46,15 +46,15 @@ pub struct Telemetry {
 
 /// Which signals the environment asks to export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Signals {
-    pub traces: bool,
-    pub metrics: bool,
+struct Signals {
+    traces: bool,
+    metrics: bool,
 }
 
 /// Read the signals from the variables `var` answers. An unsupported
 /// protocol or exporter is an error, so a misconfiguration is reported
 /// rather than silently exporting nothing.
-pub fn signals(var: impl Fn(&str) -> Option<String>) -> Result<Signals, String> {
+fn signals(var: impl Fn(&str) -> Option<String>) -> Result<Signals, String> {
     let set = |name: &str| var(name).filter(|v| !v.trim().is_empty());
     if set("OTEL_SDK_DISABLED").is_some_and(|v| v.trim().eq_ignore_ascii_case("true")) {
         return Ok(Signals::default());
@@ -104,13 +104,21 @@ pub fn init(version: &str) -> Result<Telemetry, String> {
     if wanted == Signals::default() {
         return Ok(Telemetry::default());
     }
+    // Both exporters first: one that cannot be built leaves nothing
+    // installed, never one signal exporting under a warning that says off.
+    let spans = wanted
+        .traces
+        .then(|| SpanExporter::builder().with_http().build())
+        .transpose()
+        .map_err(|e| format!("trace exporter: {e}"))?;
+    let metrics = wanted
+        .metrics
+        .then(|| MetricExporter::builder().with_http().build())
+        .transpose()
+        .map_err(|e| format!("metric exporter: {e}"))?;
     let resource = resource(version);
     let mut telemetry = Telemetry::default();
-    if wanted.traces {
-        let exporter = SpanExporter::builder()
-            .with_http()
-            .build()
-            .map_err(|e| format!("trace exporter: {e}"))?;
+    if let Some(exporter) = spans {
         let provider = SdkTracerProvider::builder()
             .with_batch_exporter(exporter)
             .with_resource(resource.clone())
@@ -118,11 +126,7 @@ pub fn init(version: &str) -> Result<Telemetry, String> {
         global::set_tracer_provider(provider.clone());
         telemetry.traces = Some(provider);
     }
-    if wanted.metrics {
-        let exporter = MetricExporter::builder()
-            .with_http()
-            .build()
-            .map_err(|e| format!("metric exporter: {e}"))?;
+    if let Some(exporter) = metrics {
         let provider = SdkMeterProvider::builder()
             .with_periodic_exporter(exporter)
             .with_resource(resource)
