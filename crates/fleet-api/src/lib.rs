@@ -38,6 +38,11 @@
 //! use fleet_gateway::FakeGateway;
 //! ```
 //!
+//! ```compile_fail
+//! // ...or the telemetry exporter.
+//! use fleet_telemetry::Telemetry;
+//! ```
+//!
 //! The positive control: the same shape of `use` compiles for this crate.
 //!
 //! ```

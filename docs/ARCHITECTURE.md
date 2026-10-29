@@ -28,6 +28,13 @@ same sweep as the Task controller, through the Forge port.
 | [fleet-forge](../crates/fleet-forge/src/lib.rs) | Reading one change through `gh`, `glab`, `az`, externally authenticated `curl`, or the file-backed fake forge, and taking a supported draft out of draft after a fresh read | One bounded observation is complete or Unknown; a write either preserves the head/state guard or fails closed; the only crate that knows a forge CLI's name. |
 | [fleet-gateway](../crates/fleet-gateway/src/lib.rs) | Reading and writing one chat thread through Slack's Web API by `curl`, or through the file-backed fake platform | Every answer is Known or Unknown; a refused write fails closed; the only crate that knows a chat client's name. |
 | [fleet-exec](../crates/fleet-exec/src/lib.rs) | Bounded process execution | The only production process spawner; timeout/unwind kills the process tree. |
+| [fleet-telemetry](../crates/fleet-telemetry/src/lib.rs) | The OpenTelemetry SDK and its OTLP/HTTP exporter, installed when the `OTEL_*` variables ask | The only crate that names the SDK or the exporter; export never changes a command's outcome, and shutdown is bounded. |
+
+The manager records spans and metrics through the `opentelemetry` API,
+which does nothing until `fleet-telemetry` installs a provider. The CLI
+asks `fleet-telemetry` for each command's root span.
+[OpenTelemetry export](configuration/telemetry.md) owns the variables, spans
+and metrics.
 
 `fleet-arch` and `fleet-dev` are repository tooling: architecture enforcement,
 validation and release packaging. They are not controllers or services in the
@@ -35,10 +42,10 @@ installed `fleet` runtime.
 
 The executable dependency graph is [crates/architecture.toml](../crates/architecture.toml).
 The [architecture suite](../crates/fleet-arch/tests/architecture.rs) checks crate
-edges, purity, restricted process APIs, permitted status writers and the
-holders of the Forge port, including negative fixtures. The CLI may wire
-adapters, but only manager verbs may perform resource mutations, and only
-the manager performs the mark-ready effect.
+edges, purity, restricted process and telemetry APIs, permitted status
+writers and the holders of the Forge port, including negative fixtures. The
+CLI may wire adapters, but only manager verbs may perform resource
+mutations, and only the manager performs the mark-ready effect.
 
 ## Desired state, observations and effects
 

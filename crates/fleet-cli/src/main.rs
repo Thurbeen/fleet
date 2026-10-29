@@ -11,7 +11,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use fleet_api::change_request::ChangeRequestDefaults;
 use fleet_api::follow::ForgeDefaults;
 use fleet_api::forge::Forge;
@@ -240,17 +240,31 @@ fn fail(message: impl Into<String>) -> Failure {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    match run(cli) {
-        Ok(()) => ExitCode::SUCCESS,
+    let matches = Cli::command().get_matches();
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    let name = matches.subcommand_name().unwrap_or_default().to_string();
+    let telemetry = fleet_telemetry::init(VERSION).unwrap_or_else(|why| {
+        eprintln!("warning: telemetry is off: {why}");
+        fleet_telemetry::Telemetry::default()
+    });
+    let command = || match run(cli) {
+        Ok(()) => 0,
         Err(f) => {
             eprintln!("error: {}", f.message);
             if let Some(h) = f.hint {
                 eprintln!("hint: {h}");
             }
-            ExitCode::from(f.code)
+            f.code
         }
-    }
+    };
+    // `up` runs until Ctrl-C: each of its sweeps is a trace of its own.
+    let code = if name == "up" {
+        command()
+    } else {
+        telemetry.command(&name, command)
+    };
+    telemetry.shutdown();
+    ExitCode::from(code)
 }
 
 fn run(cli: Cli) -> Result<(), Failure> {

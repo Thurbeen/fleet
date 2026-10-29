@@ -75,9 +75,10 @@ fleet-runtime      adapter        thurbox-cli, fake      -> api, exec
 fleet-forge        adapter        az, curl, gh, glab, fake -> api, exec
 fleet-gateway      adapter        the fake chat platform -> api, exec
 fleet-plugin       adapter        bounded plugin stdio   -> api, exec
+fleet-telemetry    adapter        OTLP export, off by default
 fleet-manager      orchestration  lease, plans, verbs    -> api, controllers
 fleet-cli          edge           the `fleet` binary     -> api, manager, store,
-runtime, forge, gateway, plugin
+runtime, forge, gateway, plugin, telemetry
 fleet-arch         tooling        the architecture test
 fleet-dev          tooling        `cargo xtask`: gate and release
 ```
@@ -120,6 +121,11 @@ fleet-dev          tooling        `cargo xtask`: gate and release
   the chat writes `open` and `post`, is held only by fleet-api,
   fleet-gateway, fleet-manager and fleet-cli. The CLI may not call the
   port's `history`, `capabilities` or `post`.
+- fleet-telemetry depends on no other Fleet crate and is depended on by the
+  CLI alone. Only fleet-telemetry reaches `opentelemetry_sdk` or
+  `opentelemetry_otlp`: the providers, batching, exporter and shutdown bound
+  are in one crate. The manager records through the `opentelemetry` API,
+  a no-op without a provider; the pure crates reach no telemetry at all.
 
 Each rule has a negative fixture that breaks it, and the test requires the
 checker to report exactly that rule. The pure crates also carry
@@ -727,6 +733,11 @@ the join and the relay against the fake forge and the fake host.
 the fake host, and through the stub `az`, `curl`, `gh` and `glab`.
 `e2e_gateway` covers the `[gateway]` section, the receive verb, the
 Conversation mirror and the Listener against the fake gateway.
+`e2e_telemetry` exports to an in-process OTLP/HTTP collector: the spans and
+metrics of a Task's lifecycle and of forge polls arrive with their
+identities and outcomes and without a brief, message or environment value;
+nothing is sent when export is off; an unreachable collector changes no
+command. `e2e_bootstrap` proves that Ctrl-C on `fleet up` flushes its sweeps.
 `task_controller`, `change_request_controller`, `forge_controller`,
 `conversation_controller` and `listener_controller` test each controller
 as a pure function, one transition or Unknown per case.

@@ -29,6 +29,7 @@ fleet-runtime.workspace = true
 fleet-store.workspace = true
 fleet-forge.workspace = true
 fleet-gateway.workspace = true
+fleet-telemetry.workspace = true
 clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -41,6 +42,8 @@ workspace = true
 
 [dev-dependencies]
 sha2.workspace = true
+opentelemetry-proto.workspace = true
+prost.workspace = true
 
 [build-dependencies]
 serde_json.workspace = true

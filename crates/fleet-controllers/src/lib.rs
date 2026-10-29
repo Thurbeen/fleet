@@ -48,6 +48,11 @@
 //! use fleet_gateway::FakeGateway;
 //! ```
 //!
+//! ```compile_fail
+//! // ...nor the telemetry exporter.
+//! use fleet_telemetry::Telemetry;
+//! ```
+//!
 //! The positive control: the port types it decides over are in scope.
 //!
 //! ```
