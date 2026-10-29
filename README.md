@@ -13,7 +13,7 @@ sends the brief once, records the worker's result, and releases the session
 when you delete the Task. Fleet v2 is one Linux binary with a bundled
 [VEGA](https://github.com/Thurbeen/vega) starter.
 
-![Animated diagram: how Fleet runs one Task](media/fleet-flow-doom.svg)
+![Animated diagram: the fleet up reconcile loop and the kinds it drives](media/fleet-flow-doom.svg)
 
 ## Setup
 

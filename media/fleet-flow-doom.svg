@@ -1,98 +1,130 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 560" width="960" height="560" role="img" aria-labelledby="title desc">
-<title id="title">How a Fleet Task runs</title>
-<desc id="desc">A retro first-person-shooter status screen showing the six steps of one Fleet v2 Task. 1, apply: you or VEGA store a Task with fleet apply. 2, reconcile: fleet up holds the manager lease, and the pure Task controller plans each step, which the manager persists as an intent before the effect and a receipt after it. 3, spawn: the thurbox runtime starts the agent session in its workspace directory, or in one worktree per repository. 4, brief: the brief is delivered once, by key; messages from fleet send queue in the Task inbox. 5, declare: the worker opens a change and runs fleet declare; a ChangeRequest mirrors it on the forge, and reviews and CI are relayed back to the inbox. 6, result: fleet result concludes the Task, and fleet delete releases the session. A status bar cycles through the Task phases Pending, Spawning, Spawned, Briefed, Concluded and Releasing.</desc>
+<title id="title">The Fleet reconcile loop</title>
+<desc id="desc">A retro first-person-shooter status screen of how Fleet works. In the middle, fleet up holds the manager lease and runs one loop for every due object: read its spec and status from the store; observe through ports, where Unknown never means absent; plan with a pure controller; act by persisting an intent, running the effect, then persisting its receipt. The loop takes each kind in turn. A Task runs one agent session through the Runtime port, where thurbox spawns, briefs and releases it. A ChangeRequest mirrors one forge change through the Forge port, which reads with gh, glab, az or curl, and whose one write is mark-ready; the Forge controller relays its feedback into the Task inbox. A plugin kind is reconciled by a controller written as a script, through bounded observe and perform calls. A Conversation mirrors a chat thread through the Gateway port; its relay to a Task is still a design. TaskConfig and EnvProvider are passive kinds with no controller, frozen into a Task launch. A status bar names the current kind, its controller and its port.</desc>
 <defs>
-<linearGradient id="fire" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffe066"/><stop offset=".45" stop-color="#ff8a1f"/><stop offset="1" stop-color="#b3120a"/></linearGradient>
-<style>text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'DejaVu Sans Mono','Liberation Mono',monospace}.bg{fill:#140806}.rim{fill:#3a2114}.frame{fill:none;stroke:#7a4a26;stroke-width:4}.card{fill:#22110a;stroke:#5a361d;stroke-width:3}.hi{stroke:#8f5a30;stroke-width:2;fill:none}.lo{stroke:#0a0402;stroke-width:2;fill:none}.t{fill:#ffb347;font-size:20px;font-weight:700;letter-spacing:1px}.l{fill:#e8d2b8;font-size:15px}.dim{fill:#b08a68;font-size:14px}.hud{fill:#ff3b1f;font-size:30px;font-weight:700;letter-spacing:2px}.lbl{fill:#c79a6b;font-size:13px;font-weight:700;letter-spacing:2px}.wire{fill:none;stroke:#6b3a1c;stroke-width:4;stroke-dasharray:8 6}.relay{fill:none;stroke:#d23a12;stroke-width:3;stroke-dasharray:6 6}.glow{fill:none;stroke:#ff4a14;stroke-width:4;opacity:0}.ph{opacity:0}.tok{animation:tok 16s linear infinite}.flick{animation:flick 2.4s steps(2) infinite}@keyframes flick{0%{opacity:1}50%{opacity:.55}}.rl{animation:rl 16s linear infinite;opacity:0}@media (prefers-color-scheme: light){.rim{fill:#2a160c}}@media (prefers-color-scheme: dark){.rim{fill:#4a2a17}}.g0{animation:g0 16s linear infinite}@keyframes g0{0%,13.4%{opacity:1}14%,100%{opacity:0}}.g1{animation:g1 16s linear infinite}@keyframes g1{0%,13.4%{opacity:0}14%,27.4%{opacity:1}28%,100%{opacity:0}}.g2{animation:g2 16s linear infinite}@keyframes g2{0%,27.4%{opacity:0}28%,41.4%{opacity:1}42%,100%{opacity:0}}.g3{animation:g3 16s linear infinite}@keyframes g3{0%,41.4%{opacity:0}42%,57.4%{opacity:1}58%,100%{opacity:0}}.g4{animation:g4 16s linear infinite}@keyframes g4{0%,57.4%{opacity:0}58%,77.4%{opacity:1}78%,100%{opacity:0}}.g5{animation:g5 16s linear infinite}@keyframes g5{0%,77.4%{opacity:0}78%,95.4%{opacity:1}96%,100%{opacity:0}}.p0{animation:p0 16s linear infinite}@keyframes p0{0%,20.4%{opacity:1}21%,100%{opacity:0}}.p1{animation:p1 16s linear infinite}@keyframes p1{0%,20.4%{opacity:0}21%,29.4%{opacity:1}30%,100%{opacity:0}}.p2{animation:p2 16s linear infinite}@keyframes p2{0%,29.4%{opacity:0}30%,43.4%{opacity:1}44%,100%{opacity:0}}.p3{animation:p3 16s linear infinite}@keyframes p3{0%,43.4%{opacity:0}44%,79.4%{opacity:1}80%,100%{opacity:0}}.p4{animation:p4 16s linear infinite}@keyframes p4{0%,79.4%{opacity:0}80%,89.4%{opacity:1}90%,100%{opacity:0}}.p5{animation:p5 16s linear infinite}@keyframes p5{0%,89.4%{opacity:0}90%,99.4%{opacity:1}}@keyframes rl{0%,65.4%{opacity:0}66%,76.4%{opacity:1}77%,100%{opacity:0}}@keyframes tok{0%{transform:translate(178px,110px)}1.5%{transform:translate(178px,110px)}12%{transform:translate(178px,110px)}15.5%{transform:translate(480px,110px)}26%{transform:translate(480px,110px)}29.5%{transform:translate(782px,110px)}40%{transform:translate(782px,110px)}43.5%{transform:translate(178px,290px)}56%{transform:translate(178px,290px)}59.5%{transform:translate(480px,290px)}76%{transform:translate(480px,290px)}79.5%{transform:translate(782px,290px)}94%{transform:translate(782px,290px)}100%{{transform:translate(782px,290px)}}}@media (prefers-reduced-motion: reduce){.tok,.flick,.rl,.g0,.g1,.g2,.g3,.g4,.g5,.p0,.p1,.p2,.p3,.p4,.p5{animation:none}.glow{opacity:.55}.rl{opacity:1}.p3{opacity:1}.tok{display:none}}</style>
+<linearGradient id="fire" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffe066"/><stop offset=".5" stop-color="#ff8a1f"/><stop offset="1" stop-color="#c0180c"/></linearGradient>
+<style>text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,'DejaVu Sans Mono','Liberation Mono',monospace}.bg{fill:#140806}.rim{fill:#3a2114}.frame{fill:none;stroke:#7a4a26;stroke-width:4}.card{fill:#22110a;stroke:#5a361d;stroke-width:3}.design{stroke-dasharray:7 5}.hi{stroke:#8f5a30;stroke-width:2;fill:none}.t{fill:#ffb347;font-size:18px;font-weight:700;letter-spacing:1px}.l{fill:#e8d2b8;font-size:14px}.dim{fill:#b08a68;font-size:13px}.hud{fill:#ff3b1f;font-size:24px;font-weight:700;letter-spacing:1px}.hs{fill:#ffb347;font-size:17px;font-weight:700}.lbl{fill:#c79a6b;font-size:13px;font-weight:700;letter-spacing:2px}.head{fill:url(#fire);font-size:30px;font-weight:700;letter-spacing:3px}.shade{fill:#3a0a04}.wire{fill:none;stroke:#5a3018;stroke-width:3;stroke-dasharray:6 6}.hot{fill:none;stroke:#ffb347;stroke-width:3}.ring{fill:none;stroke:#6b3a1c;stroke-width:10}.ringin{fill:none;stroke:#2a140a;stroke-width:4}.glow{fill:none;stroke:#ff4a14;stroke-width:4}.on{opacity:0}.spin{transform-origin:480px 270px;animation:spin 4s linear infinite}@keyframes spin{to{transform:rotate(360deg)}}.node{animation:node 4s linear infinite;opacity:.25}@keyframes node{0%,14%{opacity:1}22%,100%{opacity:.25}}@media (prefers-color-scheme: light){.rim{fill:#2a160c}}@media (prefers-color-scheme: dark){.rim{fill:#4a2a17}}.k0{animation:k0 16s linear infinite}@keyframes k0{0%,24.6%{opacity:1}25%,100%{opacity:0}}.k1{animation:k1 16s linear infinite}@keyframes k1{0%,24.6%{opacity:0}25%,49.6%{opacity:1}50%,100%{opacity:0}}.k2{animation:k2 16s linear infinite}@keyframes k2{0%,49.6%{opacity:0}50%,74.6%{opacity:1}75%,100%{opacity:0}}.k3{animation:k3 16s linear infinite}@keyframes k3{0%,74.6%{opacity:0}75%,99.6%{opacity:1}}.n0{animation-delay:0.34s}.n1{animation-delay:1.34s}.n2{animation-delay:2.34s}.n3{animation-delay:3.34s}@media (prefers-reduced-motion: reduce){.spin,.node,.k0,.k1,.k2,.k3{animation:none}.node{opacity:1}.glow.on,.hot.on{opacity:1}.tok{display:none}.hudt.on{opacity:0}.hudt.k0{opacity:1}}</style>
 </defs>
 <rect class="rim" width="960" height="560" rx="10"/>
 <rect class="bg" x="10" y="10" width="940" height="540" rx="4"/>
 <rect class="frame" x="14" y="14" width="932" height="532"/>
 <rect x="23" y="23" width="6" height="6" fill="#8f5a30"/>
-<rect x="23" y="531" width="6" height="6" fill="#8f5a30"/>
 <rect x="931" y="23" width="6" height="6" fill="#8f5a30"/>
-<rect x="931" y="531" width="6" height="6" fill="#8f5a30"/>
-<path d="M48 40h35v7h-35zM48 47h7v7h-7zM48 54h7v7h-7zM48 61h28v7h-28zM48 68h7v7h-7zM48 75h7v7h-7zM48 82h7v7h-7zM90 40h7v7h-7zM90 47h7v7h-7zM90 54h7v7h-7zM90 61h7v7h-7zM90 68h7v7h-7zM90 75h7v7h-7zM90 82h35v7h-35zM132 40h35v7h-35zM132 47h7v7h-7zM132 54h7v7h-7zM132 61h28v7h-28zM132 68h7v7h-7zM132 75h7v7h-7zM132 82h35v7h-35zM174 40h35v7h-35zM174 47h7v7h-7zM174 54h7v7h-7zM174 61h28v7h-28zM174 68h7v7h-7zM174 75h7v7h-7zM174 82h35v7h-35zM216 40h35v7h-35zM230 47h7v7h-7zM230 54h7v7h-7zM230 61h7v7h-7zM230 68h7v7h-7zM230 75h7v7h-7zM230 82h7v7h-7zM300 40h7v7h-7zM328 40h7v7h-7zM300 47h7v7h-7zM328 47h7v7h-7zM300 54h7v7h-7zM328 54h7v7h-7zM300 61h7v7h-7zM328 61h7v7h-7zM300 68h7v7h-7zM328 68h7v7h-7zM307 75h7v7h-7zM321 75h7v7h-7zM314 82h7v7h-7zM349 40h21v7h-21zM342 47h7v7h-7zM370 47h7v7h-7zM370 54h7v7h-7zM356 61h14v7h-14zM349 68h7v7h-7zM342 75h7v7h-7zM342 82h35v7h-35z" fill="#3a0a04" transform="translate(4 4)"/>
-<path d="M48 40h35v7h-35zM48 47h7v7h-7zM48 54h7v7h-7zM48 61h28v7h-28zM48 68h7v7h-7zM48 75h7v7h-7zM48 82h7v7h-7zM90 40h7v7h-7zM90 47h7v7h-7zM90 54h7v7h-7zM90 61h7v7h-7zM90 68h7v7h-7zM90 75h7v7h-7zM90 82h35v7h-35zM132 40h35v7h-35zM132 47h7v7h-7zM132 54h7v7h-7zM132 61h28v7h-28zM132 68h7v7h-7zM132 75h7v7h-7zM132 82h35v7h-35zM174 40h35v7h-35zM174 47h7v7h-7zM174 54h7v7h-7zM174 61h28v7h-28zM174 68h7v7h-7zM174 75h7v7h-7zM174 82h35v7h-35zM216 40h35v7h-35zM230 47h7v7h-7zM230 54h7v7h-7zM230 61h7v7h-7zM230 68h7v7h-7zM230 75h7v7h-7zM230 82h7v7h-7zM300 40h7v7h-7zM328 40h7v7h-7zM300 47h7v7h-7zM328 47h7v7h-7zM300 54h7v7h-7zM328 54h7v7h-7zM300 61h7v7h-7zM328 61h7v7h-7zM300 68h7v7h-7zM328 68h7v7h-7zM307 75h7v7h-7zM321 75h7v7h-7zM314 82h7v7h-7zM349 40h21v7h-21zM342 47h7v7h-7zM370 47h7v7h-7zM370 54h7v7h-7zM356 61h14v7h-14zM349 68h7v7h-7zM342 75h7v7h-7zM342 82h35v7h-35z" fill="url(#fire)"/>
-<text class="lbl" x="916" y="62" text-anchor="end">HOW A TASK RUNS</text>
-<text class="dim" x="916" y="84" text-anchor="end">one agent session per Task</text>
-<path class="wire" d="M312 184.0H346"/>
-<path class="wire" d="M614 184.0H648"/>
-<path class="wire" d="M312 364.0H346"/>
-<path class="wire" d="M614 364.0H648"/>
-<path class="wire" d="M782.0 248V278.0H178.0V282"/>
-<path d="M-9 -7L3 0L-9 7z" fill="#a8622c" transform="translate(343 184.0) rotate(0)"/>
-<path d="M-9 -7L3 0L-9 7z" fill="#a8622c" transform="translate(645 184.0) rotate(0)"/>
-<path d="M-9 -7L3 0L-9 7z" fill="#a8622c" transform="translate(343 364.0) rotate(0)"/>
-<path d="M-9 -7L3 0L-9 7z" fill="#a8622c" transform="translate(645 364.0) rotate(0)"/>
-<path d="M-9 -7L3 0L-9 7z" fill="#a8622c" transform="translate(178.0 296) rotate(90)"/>
-<path class="relay" d="M480.0 428V454H178.0V432"/>
-<path d="M-9 -7L3 0L-9 7z" fill="#d23a12" transform="translate(178.0 431) rotate(-90)"/>
-<text class="dim" x="192.0" y="448">reviews + CI relayed to the inbox</text>
-<path class="relay rl" d="M480.0 428V454H178.0V432" style="stroke:#ffcf4a;stroke-dasharray:none"/>
-<rect class="card" x="44" y="120" width="268" height="128"/>
-<path class="hi" d="M47 245V123H309"/>
-<path class="lo" d="M47 245H309V123"/>
-<rect class="glow g0" x="40" y="116" width="276" height="136"/>
-<text class="t" x="60" y="152">01 APPLY</text>
-<text class="l" x="60" y="182">fleet apply -f task.json</text>
-<text class="l" x="60" y="204">you or VEGA store a Task</text>
-<rect class="card" x="346" y="120" width="268" height="128"/>
-<path class="hi" d="M349 245V123H611"/>
-<path class="lo" d="M349 245H611V123"/>
-<rect class="glow g1" x="342" y="116" width="276" height="136"/>
-<text class="t" x="362" y="152">02 RECONCILE</text>
-<text class="l" x="362" y="182">fleet up holds the lease</text>
-<text class="l" x="362" y="204">pure controller plans,</text>
-<text class="l" x="362" y="226">intent > effect > receipt</text>
-<rect class="card" x="648" y="120" width="268" height="128"/>
-<path class="hi" d="M651 245V123H913"/>
-<path class="lo" d="M651 245H913V123"/>
-<rect class="glow g2" x="644" y="116" width="276" height="136"/>
-<text class="t" x="664" y="152">03 SPAWN</text>
-<text class="l" x="664" y="182">thurbox runtime starts</text>
-<text class="l" x="664" y="204">the agent session in its</text>
-<text class="l" x="664" y="226">dir, or a repo worktree</text>
-<rect class="card" x="44" y="300" width="268" height="128"/>
-<path class="hi" d="M47 425V303H309"/>
-<path class="lo" d="M47 425H309V303"/>
-<rect class="glow g3" x="40" y="296" width="276" height="136"/>
-<text class="t" x="60" y="332">04 BRIEF</text>
-<text class="l" x="60" y="362">brief delivered once,</text>
-<text class="l" x="60" y="384">by key; fleet send</text>
-<text class="l" x="60" y="406">queues to the inbox</text>
-<rect class="card" x="346" y="300" width="268" height="128"/>
-<path class="hi" d="M349 425V303H611"/>
-<path class="lo" d="M349 425H611V303"/>
-<rect class="glow g4" x="342" y="296" width="276" height="136"/>
-<text class="t" x="362" y="332">05 DECLARE</text>
-<text class="l" x="362" y="362">worker opens a change</text>
-<text class="l" x="362" y="384">and runs fleet declare;</text>
-<text class="l" x="362" y="406">its ChangeRequest mirror</text>
-<rect class="card" x="648" y="300" width="268" height="128"/>
-<path class="hi" d="M651 425V303H913"/>
-<path class="lo" d="M651 425H913V303"/>
-<rect class="glow g5" x="644" y="296" width="276" height="136"/>
-<text class="t" x="664" y="332">06 RESULT</text>
-<text class="l" x="664" y="362">fleet result: Concluded</text>
-<text class="l" x="664" y="384">fleet delete releases</text>
-<text class="l" x="664" y="406">the session</text>
-<g class="tok"><rect x="-9" y="-9" width="18" height="18" fill="#ff4a14"/><rect x="-5" y="-5" width="10" height="10" fill="#ffe066"/></g>
-<rect x="24" y="476" width="912" height="60" fill="#2a160c" stroke="#7a4a26" stroke-width="3"/>
-<path class="hi" d="M27 533V479H351"/>
-<text class="lbl" x="189.0" y="529" text-anchor="middle">PHASE</text>
-<path class="hi" d="M357 533V479H651"/>
-<text class="lbl" x="504.0" y="529" text-anchor="middle">CONTROLLER</text>
-<path class="hi" d="M657 533V479H933"/>
-<text class="lbl" x="795.0" y="529" text-anchor="middle">WORKER</text>
-<path d="M354 476V536" stroke="#7a4a26" stroke-width="3"/>
-<path d="M654 476V536" stroke="#7a4a26" stroke-width="3"/>
-<text class="hud ph p0" x="189" y="510" text-anchor="middle">PENDING</text>
-<text class="hud ph p1" x="189" y="510" text-anchor="middle">SPAWNING</text>
-<text class="hud ph p2" x="189" y="510" text-anchor="middle">SPAWNED</text>
-<text class="hud ph p3" x="189" y="510" text-anchor="middle">BRIEFED</text>
-<text class="hud ph p4" x="189" y="510" text-anchor="middle">CONCLUDED</text>
-<text class="hud ph p5" x="189" y="510" text-anchor="middle">RELEASING</text>
-<text class="l flick" x="504" y="506" text-anchor="middle">owns status, never merges</text>
-<text class="l" x="795" y="506" text-anchor="middle">writes status.result</text>
+<text class="head shade" x="483" y="61" text-anchor="middle">THE RECONCILE LOOP</text>
+<text class="head" x="480" y="58" text-anchor="middle">THE RECONCILE LOOP</text>
+<text class="lbl" x="32" y="92">KINDS</text>
+<text class="lbl" x="928" y="92" text-anchor="end">PORTS</text>
+<path class="wire" d="M258 138.0H272V270H374"/>
+<path class="wire" d="M586 270H688V138.0H702"/>
+<path class="wire" d="M258 224.0H272V270H374"/>
+<path class="wire" d="M586 270H688V224.0H702"/>
+<path class="wire" d="M258 310.0H272V270H374"/>
+<path class="wire" d="M586 270H688V310.0H702"/>
+<path class="wire" d="M258 396.0H272V270H374"/>
+<path class="wire" d="M586 270H688V396.0H702"/>
+<path class="hot on k0" d="M258 138.0H272V270H374"/>
+<path class="hot on k0" d="M586 270H688V138.0H702"/>
+<path class="hot on k1" d="M258 224.0H272V270H374"/>
+<path class="hot on k1" d="M586 270H688V224.0H702"/>
+<path class="hot on k2" d="M258 310.0H272V270H374"/>
+<path class="hot on k2" d="M586 270H688V310.0H702"/>
+<path class="hot on k3" d="M258 396.0H272V270H374"/>
+<path class="hot on k3" d="M586 270H688V396.0H702"/>
+<circle class="ring" cx="480" cy="270" r="100"/><circle class="ringin" cx="480" cy="270" r="100"/>
+<path d="M-6 -7L4 0L-6 7z" fill="#a8622c" transform="rotate(0 480 270) translate(480 170)"/>
+<path d="M-6 -7L4 0L-6 7z" fill="#a8622c" transform="rotate(90 480 270) translate(480 170)"/>
+<path d="M-6 -7L4 0L-6 7z" fill="#a8622c" transform="rotate(180 480 270) translate(480 170)"/>
+<path d="M-6 -7L4 0L-6 7z" fill="#a8622c" transform="rotate(270 480 270) translate(480 170)"/>
+<rect class="node n0" x="541.7" y="190.3" width="18" height="18" fill="#ff8a1f" stroke="#ffe066" stroke-width="2"/>
+<text class="hs" x="572.7" y="159.3" text-anchor="start">READ</text>
+<text class="dim" x="572.7" y="176.3" text-anchor="start">spec and</text>
+<text class="dim" x="572.7" y="192.3" text-anchor="start">status</text>
+<rect class="node n1" x="541.7" y="331.7" width="18" height="18" fill="#ff8a1f" stroke="#ffe066" stroke-width="2"/>
+<text class="hs" x="572.7" y="362.7" text-anchor="start">OBSERVE</text>
+<text class="dim" x="572.7" y="379.7" text-anchor="start">probes;</text>
+<text class="dim" x="572.7" y="395.7" text-anchor="start">Unknown is</text>
+<text class="dim" x="572.7" y="411.7" text-anchor="start">not absent</text>
+<rect class="node n2" x="400.3" y="331.7" width="18" height="18" fill="#ff8a1f" stroke="#ffe066" stroke-width="2"/>
+<text class="hs" x="387.3" y="362.7" text-anchor="end">PLAN</text>
+<text class="dim" x="387.3" y="379.7" text-anchor="end">pure</text>
+<text class="dim" x="387.3" y="395.7" text-anchor="end">controller</text>
+<rect class="node n3" x="400.3" y="190.3" width="18" height="18" fill="#ff8a1f" stroke="#ffe066" stroke-width="2"/>
+<text class="hs" x="387.3" y="143.3" text-anchor="end">ACT</text>
+<text class="dim" x="387.3" y="160.3" text-anchor="end">intent,</text>
+<text class="dim" x="387.3" y="176.3" text-anchor="end">effect,</text>
+<text class="dim" x="387.3" y="192.3" text-anchor="end">receipt</text>
+<text class="t" x="480" y="264" text-anchor="middle" style="font-size:22px">fleet up</text>
+<text class="dim" x="480" y="286" text-anchor="middle">holds the lease,</text>
+<text class="dim" x="480" y="302" text-anchor="middle">sweeps due objects</text>
+<g class="spin tok"><rect x="470" y="160" width="20" height="20" fill="#ff4a14"/><rect x="475" y="165" width="10" height="10" fill="#ffe066"/></g>
+<rect class="card" x="32" y="100" width="226" height="76"/>
+<path class="hi" d="M35 173V103H255"/>
+<rect class="glow on k0" x="28" y="96" width="234" height="84"/>
+<text class="t" x="46" y="125">TASK</text>
+<text class="l" x="46" y="146">one agent session:</text>
+<text class="l" x="46" y="164">spawn, brief, release</text>
+<rect class="card" x="32" y="186" width="226" height="76"/>
+<path class="hi" d="M35 259V189H255"/>
+<rect class="glow on k1" x="28" y="182" width="234" height="84"/>
+<text class="t" x="46" y="211">CHANGEREQUEST</text>
+<text class="l" x="46" y="232">mirrors a forge change;</text>
+<text class="l" x="46" y="250">feedback to Task inbox</text>
+<rect class="card" x="32" y="272" width="226" height="76"/>
+<path class="hi" d="M35 345V275H255"/>
+<rect class="glow on k2" x="28" y="268" width="234" height="84"/>
+<text class="t" x="46" y="297">PLUGIN KIND</text>
+<text class="l" x="46" y="318">your own kind, with a</text>
+<text class="l" x="46" y="336">controller as a script</text>
+<rect class="card design" x="32" y="358" width="226" height="76"/>
+<rect class="glow on k3" x="28" y="354" width="234" height="84"/>
+<text class="t" x="46" y="383">CONVERSATION</text>
+<text class="l" x="46" y="404">mirrors a chat thread;</text>
+<text class="l" x="46" y="422">Task relay is a design</text>
+<rect class="card" x="702" y="100" width="226" height="76"/>
+<path class="hi" d="M705 173V103H925"/>
+<rect class="glow on k0" x="698" y="96" width="234" height="84"/>
+<text class="t" x="716" y="125">RUNTIME</text>
+<text class="l" x="716" y="146">thurbox runs sessions</text>
+<text class="l" x="716" y="164">and owns the hosts</text>
+<rect class="card" x="702" y="186" width="226" height="76"/>
+<path class="hi" d="M705 259V189H925"/>
+<rect class="glow on k1" x="698" y="182" width="234" height="84"/>
+<text class="t" x="716" y="211">FORGE</text>
+<text class="l" x="716" y="232">gh, glab, az or curl;</text>
+<text class="l" x="716" y="250">one write: mark-ready</text>
+<rect class="card" x="702" y="272" width="226" height="76"/>
+<path class="hi" d="M705 345V275H925"/>
+<rect class="glow on k2" x="698" y="268" width="234" height="84"/>
+<text class="t" x="716" y="297">PLUGINS</text>
+<text class="l" x="716" y="318">bounded observe and</text>
+<text class="l" x="716" y="336">perform calls</text>
+<rect class="card" x="702" y="358" width="226" height="76"/>
+<path class="hi" d="M705 431V361H925"/>
+<rect class="glow on k3" x="698" y="354" width="234" height="84"/>
+<text class="t" x="716" y="383">GATEWAY</text>
+<text class="l" x="716" y="404">Slack through curl;</text>
+<text class="l" x="716" y="422">a listener hands in</text>
+<text class="dim" x="480" y="454" text-anchor="middle">passive kinds, no controller: TaskConfig and EnvProvider,</text>
+<text class="dim" x="480" y="471" text-anchor="middle">frozen into a Task launch; every port call is bounded</text>
+<rect x="24" y="486" width="912" height="52" fill="#2a160c" stroke="#7a4a26" stroke-width="3"/>
+<path class="hi" d="M27 535V489H325"/>
+<text class="lbl" x="38" y="518">KIND</text>
+<path class="hi" d="M331 535V489H661"/>
+<text class="lbl" x="342" y="518">CONTROLLER</text>
+<path class="hi" d="M667 535V489H933"/>
+<text class="lbl" x="678" y="518">PORT</text>
+<path d="M328 486V538" stroke="#7a4a26" stroke-width="3"/>
+<path d="M664 486V538" stroke="#7a4a26" stroke-width="3"/>
+<text class="hud hudt on k0" x="314" y="521" text-anchor="end">TASK</text>
+<text class="l hudt on k0" x="650" y="518" text-anchor="end" style="font-size:15px">TaskController</text>
+<text class="hud hudt on k0" x="922" y="521" text-anchor="end">RUNTIME</text>
+<text class="hud hudt on k1" x="314" y="521" text-anchor="end">CHANGEREQUEST</text>
+<text class="l hudt on k1" x="650" y="518" text-anchor="end" style="font-size:15px">ChangeRequest + Forge</text>
+<text class="hud hudt on k1" x="922" y="521" text-anchor="end">FORGE</text>
+<text class="hud hudt on k2" x="314" y="521" text-anchor="end">PLUGIN KIND</text>
+<text class="l hudt on k2" x="650" y="518" text-anchor="end" style="font-size:15px">plugin, through a gate</text>
+<text class="hud hudt on k2" x="922" y="521" text-anchor="end">PLUGINS</text>
+<text class="hud hudt on k3" x="314" y="521" text-anchor="end">CONVERSATION</text>
+<text class="l hudt on k3" x="650" y="518" text-anchor="end" style="font-size:15px">Gateway, partly built</text>
+<text class="hud hudt on k3" x="922" y="521" text-anchor="end">GATEWAY</text>
 </svg>
