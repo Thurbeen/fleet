@@ -851,7 +851,7 @@ impl Pass<'_, '_> {
             spec: json!({
                 "configRef": {"name": route.task_config},
                 "brief": brief,
-                "workspace": {"dir": route.workspace.dir},
+                "workspace": route.workspace,
                 "dispatch": true,
             }),
             status: serde_json::Value::Null,
@@ -859,7 +859,8 @@ impl Pass<'_, '_> {
     }
 
     /// Ask the manager to create the tie's Task under its key, intent
-    /// first, with the route's workspace as the precondition.
+    /// first, with a `dir` route's workspace as the precondition. A
+    /// `repositories` route shares no directory, so its create has none.
     fn plan_create(&mut self, counted: bool) {
         let (Some(route), Some(brief)) = (
             self.input.defaults.route.clone(),
@@ -880,8 +881,8 @@ impl Pass<'_, '_> {
         self.creates.push(Create {
             key,
             object,
-            exclusive: Some(Exclusive {
-                workspace: route.workspace.dir.clone(),
+            exclusive: route.workspace.dir().map(|dir| Exclusive {
+                workspace: dir.to_string(),
             }),
         });
         // The receipt lands in the same manager step; should it not, look
@@ -935,7 +936,7 @@ impl Pass<'_, '_> {
                     .defaults
                     .route
                     .as_ref()
-                    .map(|r| r.workspace.dir.clone())
+                    .and_then(|r| r.workspace.dir().map(str::to_string))
                     .unwrap_or_default();
                 self.attention.raise(
                     WORKSPACE_BUSY,

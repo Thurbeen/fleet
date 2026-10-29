@@ -995,6 +995,42 @@ fn create_key() -> String {
 }
 
 #[test]
+fn a_repositories_route_starts_its_task_without_a_workspace_precondition() {
+    let workspace: Workspace = serde_json::from_value(json!({"repositories": [
+        {"name": "app", "url": "https://example.invalid/app", "ref": "main"}
+    ]}))
+    .unwrap();
+    let defaults = GatewayDefaults {
+        route: Some(RouteConfig {
+            workspace: workspace.clone(),
+            ..route()
+        }),
+        ..defaults()
+    };
+    let obj = object(Some(&mirrored(vec![message(
+        "Ev01",
+        person(ALEX, T0 + 300_000, "<@B0FLEET001> can you look into it?"),
+    )])));
+    let (plan, _) = run_with(
+        &obj,
+        ConversationObservations {
+            capabilities: Some(caps(true)),
+            history: Some(history(Vec::new())),
+            ..ConversationObservations::default()
+        },
+        defaults,
+        NOW,
+    );
+    assert_eq!(plan.creates.len(), 1, "{plan:#?}");
+    let create = &plan.creates[0];
+    assert_eq!(create.exclusive, None, "each Task gets its own workspace");
+    assert_eq!(
+        create.object.spec["workspace"],
+        serde_json::to_value(&workspace).unwrap()
+    );
+}
+
+#[test]
 fn an_admitted_mention_starts_the_threads_first_task_as_the_interface_shows_it() {
     let obj = object(Some(&mirrored(vec![message(
         "Ev01",
