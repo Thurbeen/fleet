@@ -9,11 +9,17 @@ proof of an external artifact landing. The
 
 ## Transition rules
 
-The manager only reconciles Tasks whose `notBefore` is absent or due, and a
-Concluded Task only while its inbox is nonempty or it is being deleted.
+The manager only reconciles Tasks whose `notBefore` is absent or due. It
+reconciles a Concluded Task only in these cases:
+
+- Its inbox is nonempty.
+- It is being deleted.
+- Its session recheck is due: `status.sessionCheckedAt` is absent or 5
+  minutes old.
+
 Deletion takes precedence over normal progress, including Stalled and
-Concluded. With no deletion, those two phases are terminal; a Concluded Task
-with a nonempty `status.inbox` is nevertheless due again, for delivery only.
+Concluded. With no deletion, those two phases are terminal. A Concluded Task
+is due again for delivery and for the session recheck only.
 A recorded worker result concludes an active Task before its ordinary phase
 logic runs.
 
@@ -48,6 +54,7 @@ logic runs.
 | Spawned, Briefed or Concluded | Entry delivery unreadable after an ambiguous send | unchanged | Wait, then read the journal again; after 3 unreadable reads raise `NeedsAttention/DeliveryUnconfirmed`, and keep reading. |
 | Spawned, Briefed or Concluded | A fourth send of one entry would be needed | unchanged | `NeedsAttention/DeliveryFailed` naming the entry; the entry stays, marked failed, and later entries are still delivered. |
 | Spawned, Briefed or Concluded | More than 20 entries undelivered | unchanged | `NeedsAttention/InboxFull`; cleared once delivery brings the count back within the bound. |
+| Concluded | Empty inbox; session recheck due; lookup answered | Concluded | Record `sessionCheckedAt`; the next recheck is due 5 minutes later. |
 | Concluded | Readable lookup lacks the recorded session | Concluded | `WorkerGone` and `NeedsAttention`; never a respawn. |
 | Stalled | Any inbox entry | Stalled | Nothing is delivered; Stalled has no session to deliver to. |
 | Any phase | Task marked deleting | Releasing | Resolve spawn ambiguity if needed; release only once at rest or proven absent. A deleting Task delivers nothing. |

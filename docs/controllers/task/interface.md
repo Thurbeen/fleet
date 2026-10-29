@@ -29,8 +29,10 @@ Neither method reads the clock, disk, environment or runtime itself.
 
 The manager starts with empty observations, asks `probes`, performs those
 probes through `Runtime`, then calls `reconcile` with their answers. It skips
-Tasks with a future `status.notBefore` before asking for any probe, and a
-Concluded Task whose inbox is empty unless it is being deleted.
+Tasks with a future `status.notBefore` before asking for any probe. It also
+skips a Concluded Task whose inbox is empty, unless the Task is being
+deleted or its session recheck is due. A session recheck is due when
+`status.sessionCheckedAt` is absent or 5 minutes old.
 
 ### Requested probes
 
@@ -42,6 +44,7 @@ Concluded Task whose inbox is empty unless it is being deleted.
 | Spawned | `Find`; `WorkspaceTrust` and `Ready` for the recorded session; `BriefDelivered` when a brief intent exists without a known receipt, else the inbox probes below. |
 | Briefed, no worker result | `Find`; the inbox probes below. |
 | Concluded, an inbox entry to deliver | `Find`; the inbox probes below. |
+| Concluded, session recheck due | `Find`. |
 | Concluded otherwise, or Stalled | None. |
 | Deleting, regardless of phase | `Find`; `AtRest` when a session is recorded. |
 

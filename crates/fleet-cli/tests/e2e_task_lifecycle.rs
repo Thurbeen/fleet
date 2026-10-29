@@ -475,6 +475,35 @@ fn a_vanished_worker_requires_attention_without_abandonment() {
 }
 
 #[test]
+fn a_concluded_task_whose_session_vanishes_requires_attention() {
+    let env = setup("concluded-gone", true);
+    env.reconcile().ok();
+    env.fleet(&result_args(
+        "1",
+        &["--output", "prUrl=\"https://example.test/pr/1\""],
+    ))
+    .ok();
+    env.reconcile().ok();
+    assert_eq!(env.status("t1")["phase"], "Concluded");
+    env.host().vanish(&env.session_key("t1")).unwrap();
+
+    // At rest, the session is looked up once per recheck interval, not on
+    // every pass.
+    let finds = env.calls("find");
+    let again = env.reconcile().ok().json();
+    assert_eq!(env.calls("find"), finds, "{again:#}");
+    assert_eq!(again["statusWrites"], 0, "{again:#}");
+
+    env.expire_session_check("t1");
+    env.reconcile().ok();
+    let st = env.status("t1");
+    assert_eq!(st["phase"], "Concluded", "{st:#}");
+    assert_condition(&st, "WorkerGone", "True", "SessionGone");
+    assert_condition(&st, "NeedsAttention", "True", "WorkerGone");
+    assert_eq!(env.calls("spawn"), 1, "never respawned");
+}
+
+#[test]
 fn one_manager_at_a_time_and_a_lost_lease_writes_nothing() {
     let env = setup("lease", true);
     // A holds the lease while its spawn is slow; B is refused.

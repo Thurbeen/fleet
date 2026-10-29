@@ -165,6 +165,10 @@ pub struct TaskStatus {
     /// this Task again before then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_before: Option<Millis>,
+    /// When a Concluded Task's session was last looked up; at rest, the
+    /// next lookup is due a fixed interval later.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_checked_at: Option<Millis>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brief: Option<BriefRecord>,
     /// The worker's claim, written by field manager `worker` only.
