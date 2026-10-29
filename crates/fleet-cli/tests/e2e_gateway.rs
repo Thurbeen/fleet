@@ -1954,3 +1954,39 @@ fn a_mention_read_from_history_before_the_listener_delivers_it_still_starts_a_ta
     env.fleet(&["get", "task", &format!("{conv}-1")]).ok();
     env.assert_no_temp();
 }
+
+#[test]
+fn a_same_named_task_created_for_another_thread_is_never_adopted() {
+    let (env, conv) = admitting("adopt-refused");
+    // `<conversation>-1` exists already, in another directory, labelled for
+    // another Conversation's uid, as that one's create would leave it.
+    let task_name = format!("{conv}-1");
+    env.apply(support::task(&task_name, false)).ok();
+    let other_uid = uid_of(&env, "task", &task_name);
+    let path = env.object_path("Task", &task_name);
+    let mut task: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_ne!(
+        task["spec"]["workspace"]["dir"],
+        json!(env.gateway_workspace())
+    );
+    task["metadata"]["labels"]["gateway.fleet.dev/conversation"] = json!(conv);
+    task["metadata"]["labels"]["gateway.fleet.dev/conversation-uid"] = json!("u0-another");
+    fs::write(&path, task.to_string()).unwrap();
+    env.receive("Ev01", mention("1730000300000", T0 + 300_000))
+        .ok();
+    env.reconcile().ok();
+    let conv_uid = uid_of(&env, "conversation", &conv);
+    let st = env.conversation_status(&conv);
+    let receipt = &st["effects"][&format!("conversation/{conv_uid}/task/1")]["receipt"];
+    assert_eq!(receipt["outcome"]["known"]["type"], "failed", "{st:#}");
+    assert!(
+        receipt["outcome"]["known"]["why"]
+            .as_str()
+            .is_some_and(|w| w.contains("was not created for this thread")),
+        "{st:#}"
+    );
+    assert_ne!(st["task"]["state"], "created", "{st:#}");
+    assert_ne!(st["task"]["uid"], json!(other_uid), "{st:#}");
+    assert_eq!(uid_of(&env, "task", &task_name), other_uid);
+    env.assert_no_temp();
+}
