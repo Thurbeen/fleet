@@ -486,16 +486,17 @@ impl ThurboxRuntime {
     }
 
     /// Before its first turn Codex may not have emitted any lifecycle hook.
-    /// A harness `runtime.workspaceTrust` maps to `codex` runs Codex, under
-    /// whatever agent name. Process liveness is insufficient: prove the initial empty composer at
+    /// The agent `codex` runs Codex, and so does any harness
+    /// `runtime.workspaceTrust` maps to `codex`, under whatever name.
+    /// Process liveness is insufficient: prove the initial empty composer at
     /// the visible cursor, never by searching scrollback for an old prompt.
     fn initial_codex_ready(&self, session: &SessionRef, row: &Value) -> Observation<bool> {
         if row["id"] != session.id
             || row["key"] != self.thurbox_key(&session.key)
             || row_host(row) != session.host
-            || !row["agent"]
-                .as_str()
-                .is_some_and(|a| self.cfg.workspace_trust.get(a) == Some(&TrustInterface::Codex))
+            || !row["agent"].as_str().is_some_and(|a| {
+                a == "codex" || self.cfg.workspace_trust.get(a) == Some(&TrustInterface::Codex)
+            })
             || row["state"] != "running"
             || row["state_source"] != "process"
             || row["stopped"] != false

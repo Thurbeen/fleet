@@ -525,3 +525,19 @@ fn a_home_or_filesystem_root_is_never_trusted_automatically() {
         env.get("root")["status"]
     );
 }
+
+#[test]
+fn codex_declared_ungated_adds_no_trust_and_is_still_briefed() {
+    // The operator trusts Codex's folders in Codex's own config and says so.
+    let env = env(
+        "trust-codex-none",
+        "[runtime.workspaceTrust]\ncodex = \"none\"\n",
+    );
+    initial_codex(&env);
+    env.apply(task("n1", "codex")).ok();
+    env.reconcile().ok();
+    assert!(agent_args(&argv_of(&env, "create")[0]).is_empty());
+    let st = env.status("n1");
+    assert_eq!(st["phase"], "Briefed", "{st:#}");
+    assert_condition(&st, "WorkspaceTrusted", "True", "Trusted");
+}

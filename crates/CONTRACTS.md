@@ -584,7 +584,7 @@ The trust root is the directory the agent keys the session's trust on:
 
 | Interface | Default harnesses | At spawn | `workspace_trust` answers |
 | --- | --- | --- | --- |
-| `codex` | `codex` | Adds `--agent-arg=-c --agent-arg=projects={"<root>"={trust_level="trusted"}}`. Initial readiness treats the harness as Codex. | `Trusted` when the row's `agent_args` are exactly that pair, the row's cwd and worktrees are the Task's workspace, and a readable screen shows no Codex trust dialog before its first hook. `Mismatch` otherwise. Unknown when thurbox does not report them or the screen cannot be read. Readiness also refuses a screen showing that dialog. |
+| `codex` | `codex` | Adds `--agent-arg=-c --agent-arg=projects={"<root>"={trust_level="trusted"}}`. Initial readiness treats the harness as Codex, as it always treats `codex`. | `Trusted` when the row's `agent_args` are exactly that pair, the row's cwd and worktrees are the Task's workspace, and a readable screen shows no Codex trust dialog before its first hook. `Mismatch` otherwise. Unknown when thurbox does not report them or the screen cannot be read. Readiness also refuses a screen showing that dialog. |
 | `claude` | `claude`, `claude-code` | Adds nothing. | `Trusted` once Claude reported a hook. `Unsupported` while Claude's trust dialog is current at the cursor. Unknown otherwise. |
 | `none` | none | Adds nothing. | `Trusted`. |
 | not listed | any other | Starts nothing: `TrustUnmapped`. | `Unsupported`, naming `runtime.workspaceTrust`, for a session that already exists. |
