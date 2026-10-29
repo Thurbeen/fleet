@@ -186,7 +186,14 @@ impl ThurboxRuntime {
         self.call_spec(Spec::new(&self.cfg.cli, self.cfg.call_timeout).args(args))
     }
 
-    fn call_spec(&self, spec: Spec) -> Answer {
+    fn call_spec(&self, mut spec: Spec) -> Answer {
+        // The manager's telemetry identity is not a session's: a session gets
+        // only the OTEL_* its Task declares, which travel on `--env-stdin`.
+        spec.env_remove.extend(
+            std::env::vars_os()
+                .filter_map(|(k, _)| k.into_string().ok())
+                .filter(|k| k.starts_with("OTEL_")),
+        );
         let what = spec
             .args
             .iter()

@@ -117,7 +117,9 @@ A missing/corrupt snapshot for an already frozen Task blocks re-resolution.
 Restore a protected backup or deliberately release/delete and recreate the
 Task. Do not delete its snapshot to refresh credentials mid-run. Thurbox must
 support `session create --env-stdin`; values never enter Task status, effect
-intents, error output or process arguments.
+intents, error output or process arguments. The session receives this
+environment, not the manager's `OTEL_*` variables; see
+[telemetry](../configuration/telemetry.md).
 
 ## Commands and compatibility
 

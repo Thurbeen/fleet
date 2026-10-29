@@ -21,6 +21,11 @@ Each Fleet process reads its own environment. Set the variables where
 `fleet up` runs to export the manager's sweeps. Set them for a worker's
 session to export that worker's `fleet result` and `fleet declare` calls.
 
+A session never inherits the manager's `OTEL_*` variables. The runtime
+removes them from each `thurbox-cli` call. A session receives only the
+`OTEL_*` variables that its Task declares in `spec.env`, a TaskConfig or an
+EnvProvider.
+
 ```sh
 OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 fleet up
 ```

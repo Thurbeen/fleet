@@ -17,7 +17,7 @@ use fleet_api::forge::{
 use fleet_forge::ForgeFault;
 use serde_json::{Value, json};
 use support::otlp::{Collector, Point, Span};
-use support::{Env, FORGE_HOST, base_config, change_request, derived_name, task};
+use support::{Env, FORGE_HOST, base_config, change_request, derived_name, object, task};
 
 const BRIEF_SECRET: &str = "brief-sentinel-7f3a";
 const ENV_SECRET: &str = "env-sentinel-91c2";
@@ -337,4 +337,65 @@ fn an_unreachable_collector_never_changes_a_command() {
         );
     }
     drop(silent);
+}
+
+/// The manager's telemetry identity is not a session's: no OTEL_* variable
+/// of the manager reaches the spawn of a session. OTEL_* variables the Task
+/// declares itself, from its spec, a TaskConfig or an EnvProvider, still do.
+#[test]
+fn a_spawned_session_does_not_inherit_the_managers_otel_identity() {
+    let mut e = Env::thurbox("otel-session-env");
+    e.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:9");
+    e.set_var("OTEL_SERVICE_NAME", "fleet");
+    e.set_var(
+        "OTEL_RESOURCE_ATTRIBUTES",
+        "service.namespace=fleet-v2,fleet.manager=manager",
+    );
+    e.set_var("OTEL_SDK_DISABLED", "true");
+    e.apply(object(
+        "EnvProvider",
+        "otel",
+        json!({"data":{"OTEL_EXPORTER_OTLP_ENDPOINT":"http://collector.test:4318"}}),
+    ))
+    .ok();
+    e.apply(object(
+        "TaskConfig",
+        "otel",
+        json!({"envFrom":[{"name":"otel"}],"env":{"OTEL_RESOURCE_ATTRIBUTES":"fleet.task=t1"}}),
+    ))
+    .ok();
+    let mut t = task("t1", true);
+    t["spec"]["configRef"] = json!({"name":"otel"});
+    t["spec"]["env"] = json!({"OTEL_SERVICE_NAME":"agent"});
+    t["spec"]["workspace"]["dir"] = json!(e.root.join("work").to_string_lossy());
+    e.apply(t).ok();
+    e.reconcile().ok();
+
+    let creates: Vec<_> = e
+        .stub_calls()
+        .into_iter()
+        .filter(|c| c["argv"][0] == "session" && c["argv"][1] == "create")
+        .collect();
+    assert!(!creates.is_empty(), "no session create: {:?}", e.stub_calls());
+    for c in &creates {
+        let names: Vec<&str> = c["envNames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|n| n.starts_with("OTEL_"))
+            .collect();
+        assert!(names.is_empty(), "the manager's {names:?} reached the spawn");
+    }
+    let declared = e.stub_sessions()[0]["env"].clone();
+    for name in [
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "OTEL_RESOURCE_ATTRIBUTES",
+        "OTEL_SERVICE_NAME",
+    ] {
+        assert!(
+            declared.as_array().unwrap().contains(&json!(name)),
+            "the Task's own {name} did not reach the session: {declared}"
+        );
+    }
 }
