@@ -5,6 +5,8 @@
 
 #![allow(dead_code)]
 
+pub mod otlp;
+
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};

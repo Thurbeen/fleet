@@ -9,6 +9,8 @@ from the JSON [Task](../resources/task.md),
 store.
 `fleet apply` does not load TOML, and `--config` does not apply resources.
 There is no `[taskConfig]`, `[envProvider]` or task-template section in TOML.
+There is no telemetry section either: the standard `OTEL_*` variables
+configure [OpenTelemetry export](telemetry.md).
 
 ## File selection and paths
 

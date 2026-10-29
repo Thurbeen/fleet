@@ -562,6 +562,61 @@ fn reconnect_uses_stored_immutable_inputs_after_the_editable_template_changes() 
     assert_eq!(env.get("vega")["spec"], original["spec"]);
 }
 
+/// `fleet up` exports each sweep as a trace of its own, and Ctrl-C flushes
+/// what is still batched before it exits: the run below ends before the
+/// batch's first scheduled export.
+#[cfg(unix)]
+#[test]
+fn up_flushes_its_sweeps_to_a_collector_when_interrupted() {
+    let collector = support::otlp::Collector::start();
+    let mut env = fake_bootstrap("up-telemetry");
+    env.set_var("OTEL_EXPORTER_OTLP_ENDPOINT", &collector.endpoint);
+    let mut resident = Running(env.spawn(&["up", "--poll-ms", "100"]));
+    until(|| env.fleet(&["get", "task", "vega"]).code == Some(0));
+    until(|| env.status("vega")["phase"] == "Briefed");
+    let interrupted = Command::new("kill")
+        .args(["-INT", &resident.0.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(interrupted.success());
+    let started = Instant::now();
+    let status = loop {
+        if let Some(status) = resident.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(20),
+            "up kept running"
+        );
+        thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(status.code(), Some(0));
+    let spans = collector.spans();
+    let passes: Vec<_> = spans
+        .iter()
+        .filter(|s| s.name == "reconcile pass")
+        .collect();
+    assert!(!passes.is_empty(), "{spans:#?}");
+    assert!(
+        passes.iter().all(|p| p.parent.is_empty()),
+        "each sweep is a root: {passes:#?}"
+    );
+    assert!(
+        spans
+            .iter()
+            .any(|s| s.name == "effect spawn" && s.attrs["fleet.name"] == "vega"),
+        "{spans:#?}"
+    );
+    assert!(!spans.iter().any(|s| s.name == "fleet up"), "{spans:#?}");
+    assert!(
+        collector
+            .points()
+            .iter()
+            .any(|p| p.metric == "fleet.effects"),
+        "metrics flushed too"
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn native_config_and_data_can_live_on_different_filesystems() {

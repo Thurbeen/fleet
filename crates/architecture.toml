@@ -11,21 +11,22 @@
 #   fleet-runtime        adapter                   -> api, exec
 #   fleet-forge          adapter                   -> api, exec
 #   fleet-gateway        adapter                   -> api, exec
+#   fleet-telemetry      adapter OTLP export, off unless OTEL_* asks
 #   fleet-manager        orchestration             -> api, controllers
-#   fleet-cli            edge   parse, wire, print -> api, manager, store, runtime, forge, gateway
+#   fleet-cli            edge   parse, wire, print -> api, manager, store, runtime, forge, gateway, telemetry
 #   fleet-arch, fleet-dev  tooling
 
 [crates.fleet-api]
 role = "pure"
 deps = []
 external = ["serde", "serde_json", "thiserror"]
-probes = ["fleet-store", "fleet-controllers", "fleet-exec", "fleet-runtime", "fleet-forge", "fleet-plugin", "fleet-gateway"]
+probes = ["fleet-store", "fleet-controllers", "fleet-exec", "fleet-runtime", "fleet-forge", "fleet-plugin", "fleet-gateway", "fleet-telemetry"]
 
 [crates.fleet-controllers]
 role = "pure"
 deps = ["fleet-api"]
 external = ["serde_json"]
-probes = ["fleet-store", "fleet-runtime", "fleet-forge", "fleet-plugin", "fleet-manager", "fleet-exec", "fleet-gateway"]
+probes = ["fleet-store", "fleet-runtime", "fleet-forge", "fleet-plugin", "fleet-manager", "fleet-exec", "fleet-gateway", "fleet-telemetry"]
 
 # The only crate that starts a process: bounded, its whole tree killed past
 # the bound.
@@ -55,6 +56,14 @@ deps = ["fleet-api", "fleet-exec"]
 role = "adapter"
 deps = ["fleet-api", "fleet-exec"]
 
+# The only crate that knows an OpenTelemetry SDK and exporter exist: it
+# installs them as the process's providers when the OTEL_* variables ask.
+# Every other crate records through the `opentelemetry` API alone, which is
+# a no-op without a provider.
+[crates.fleet-telemetry]
+role = "adapter"
+deps = []
+
 [crates.fleet-plugin]
 role = "adapter"
 deps = ["fleet-api", "fleet-exec"]
@@ -65,7 +74,7 @@ deps = ["fleet-api", "fleet-controllers"]
 
 [crates.fleet-cli]
 role = "edge"
-deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store", "fleet-forge", "fleet-plugin", "fleet-gateway"]
+deps = ["fleet-api", "fleet-manager", "fleet-runtime", "fleet-store", "fleet-forge", "fleet-plugin", "fleet-gateway", "fleet-telemetry"]
 # Every write is the manager's: the CLI parses, calls a verb, and prints.
 forbidden_methods = [
   "create", "update_spec", "update_status", "append_inbox", "record_delivery",
@@ -138,6 +147,18 @@ why = "creation flags and job objects belong to fleet-exec"
 path = "process_wrap"
 allowed = ["fleet-exec"]
 why = "a second way to start a process would bypass fleet-exec's bounds"
+
+# Telemetry leaves the process through one crate, so what is exported, its
+# batching and its shutdown bound are decided in one place.
+[[restricted]]
+path = "opentelemetry_sdk"
+allowed = ["fleet-telemetry"]
+why = "the SDK's providers, batching and shutdown belong to fleet-telemetry"
+
+[[restricted]]
+path = "opentelemetry_otlp"
+allowed = ["fleet-telemetry"]
+why = "the OTLP exporter, the one network client telemetry has, belongs to fleet-telemetry"
 
 # The Forge port carries Fleet's one forge write, `mark_ready`. The port is
 # defined by the API, implemented by fleet-forge, wired by the CLI and

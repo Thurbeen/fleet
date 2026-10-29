@@ -101,6 +101,8 @@ fleet --config examples/fleet.toml list task
   thurbox runtime, forges and plugins.
 - [Initialization and the VEGA starter](docs/configuration/init.md): config
   selection, workspace updates, execution defaults and external controllers.
+- [OpenTelemetry export](docs/configuration/telemetry.md): the `OTEL_*`
+  variables, and the spans and metrics Fleet exports.
 - [Contracts](crates/CONTRACTS.md): the integration guarantees.
 
 ## Install, update and uninstall
