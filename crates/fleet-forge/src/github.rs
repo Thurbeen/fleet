@@ -393,18 +393,21 @@ fn failed(why: impl Into<String>) -> Observation<EffectOutcome> {
     Observation::Known(EffectOutcome::Failed { why: why.into() })
 }
 
+/// The state of a pull request. Only an open pull request is a draft: GitHub
+/// keeps `isDraft` on a draft that is closed without being marked ready.
+fn state_of(pr: &Value) -> Result<ChangeState, String> {
+    match pr["state"].as_str() {
+        Some("OPEN") if pr["isDraft"] == true => Ok(ChangeState::Draft),
+        Some("OPEN") => Ok(ChangeState::Open),
+        Some("CLOSED") => Ok(ChangeState::Closed),
+        Some("MERGED") => Ok(ChangeState::Merged),
+        other => Err(format!("state {other:?} cannot be placed")),
+    }
+}
+
 /// The head and state of a fresh read, by the same rule as the snapshot.
 fn head_and_state(pr: &Value) -> Result<(String, ChangeState), String> {
-    let state = if pr["isDraft"] == true {
-        ChangeState::Draft
-    } else {
-        match pr["state"].as_str() {
-            Some("OPEN") => ChangeState::Open,
-            Some("CLOSED") => ChangeState::Closed,
-            Some("MERGED") => ChangeState::Merged,
-            other => return Err(format!("state {other:?} cannot be placed")),
-        }
-    };
+    let state = state_of(pr)?;
     let head = pr["headRefOid"]
         .as_str()
         .ok_or("no headRefOid")?
@@ -487,16 +490,7 @@ pub fn snapshot(
     comments: &[Value],
     threads: &[Value],
 ) -> Result<ChangeSnapshot, String> {
-    let state = if core["isDraft"] == true {
-        ChangeState::Draft
-    } else {
-        match core["state"].as_str() {
-            Some("OPEN") => ChangeState::Open,
-            Some("CLOSED") => ChangeState::Closed,
-            Some("MERGED") => ChangeState::Merged,
-            other => return Err(format!("state {other:?} cannot be placed")),
-        }
-    };
+    let state = state_of(core)?;
     let head_id = core["headRefOid"]
         .as_str()
         .ok_or("no headRefOid")?
@@ -709,15 +703,20 @@ mod tests {
     }
 
     #[test]
-    fn a_draft_is_draft_before_anything_else() {
-        let s = snapshot(
-            &core(json!({"isDraft": true, "state": "CLOSED"})),
-            &[],
-            &[],
-            &[],
-        )
-        .unwrap();
-        assert_eq!(s.state, ChangeState::Draft);
+    fn a_terminal_state_wins_over_the_draft_flag() {
+        let state = |pr: Value| snapshot(&core(pr), &[], &[], &[]).unwrap().state;
+        assert_eq!(
+            state(json!({"isDraft": true, "state": "CLOSED"})),
+            ChangeState::Closed
+        );
+        assert_eq!(
+            state(json!({"isDraft": true, "state": "MERGED"})),
+            ChangeState::Merged
+        );
+        assert_eq!(
+            state(json!({"isDraft": true, "state": "OPEN"})),
+            ChangeState::Draft
+        );
     }
 
     #[test]
@@ -891,6 +890,14 @@ mod tests {
         let (head, state) =
             head_and_state(&json!({"isDraft": true, "state": "OPEN", "headRefOid": "h1"})).unwrap();
         assert_eq!((head.as_str(), state), ("h1", ChangeState::Draft));
+        let (_, state) =
+            head_and_state(&json!({"isDraft": true, "state": "CLOSED", "headRefOid": "h1"}))
+                .unwrap();
+        assert_eq!(
+            state,
+            ChangeState::Closed,
+            "a closed draft is never marked ready"
+        );
     }
 
     #[test]

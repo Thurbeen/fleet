@@ -1725,3 +1725,74 @@ fn a_self_hosted_gitlab_merge_request_is_read_through_glab_with_its_hostname() {
     assert_eq!(st["phase"], "Watching");
     assert_condition(&st, "Reachable", "Unknown", "Refused");
 }
+
+#[test]
+fn a_closed_draft_github_pull_request_is_closed_and_settles() {
+    // GitHub keeps isDraft true on a draft pull request that is closed
+    // without being marked ready. The forge's state is terminal; the draft
+    // flag must not keep the mirror Watching forever.
+    let env = Env::forge_stubs("github-closed-draft");
+    let mut model = github_model();
+    model["state"] = json!("closed");
+    model["draft"] = json!(true);
+    env.edit_stub(|s| s["changes"] = json!({"acme/widgets#7": model}));
+    let url = "https://github.test/acme/widgets/pull/7";
+    let cr = derived_name("github", GITHUB_HOST, PROJECT, "7");
+    env.apply(change_request(url, json!({"closedGraceMs": 1000})))
+        .ok();
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let st = env.change_request_status(&cr);
+    assert_eq!(st["state"]["value"], "closed", "{st:#}");
+    assert_eq!(st["phase"], "Closed", "{st:#}");
+    thread::sleep(Duration::from_millis(1100));
+    env.expire_wait_of("ChangeRequest", &cr);
+    env.reconcile().ok();
+    let st = env.change_request_status(&cr);
+    assert_eq!(st["phase"], "Settled", "{st:#}");
+    assert_condition(&st, "Settled", "True", "ClosedGraceExpired");
+}
+
+#[test]
+fn a_closed_draft_is_closed_on_every_forge() {
+    // GitLab, Azure DevOps and Bitbucket Cloud can also close a draft
+    // without marking it ready. Each adapter must let the terminal state win.
+    for (kind, host, project, url) in [
+        (
+            "gitlab",
+            GITLAB_HOST,
+            "group/project",
+            "https://gitlab.test/group/project/-/merge_requests/7",
+        ),
+        (
+            "azure-devops",
+            "wingtip.visualstudio.com",
+            "project/widgets",
+            "https://dev.azure.com/wingtip/project/_git/widgets/pullrequest/7",
+        ),
+        (
+            "bitbucket-cloud",
+            BITBUCKET_HOST,
+            PROJECT,
+            "https://bitbucket.org/acme/widgets/pull-requests/7",
+        ),
+    ] {
+        let env = Env::forge_stubs(&format!("{kind}-closed-draft"));
+        let key = match kind {
+            "azure-devops" => format!("wingtip/{project}#7"),
+            _ => format!("{project}#7"),
+        };
+        let model = json!({
+            "state": "closed", "draft": true, "head": "h1", "checks": [],
+            "reviewDecision": null, "mergeable": "mergeable",
+            "reviews": [], "comments": [], "threads": []
+        });
+        env.edit_stub(|s| s["changes"] = json!({key.as_str(): model}));
+        env.apply(change_request(url, json!({}))).ok();
+        let report = env.reconcile().ok().json();
+        assert_eq!(report["errors"], json!([]), "{kind}: {report:#}");
+        let st = env.change_request_status(&derived_name(kind, host, project, "7"));
+        assert_eq!(st["state"]["value"], "closed", "{kind}: {st:#}");
+        assert_eq!(st["phase"], "Closed", "{kind}: {st:#}");
+    }
+}

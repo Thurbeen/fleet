@@ -263,13 +263,12 @@ fn author(value: &Value) -> Result<(String, bool), String> {
 }
 
 fn state_of(pr: &Value) -> Result<ChangeState, String> {
-    if pr["draft"]
+    let draft = pr["draft"]
         .as_bool()
-        .ok_or("pull request has no draft flag")?
-    {
-        return Ok(ChangeState::Draft);
-    }
+        .ok_or("pull request has no draft flag")?;
+    // Only an open pull request is a draft; a declined draft keeps the flag.
     match pr["state"].as_str() {
+        Some("OPEN") if draft => Ok(ChangeState::Draft),
         Some("OPEN") => Ok(ChangeState::Open),
         Some("DECLINED" | "SUPERSEDED") => Ok(ChangeState::Closed),
         Some("MERGED") => Ok(ChangeState::Merged),
