@@ -898,6 +898,7 @@ fn entry(key: &str) -> InboxEntry {
         from: "cli/tester".into(),
         text: format!("message {key}"),
         about: None,
+        answers: Vec::new(),
         queued_at: 1,
     }
 }
@@ -2335,4 +2336,519 @@ fn the_gateway_kinds_are_reserved_against_plugin_manifests_and_validated_on_writ
         ),
         Err(StoreError::Unknown(_))
     ));
+}
+
+// --- Answers: an append records what it answers, in the same write. ------
+
+/// A Task briefed as its controller would leave it, with two declared
+/// Questions as the worker would leave them.
+fn with_questions(store: &FileStore, name: &str, lease: &fleet_api::LeaseToken) -> Object {
+    let t = store.create(task(name), FieldManager::Apply).unwrap();
+    let t = store
+        .update_status(
+            "Task",
+            name,
+            status("Briefed"),
+            t.metadata.resource_version,
+            FieldManager::TaskController,
+            Some(lease),
+        )
+        .unwrap();
+    let mut declared = t.status.clone();
+    declared["declared"] = json!([
+        {"kind": "Question", "id": "q1", "text": "Which export?"},
+        {"kind": "Question", "id": "q2", "text": "Restart it?"},
+        {"kind": "Comment", "id": "c1", "text": "Looking."},
+    ]);
+    store
+        .update_status(
+            "Task",
+            name,
+            declared,
+            t.metadata.resource_version,
+            FieldManager::Worker,
+            None,
+        )
+        .unwrap()
+}
+
+#[test]
+fn an_append_records_its_answers_first_wins_and_refuses_an_undeclared_question() {
+    let dir = Dir::new("answers");
+    let store = FileStore::open(&dir.0).unwrap();
+    let lease = store.acquire_lease("m", 10_000).unwrap();
+    let t = with_questions(&store, "t", &lease);
+    let answering = |key: &str, ids: &[&str]| InboxEntry {
+        answers: ids.iter().map(|s| s.to_string()).collect(),
+        ..entry(key)
+    };
+    // An id that names no declared Question, or a Comment's id, refuses
+    // the append whole.
+    for bad in ["q9", "c1", ""] {
+        let err = store
+            .append_inbox(
+                "t",
+                answering("k1", &[bad]),
+                t.metadata.resource_version,
+                FieldManager::Cli,
+                None,
+            )
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Invalid(_)), "{bad:?}: {err}");
+        assert!(
+            inbox_status(&known(store.get("Task", "t")).unwrap())
+                .inbox
+                .is_empty()
+        );
+    }
+    let t = store
+        .append_inbox(
+            "t",
+            answering("k1", &["q1"]),
+            t.metadata.resource_version,
+            FieldManager::Cli,
+            None,
+        )
+        .unwrap();
+    let st = inbox_status(&t);
+    assert_eq!(st.inbox.len(), 1);
+    assert_eq!(st.inbox[0].answers, vec!["q1".to_string()]);
+    let first = st.answered["q1"].clone();
+    assert_eq!(
+        (first.key.as_str(), first.from.as_str(), first.at),
+        ("k1", "cli/tester", 1)
+    );
+    assert!(!st.answered.contains_key("q2"));
+    // The first answer wins; the later entry still lands.
+    let t = store
+        .append_inbox(
+            "t",
+            answering("k2", &["q1", "q2"]),
+            t.metadata.resource_version,
+            FieldManager::Cli,
+            None,
+        )
+        .unwrap();
+    let st = inbox_status(&t);
+    assert_eq!(st.inbox.len(), 2);
+    assert_eq!(st.answered["q1"], first);
+    assert_eq!(st.answered["q2"].key, "k2");
+    // Nobody owns status.answered: no status write may change it, and the
+    // controller's delivery write passes it back unchanged.
+    let mut cleared = t.status.clone();
+    cleared["answered"] = json!({});
+    for (by, lease) in [
+        (FieldManager::TaskController, Some(&lease)),
+        (FieldManager::Worker, None),
+    ] {
+        let err = store
+            .update_status(
+                "Task",
+                "t",
+                cleared.clone(),
+                t.metadata.resource_version,
+                by.clone(),
+                lease,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, StoreError::Forbidden(ref m) if m.contains("status.answered")),
+            "{by:?}: {err}"
+        );
+    }
+    let t = store
+        .record_delivery(
+            "t",
+            t.status.clone(),
+            receipt("k1"),
+            t.metadata.resource_version,
+            FieldManager::TaskController,
+            &lease,
+        )
+        .unwrap();
+    assert_eq!(inbox_status(&t).answered["q1"], first);
+}
+
+#[test]
+fn the_gateway_relay_lands_its_status_its_entries_and_their_answers_together_or_not_at_all() {
+    use fleet_api::talk::{ConversationTie, GatewayStatus, TieState};
+    let dir = Dir::new("gateway-relay");
+    let store = FileStore::open(&dir.0).unwrap();
+    let lease = store.acquire_lease("m", 10_000).unwrap();
+    let t = with_questions(&store, "t", &lease);
+    let gateway = |cursor: u64| {
+        serde_json::to_value(GatewayStatus {
+            conversation: Some(ConversationTie {
+                name: "conv-1".into(),
+                uid: "c1".into(),
+                state: TieState::Tied,
+            }),
+            cursor,
+            seen: cursor,
+            ..GatewayStatus::default()
+        })
+        .unwrap()
+    };
+    let relay = |key: &str, revision: u64, ids: &[&str]| InboxEntry {
+        from: "gateway/conv-1".into(),
+        about: Some(InboxAbout {
+            uid: "c1".into(),
+            revision,
+            head: None,
+        }),
+        answers: ids.iter().map(|s| s.to_string()).collect(),
+        ..entry(key)
+    };
+    // Only the Gateway controller, under the lease, naming its source.
+    for by in [
+        FieldManager::Apply,
+        FieldManager::Cli,
+        FieldManager::TaskController,
+        FieldManager::ConversationController,
+    ] {
+        let err = store
+            .record_relay(
+                "t",
+                gateway(1),
+                vec![relay("gw/1", 1, &[])],
+                t.metadata.resource_version,
+                by.clone(),
+                &lease,
+            )
+            .unwrap_err();
+        assert!(matches!(err, StoreError::Forbidden(_)), "{by:?}: {err}");
+    }
+    let mut mislabelled = relay("gw/1", 1, &[]);
+    mislabelled.from = "forge/conv-1".into();
+    assert!(matches!(
+        store.record_relay(
+            "t",
+            gateway(1),
+            vec![mislabelled],
+            t.metadata.resource_version,
+            FieldManager::GatewayController,
+            &lease
+        ),
+        Err(StoreError::Invalid(_))
+    ));
+    // An undeclared answer refuses the whole write: no cursor, no entry.
+    let err = store
+        .record_relay(
+            "t",
+            gateway(1),
+            vec![relay("gw/1", 1, &["q9"])],
+            t.metadata.resource_version,
+            FieldManager::GatewayController,
+            &lease,
+        )
+        .unwrap_err();
+    assert!(matches!(err, StoreError::Invalid(_)), "{err}");
+    let st = inbox_status(&known(store.get("Task", "t")).unwrap());
+    assert!(st.gateway.is_none() && st.inbox.is_empty());
+    let t = store
+        .record_relay(
+            "t",
+            gateway(1),
+            vec![relay("gw/1", 1, &["q1"])],
+            t.metadata.resource_version,
+            FieldManager::GatewayController,
+            &lease,
+        )
+        .unwrap();
+    let st = inbox_status(&t);
+    assert_eq!(st.gateway.as_ref().unwrap().cursor, 1);
+    assert_eq!(st.inbox.len(), 1);
+    assert_eq!(st.answered["q1"].from, "gateway/conv-1");
+    assert!(
+        st.forge.is_none(),
+        "the Forge controller's field is untouched"
+    );
+    // A duplicate key refuses the whole write: the cursor stays.
+    let err = store
+        .record_relay(
+            "t",
+            gateway(2),
+            vec![relay("gw/2", 2, &[]), relay("gw/1", 1, &[])],
+            t.metadata.resource_version,
+            FieldManager::GatewayController,
+            &lease,
+        )
+        .unwrap_err();
+    assert!(matches!(err, StoreError::AlreadyExists(_)), "{err}");
+    assert_eq!(
+        inbox_status(&known(store.get("Task", "t")).unwrap())
+            .gateway
+            .unwrap()
+            .cursor,
+        1
+    );
+    // status.gateway is the Gateway controller's and nobody else's: not
+    // the Task controller's, not the worker's, and not the Forge
+    // controller's relay write, which leaves it as it was.
+    let mut other = t.status.clone();
+    other["gateway"]["cursor"] = json!(9);
+    for (by, lease) in [
+        (FieldManager::TaskController, Some(&lease)),
+        (FieldManager::Worker, None),
+    ] {
+        let err = store
+            .update_status(
+                "Task",
+                "t",
+                other.clone(),
+                t.metadata.resource_version,
+                by.clone(),
+                lease,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, StoreError::Forbidden(ref m) if m.contains("status.gateway")),
+            "{by:?}: {err}"
+        );
+    }
+    let t = store
+        .record_relay(
+            "t",
+            json!({"changes": {"cr-1": {"uid": "x", "cursor": 3}}}),
+            Vec::new(),
+            t.metadata.resource_version,
+            FieldManager::ForgeController,
+            &lease,
+        )
+        .unwrap();
+    let st = inbox_status(&t);
+    assert_eq!(st.forge.as_ref().unwrap().changes["cr-1"].cursor, 3);
+    assert_eq!(st.gateway.as_ref().unwrap().cursor, 1);
+    // An empty status is stored as none.
+    let t = store
+        .record_relay(
+            "t",
+            serde_json::to_value(GatewayStatus::default()).unwrap(),
+            Vec::new(),
+            t.metadata.resource_version,
+            FieldManager::GatewayController,
+            &lease,
+        )
+        .unwrap();
+    assert!(t.status.get("gateway").is_none(), "{:#}", t.status);
+}
+
+#[test]
+fn a_plugins_append_records_its_answers_under_the_same_checks() {
+    use fleet_api::plugin::{Append, Mutation};
+    let dir = Dir::new("plugin-answers");
+    let store = FileStore::open(&dir.0)
+        .unwrap()
+        .with_plugins(&[plugin_registration()])
+        .unwrap();
+    let lease = store.acquire_lease("m", 10_000).unwrap();
+    let writer = fleet_api::plugin::writer_for_store("issues");
+    store
+        .plugin_mutate(Mutation::Create(task("own")), writer.clone(), &lease)
+        .unwrap();
+    let t = known(store.get("Task", "own")).unwrap();
+    let t = store
+        .update_status(
+            "Task",
+            "own",
+            status("Briefed"),
+            t.metadata.resource_version,
+            FieldManager::TaskController,
+            Some(&lease),
+        )
+        .unwrap();
+    let mut declared = t.status.clone();
+    declared["declared"] = json!([{"kind": "Question", "id": "q1", "text": "?"}]);
+    let t = store
+        .update_status(
+            "Task",
+            "own",
+            declared,
+            t.metadata.resource_version,
+            FieldManager::Worker,
+            None,
+        )
+        .unwrap();
+    let append = |key: &str, ids: &[&str]| {
+        Mutation::Append(Append {
+            task: "own".into(),
+            uid: t.metadata.uid.clone(),
+            key: key.into(),
+            text: "the nightly one".into(),
+            answers: ids.iter().map(|s| s.to_string()).collect(),
+        })
+    };
+    assert!(matches!(
+        store.plugin_mutate(append("a1", &["q9"]), writer.clone(), &lease),
+        Err(StoreError::Invalid(_))
+    ));
+    assert_eq!(
+        store
+            .plugin_mutate(append("a1", &["q1"]), writer.clone(), &lease)
+            .unwrap(),
+        json!("applied")
+    );
+    let st = inbox_status(&known(store.get("Task", "own")).unwrap());
+    assert_eq!(st.answered["q1"].from, "plugin/issues");
+    assert_eq!(
+        st.answered["q1"].key,
+        format!("task/own/{}/plugin/issues/a1", t.metadata.uid)
+    );
+    assert_eq!(st.inbox[0].answers, vec!["q1".to_string()]);
+}
+
+// --- The parent labels: authority, checked when the child is created. ----
+
+fn labelled(name: &str, parent: &str, uid: &str) -> Object {
+    let mut t = task(name);
+    t.metadata
+        .labels
+        .insert("gateway.fleet.dev/parent".into(), parent.into());
+    t.metadata
+        .labels
+        .insert("gateway.fleet.dev/parent-uid".into(), uid.into());
+    t
+}
+
+#[test]
+fn the_parent_labels_are_accepted_only_at_creation_from_a_writer_with_scope_over_the_parent() {
+    use fleet_api::plugin::Mutation;
+    let dir = Dir::new("parent-labels");
+    let any: fleet_api::plugin::Registration = serde_json::from_value(json!({
+        "manifest":{"name":"broad","protocol":1,"kinds":[{"kind":"Ticket","pollMs":1000,"spec":{"type":"object"},"status":null}]},
+        "config":{"program":"fixture","cwd":"fixture","tasks":"any"}
+    }))
+    .unwrap();
+    let store = FileStore::open(&dir.0)
+        .unwrap()
+        .with_plugins(&[plugin_registration(), any])
+        .unwrap();
+    let lease = store.acquire_lease("m", 10_000).unwrap();
+    let p = store.create(task("p"), FieldManager::Apply).unwrap();
+    let uid = p.metadata.uid.clone();
+    // Both labels or neither; the parent must exist with that uid.
+    let mut half = task("c");
+    half.metadata
+        .labels
+        .insert("gateway.fleet.dev/parent".into(), "p".into());
+    let err = store.create(half, FieldManager::Apply).unwrap_err();
+    assert!(
+        matches!(err, StoreError::Invalid(ref m) if m.contains("gateway.fleet.dev/parent-uid")),
+        "{err}"
+    );
+    let err = store
+        .create(labelled("c", "nobody", &uid), FieldManager::Apply)
+        .unwrap_err();
+    assert!(
+        matches!(err, StoreError::Invalid(ref m) if m.contains("does not exist")),
+        "{err}"
+    );
+    let err = store
+        .create(labelled("c", "p", "u0-wrong"), FieldManager::Apply)
+        .unwrap_err();
+    assert!(
+        matches!(err, StoreError::Invalid(ref m) if m.contains("uid")),
+        "{err}"
+    );
+    // A parent the store cannot read is Unknown: retried, never refused.
+    let path = dir.0.join("objects").join("Task").join("p.json");
+    let bytes = fs::read(&path).unwrap();
+    fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
+    assert!(matches!(
+        store.create(labelled("c", "p", &uid), FieldManager::Apply),
+        Err(StoreError::Unknown(_))
+    ));
+    fs::write(&path, &bytes).unwrap();
+    assert!(store.get("Task", "c").known().unwrap().is_none());
+    // A person may name any parent.
+    let c = store
+        .create(labelled("c", "p", &uid), FieldManager::Apply)
+        .unwrap();
+    // Once set, the labels never change: not removed, not pointed elsewhere,
+    // while other labels may.
+    let q = store.create(task("q"), FieldManager::Apply).unwrap();
+    let mut moved = c.metadata.labels.clone();
+    moved.insert("gateway.fleet.dev/parent".into(), "q".into());
+    moved.insert(
+        "gateway.fleet.dev/parent-uid".into(),
+        q.metadata.uid.clone(),
+    );
+    for labels in [BTreeMap::new(), moved] {
+        let err = store
+            .update_spec(
+                "Task",
+                "c",
+                c.spec.clone(),
+                Some(labels),
+                c.metadata.resource_version,
+                FieldManager::Apply,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, StoreError::Forbidden(ref m) if m.contains("gateway.fleet.dev/parent")),
+            "{err}"
+        );
+    }
+    let mut more = c.metadata.labels.clone();
+    more.insert("topic".into(), "x".into());
+    let c = store
+        .update_spec(
+            "Task",
+            "c",
+            c.spec.clone(),
+            Some(more),
+            c.metadata.resource_version,
+            FieldManager::Apply,
+        )
+        .unwrap();
+    assert_eq!(c.metadata.labels["gateway.fleet.dev/parent"], "p");
+    assert_eq!(c.metadata.labels["topic"], "x");
+    // A plugin over its own Tasks may name only a parent it created; one
+    // over any Task may name any.
+    let own = fleet_api::plugin::writer_for_store("issues");
+    let err = store
+        .plugin_mutate(
+            Mutation::Create(labelled("pc", "p", &uid)),
+            own.clone(),
+            &lease,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, StoreError::Forbidden(ref m) if m.contains("may not name Task/p as a parent")),
+        "{err}"
+    );
+    assert!(store.get("Task", "pc").known().unwrap().is_none());
+    store
+        .plugin_mutate(Mutation::Create(task("own-parent")), own.clone(), &lease)
+        .unwrap();
+    let own_uid = known(store.get("Task", "own-parent")).unwrap().metadata.uid;
+    assert_eq!(
+        store
+            .plugin_mutate(
+                Mutation::Create(labelled("pc", "own-parent", &own_uid)),
+                own,
+                &lease
+            )
+            .unwrap(),
+        json!("created")
+    );
+    let broad = fleet_api::plugin::writer_for_store("broad");
+    assert_eq!(
+        store
+            .plugin_mutate(Mutation::Create(labelled("bc", "p", &uid)), broad, &lease)
+            .unwrap(),
+        json!("created")
+    );
+    // A parent being deleted takes no child: nothing would read its inbox.
+    assert_eq!(
+        store.delete("Task", "p", FieldManager::Apply).unwrap(),
+        DeleteOutcome::Marked
+    );
+    let err = store
+        .create(labelled("d", "p", &uid), FieldManager::Apply)
+        .unwrap_err();
+    assert!(
+        matches!(err, StoreError::Forbidden(ref m) if m.contains("being deleted")),
+        "{err}"
+    );
 }

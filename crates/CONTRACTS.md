@@ -17,7 +17,7 @@ v1's queue records, extension or operator configuration, and the root
 
 | Kind | Role | Status written by |
 | --- | --- | --- |
-| `Task` | one agent session doing one brief | TaskController; the worker writes `status.result` and `status.declared`; ForgeController writes `status.forge` |
+| `Task` | one agent session doing one brief | TaskController; the worker writes `status.result` and `status.declared`; ForgeController writes `status.forge`; GatewayController writes `status.gateway`; an inbox append carrying `answers` writes `status.answered` |
 | `TaskConfig` | reusable execution defaults | nobody (passive data) |
 | `EnvProvider` | stored data and explicit file/command environment sources | nobody (passive data) |
 | `ChangeRequest` | one mirrored change on a forge | ChangeRequestController |
@@ -49,20 +49,26 @@ atomic verbs. `e2e_plugin_controller` and `plugin_gate` exercise the host.
 SDKs and issue-specific plugins remain separate projects.
 
 The [Gateway controller](../docs/controllers/gateway/README.md) is a design
-whose first step is built: the `Gateway` port in `fleet_api::gateway`, with
-the `[gateway]` section's types, its validation and the pure admission
-function; the `fleet-gateway` adapter crate, depending on `fleet-api` and
-`fleet-exec` only, with a file-backed fake that models every `capabilities`
-combination; the `[gateway]` config, loaded and validated by the CLI,
-whose accounts are opened before a manager run so the lease outlasts the
-port's worst case; the `Conversation` and `Listener` kinds with their
-controllers ([the mirror](#the-conversation-mirror)); and the `fleet gateway
-receive`, `account` and `status` verbs. As designed, the later steps add
-admission and Task creation to ConversationController, a `GatewayController`
-field manager (and the manager appending Fleet's opening post to the spool
-through a keyed `Receive` action of its plan), a `gateway/` inbox source,
-and `status.answered`, written only by an inbox append that carries
-`answers`. None of those guarantees hold until implemented with their tests.
+whose first and third steps are built. The first: the `Gateway` port in
+`fleet_api::gateway`, with the `[gateway]` section's types, its validation
+and the pure admission function; the `fleet-gateway` adapter crate,
+depending on `fleet-api` and `fleet-exec` only, with a file-backed fake
+that models every `capabilities` combination; the `[gateway]` config,
+loaded and validated by the CLI, whose accounts are opened before a manager
+run so the lease outlasts the port's worst case; the `Conversation` and
+`Listener` kinds with their controllers ([the
+mirror](#the-conversation-mirror)); and the `fleet gateway receive`,
+`account` and `status` verbs. The third: `GatewayController`, the third
+controller over the Task, which owns `status.gateway`, keeps the tie to the
+Conversation its labels name, relays the thread into the inbox under a
+cursor and a child's words into its parent's inbox, from `gateway/`
+sources ([talking in a conversation](#talking-in-a-conversation));
+`status.answered`, written only by an inbox append that carries `answers`;
+and the parent labels, which the store checks at creation. As designed,
+the remaining steps add admission and Task creation to
+ConversationController, and posting (the manager performing `Open`,
+`Receive` and `Post` actions) to GatewayController. None of those
+guarantees hold until implemented with their tests.
 
 ## Crates and the allowed graph
 
@@ -96,8 +102,8 @@ fleet-dev          tooling        `cargo xtask`: gate and release
 - Only the crates listed may name a status-writing field manager: only
   fleet-controllers names `FieldManager::TaskController`,
   `FieldManager::ChangeRequestController`, `FieldManager::ForgeController`,
-  `FieldManager::ConversationController` and
-  `FieldManager::ListenerController`, only fleet-api and fleet-controllers
+  `FieldManager::GatewayController`, `FieldManager::ConversationController`
+  and `FieldManager::ListenerController`, only fleet-api and fleet-controllers
   name `FieldManager::Plugin`; only fleet-manager's `result` and `declare`
   verbs name `FieldManager::Worker`, only fleet-manager's `send` verb (and
   the store that checks it) names `FieldManager::Cli`, the caller of the
@@ -437,6 +443,79 @@ the next step's. Guarantees, each with its test in
 Conditions: `Reachable`, `Tied`, `NeedsAttention` (`RouteUnknown`,
 `MentionsOnly`).
 
+## Talking in a conversation
+
+GatewayController is a pure function from the Task, the Conversation its
+labels name and the Tasks whose parent labels name it, to a plan: the
+desired `status.gateway` and the inbox entries to land with it. It has no
+effect in this step and no finalizer, and never writes a Conversation.
+Guarantees, each with its test in `gateway_controller`,
+`e2e_gateway_controller` and `store_contract`:
+
+- **The tie is verified, never assumed.** A Task carrying the
+  `gateway.fleet.dev/conversation` and `conversation-uid` labels is
+  `waiting` until the Conversation of that `uid` records a created tie
+  naming this Task's `uid`, then `tied`. A Conversation readably absent,
+  recreated under another `uid`, or tied to another Task puts the tie back
+  to none with `NeedsAttention/ConversationGone` and `Tied/ConversationGone`;
+  the cursor stays, and the tie returns when the Conversation names the
+  Task again. Unknown changes nothing.
+- **Join at the beginning.** The cursor starts at `0`, so the first relay
+  carries every retained message, oldest first, under
+  `task/<name>/<uid>/gateway/<conversation uid>/<revision>` from
+  `gateway/<conversation>`, with `about` naming the Conversation's `uid`
+  and `revision`; a mirror that already dropped older messages says they
+  remain on the platform.
+- **Relay by cursor, in one write.** Every message with `seq` above the
+  cursor goes out as one entry, and the cursor and `seen` advance to the
+  revision in the same `record_relay` write as the entry and its answers,
+  or not at all. An edited message is relayed again, marked as an edit.
+- **Admission.** Fleet's own posts are never relayed. A message from
+  someone off the route's allowlist is context: it waits, and goes out
+  first, under a header marking it as content, with the next admitted
+  message; context alone advances `seen` and not the cursor. A route the
+  config no longer has raises `NeedsAttention/RouteUnknown` and relays
+  nothing.
+- **Bounds.** An entry keeps the newest messages under 64 KiB and counts
+  the older ones out, as still on the platform. Messages rotated out of
+  the mirror above the cursor count a gap and raise
+  `NeedsAttention/RelayGap` until the next relay that carries something.
+  More than 20 undelivered entries hold the relay without moving the
+  cursor or `seen`. One pass plans no more appends than the store accepts
+  in turn: the relay first, then each child's items in order; a child's
+  counters stop at the first item left, and the child stays due.
+- **Answers.** A relay carries `answers` for each Question posted in the
+  thread, not yet answered, that an admitted message was written after.
+  The store records every `answers` id of any append (`fleet send
+  --answers ID`, a plugin's append, a relay) in `status.answered` as
+  `{key, from, at}` in the same write, first answer wins, refuses an id
+  that names no declared Question, and lets no status write change the
+  field.
+- **Children.** The parent's controller lists the Tasks whose
+  `gateway.fleet.dev/parent` and `parent-uid` labels name it, from the
+  sweep's one Task listing, and relays each of a child's Questions,
+  Comments, Drafts and ChangeRequest declarations and each result
+  generation as one entry from `gateway/child/<child>` under
+  `task/<name>/<uid>/gateway/child/<child uid>/<index or result/generation>`,
+  recording `{uid, seen, declared, result}` per child. A child tied to its
+  own verified thread is left alone; more than 200 children raise
+  `NeedsAttention/TooManyChildren` and none is relayed. The store accepts
+  the parent labels only when the child is created, only together, only
+  for a parent that exists with that `uid` and is not being deleted (an
+  unreadable parent is Unknown, to be retried), and only from a writer
+  that may already append to the parent's inbox: a person, a `tasks =
+  "any"` plugin, or a `tasks = "own"` plugin that created the parent. They
+  never change afterwards.
+- **Quiet costs nothing.** A tied Task is due only when its Conversation's
+  revision moved past `seen`, its `uid` changed or it left the listing;
+  a parent only when a child's `resourceVersion` moved; a Task with the
+  labels and no verified tie, every pass. A pass that finds nothing new
+  writes nothing.
+
+Conditions, under `status.gateway.conditions`: `Tied` (`Verified`,
+`Waiting`, `ConversationGone`), `NeedsAttention` (`RelayGap`,
+`ConversationGone`, `RouteUnknown`, `TooManyChildren`).
+
 ListenerController is a pure function from the Listener, the account as
 the config has it with its digest, and the platform's `whoami` and
 `capabilities`, to the three conditions: `Accepted` (`Loaded`, or
@@ -466,19 +545,24 @@ refused.
   Unknown and blocks writes to that name. A list with one bad record is
   Unknown as a whole.
 - Each status field has one owner, checked on every write, except
-  `Task.status.inbox`, which has none and which no status write may change.
-  A controller writes only under the current manager lease: an expired or
-  superseded token is refused, and the token only grows.
+  `Task.status.inbox` and `status.answered`, which have none and which no
+  status write may change. A controller writes only under the current
+  manager lease: an expired or superseded token is refused, and the token
+  only grows.
 - `status.inbox` is reached through three typed mutations, each named by
   its caller and compare-and-swap under the lock: `append_inbox` (`cli`,
-  through the manager's `send` verb, no lease; or `forge-controller`, under
-  the lease) refuses a key already in `inbox` or `deliveries`, an
-  `about.revision` at or below the mirror's (`about.uid`) highest delivered
-  one, an append while more than 20 entries are undelivered, a deleting
-  Task, and a source not under the caller's prefix (`cli/`, `forge/`);
-  `record_relay` (ForgeController, under the lease) replaces `status.forge`
-  and appends each listed entry under the same checks, in one write that a
-  single refused entry fails whole; `record_delivery` (TaskController,
+  through the manager's `send` verb, no lease; or `forge-controller` or
+  `gateway-controller`, under the lease) refuses a key already in `inbox`
+  or `deliveries`, an `about.revision` at or below the mirror's
+  (`about.uid`) highest delivered one, an append while more than 20
+  entries are undelivered, a deleting Task, a source not under the
+  caller's prefix (`cli/`, `forge/`, `gateway/`), and an `answers` id that
+  names no declared Question, and records the entry's `answers` in
+  `status.answered`, first answer wins; `record_relay` (ForgeController or
+  GatewayController, under the lease) replaces the writer's own field,
+  `status.forge` or `status.gateway`, and appends each listed entry under
+  the same checks, in one write that a single refused entry fails whole;
+  `record_delivery` (TaskController,
   under the lease) writes the controller's status and, in the same write,
   the receipt into the newest-100 `status.deliveries` and the entry out of
   `inbox`, refusing a key no entry holds. None changes another field;
@@ -494,7 +578,9 @@ refused.
   past eight, or count one refusal, each moving `beatRevision` and nothing
   else. A listener writes only the objects whose spec names its account.
   `create` takes `apply`, or the account's listener for a Conversation or
-  a Listener.
+  a Listener, and checks a Task's parent labels under the lock, as
+  [talking in a conversation](#talking-in-a-conversation) says; a spec
+  update may not change them.
 - Deleting marks a Task while its finalizer remains; only its controller,
   holding the lease, removes the finalizer, and only from a deleting Task.
 - A controller deletes its own object (`delete_fenced`) only with the
@@ -809,14 +895,18 @@ the join and the relay against the fake forge and the fake host.
 `e2e_mark_ready` covers the mark-ready effect against the fake forge and
 the fake host, and through the stub `az`, `curl`, `gh` and `glab`.
 `e2e_gateway` covers the `[gateway]` section, the receive verb, the
-Conversation mirror and the Listener against the fake gateway.
+Conversation mirror and the Listener against the fake gateway;
+`e2e_gateway_controller` covers the tie, the join and the relay into the
+inbox, `fleet send --answers`, the parent labels and a child's relay into
+its parent, against the fake gateway and the fake host.
 `e2e_telemetry` exports to an in-process OTLP/HTTP collector: the spans and
 metrics of a Task's lifecycle and of forge polls arrive with their
 identities and outcomes and without a brief, message or environment value;
 nothing is sent when export is off; an unreachable collector changes no
 command. `e2e_bootstrap` proves that Ctrl-C on `fleet up` flushes its sweeps.
 `task_controller`, `change_request_controller`, `forge_controller`,
-`conversation_controller` and `listener_controller` test each controller
-as a pure function, one transition or Unknown per case.
+`conversation_controller`, `listener_controller` and `gateway_controller`
+test each controller as a pure function, one transition or Unknown per
+case.
 `store_contract` tests the store against races, torn writes, stale leases
 and the fenced delete. The `architecture` suite enforces the graph above.

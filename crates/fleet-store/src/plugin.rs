@@ -39,6 +39,7 @@ impl FileStore {
                 Observation::Unknown { why } => return Err(StoreError::Unknown(why)),
                 _ => {}
             }
+            self.check_parent(&obj, &by)?;
             return self.insert(obj, Some(&name)).map(|_| json!("created"));
         }
         let (kind, target, uid) = match &mutation {
@@ -98,6 +99,7 @@ impl FileStore {
                     from: format!("plugin/{name}"),
                     text: a.text.clone(),
                     about: None,
+                    answers: a.answers.clone(),
                     queued_at: self.now(),
                 };
                 if status.inbox.iter().any(|e| e.key == entry.key)
@@ -112,9 +114,7 @@ impl FileStore {
                 if entry.text.trim().is_empty() || a.key.is_empty() || a.key.len() > 512 {
                     return Err(StoreError::Invalid("invalid plugin inbox entry".into()));
                 }
-                fleet_api::inbox::check_append(&status.inbox, &status.deliveries, &entry)
-                    .map_err(StoreError::Forbidden)?;
-                status.inbox.push(entry);
+                push_entry(&obj, &mut status, entry)?;
                 obj.status = encode_status(&status)?;
             }
             Mutation::Declare { item, .. } => {

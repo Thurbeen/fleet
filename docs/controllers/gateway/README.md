@@ -1,13 +1,15 @@
 # Gateway controller
 
-Design, not implemented in full. The installed binary has steps 1 and 5
+Design, not implemented in full. The installed binary has steps 1, 3 and 5
 below: the `[gateway]` key, the Gateway port, the `fleet-gateway` crate with
 its fake and Slack adapters, the `Conversation` and `Listener` kinds,
 ConversationController's mirror (numbering, the history backstop, orphaning
 and retention), ListenerController, and the `fleet gateway receive`, `account`
-and `status` verbs. Admission, Task creation, the refusal post and
-GatewayController are design, not implemented: a mention is mirrored, and
-starts nothing yet.
+and `status` verbs. It has GatewayController's tie, the join and the relay,
+`status.answered` with the `answers` inbox field, the parent labels and a
+child's words reaching its parent's inbox. Admission, Task creation, the
+refusal post and posting are design, not implemented: a mention is mirrored,
+and starts nothing yet.
 
 The Gateway ties chat threads to Tasks:
 

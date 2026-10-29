@@ -78,8 +78,8 @@ fails has the error status.
 | `forge poll` | `known`, `absent`, `timeout`, `incomplete`, `throttled`, `unreadable`, `notLoggedIn`, `refused`, `unavailable` |
 
 The `fleet.controller` values are `TaskController`, `ForgeController`,
-`ChangeRequestController`, `ConversationController` and
-`ListenerController`.
+`ChangeRequestController`, `ConversationController`, `ListenerController`
+and `GatewayController`.
 
 `effect brief` sends the Task's brief. `effect deliver` sends one inbox
 entry.

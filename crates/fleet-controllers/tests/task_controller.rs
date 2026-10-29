@@ -672,6 +672,7 @@ fn entry(key: &str) -> fleet_api::inbox::InboxEntry {
         from: "cli/someone".into(),
         text: format!("message {key}"),
         about: None,
+        answers: Vec::new(),
         queued_at: NOW - 100,
     }
 }

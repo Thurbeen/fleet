@@ -1380,3 +1380,103 @@ fn a_verb_writer_and_a_mirror_controller_are_named_by_the_listed_crates_alone() 
         );
     }
 }
+
+/// The Gateway controller's third step, against the real rules file: its
+/// field manager is named by the API and the controllers alone, beside the
+/// Forge controller's, and the relay write both share stays a manager
+/// method the CLI may not call.
+#[test]
+fn the_rules_keep_the_gateway_controllers_writes_in_the_controllers() {
+    let rules = load_rules(&repo_root().join("crates").join("architecture.toml")).expect("rules");
+    for writer in [
+        "fleet_api::store::FieldManager::ForgeController",
+        "fleet_api::store::FieldManager::GatewayController",
+    ] {
+        assert_eq!(
+            rules.status_writers.get(writer),
+            Some(&vec![
+                "fleet-api".to_string(),
+                "fleet-controllers".to_string()
+            ]),
+            "{writer}"
+        );
+    }
+    let cli = &rules.crates["fleet-cli"];
+    for method in ["record_relay", "append_inbox"] {
+        assert!(
+            cli.forbidden_methods.iter().any(|m| m == method),
+            "the CLI may not call {method}"
+        );
+    }
+}
+
+/// A third controller over one kind, sharing the second's typed write, is
+/// as guarded as the first two: only the listed crates name its manager,
+/// whatever path they reach it by, and the shared write stays out of the
+/// CLI.
+#[test]
+fn a_third_controller_over_one_kind_is_named_by_the_controllers_alone() {
+    let rules = format!(
+        "{}\n[status_writers]\n\"fx_api::store::FieldManager::Ctl\" = [\"fx-api\", \"fx-ctl\"]\n\"fx_api::store::FieldManager::FgCtl\" = [\"fx-api\", \"fx-ctl\"]\n\"fx_api::store::FieldManager::GwCtl\" = [\"fx-api\", \"fx-ctl\"]\n\"fx_api::store::FieldManager::Cli\" = [\"fx-api\", \"fx-mgr\"]\n",
+        RULES
+            .replace(
+                "[status_writers]\n\"fx_api::store::FieldManager::Ctl\" = [\"fx-api\", \"fx-ctl\"]\n\"fx_api::store::FieldManager::Cli\" = [\"fx-api\", \"fx-mgr\"]\n",
+                ""
+            )
+            .replace(
+                "forbidden_methods = [\"update_status\", \"append_inbox\"]",
+                "forbidden_methods = [\"update_status\", \"append_inbox\", \"record_relay\"]"
+            )
+    );
+    let api = "//! ```compile_fail\n//! use fx_store::Store;\n//! ```\npub mod store {\n    pub enum FieldManager { Ctl, FgCtl, GwCtl, Worker, Cli }\n}\npub use store::FieldManager;\nuse serde::Serialize;\n";
+    expect(
+        "gateway-writer-clean",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                CTL,
+                &ctl(
+                    "use fx_api::FieldManager;\npub fn plan() -> FieldManager { FieldManager::Ctl }\npub fn relay() -> FieldManager { FieldManager::FgCtl }\npub fn talk() -> FieldManager { FieldManager::GwCtl }\n",
+                ),
+            ),
+        ],
+        &[],
+    );
+    expect(
+        "gateway-writer-from-store",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                "crates/fx-store/src/lib.rs",
+                "pub struct S;\npub fn read() { let _ = fx_api::FieldManager::GwCtl; }\n",
+            ),
+        ],
+        &[("status-writer", "fx-store")],
+    );
+    expect(
+        "gateway-writer-from-manager",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                "crates/fx-mgr/src/lib.rs",
+                "use fx_api::store::FieldManager as F;\npub fn run() { let _ = F::GwCtl; }\n",
+            ),
+        ],
+        &[("status-writer", "fx-mgr")],
+    );
+    expect(
+        "gateway-writer-from-cli",
+        &[
+            ("architecture.toml", &rules),
+            ("crates/fx-api/src/lib.rs", api),
+            (
+                "crates/fx-cli/src/main.rs",
+                "fn main() { let _ = fx_api::FieldManager::GwCtl; fx_mgr::run(); }\n",
+            ),
+        ],
+        &[("status-writer", "fx-cli")],
+    );
+}

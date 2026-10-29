@@ -29,8 +29,9 @@ pub struct Plan {
     /// write as `status`, through the store's record-and-remove mutation.
     pub delivery: Option<crate::inbox::DeliveryReceipt>,
     /// Inbox entries to append in the same write as `status`, through the
-    /// store's relay mutation. Only ForgeController asks, and its `status`
-    /// is then `status.forge` alone.
+    /// store's relay mutation. ForgeController asks, its `status` being
+    /// `status.forge` alone, and GatewayController, its `status` being
+    /// `status.gateway` alone.
     pub appends: Vec<crate::inbox::InboxEntry>,
 }
 
@@ -206,6 +207,14 @@ pub enum Probe {
     Object {
         kind: String,
         name: String,
+    },
+    /// Every stored object of a kind carrying all of `labels`, answered by
+    /// the manager from the store: Known with the list, or Unknown when the
+    /// listing is. For Tasks the manager answers from one listing per
+    /// sweep. Needs no lease renewal.
+    List {
+        kind: String,
+        labels: std::collections::BTreeMap<String, String>,
     },
     /// Fleet's own login on a forge host, through the Forge port; cached by
     /// the manager for the sweep.

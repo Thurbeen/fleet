@@ -33,6 +33,7 @@ use fleet_api::gateway::Delivery;
 use fleet_api::inbox::{DeliveryReceipt, InboxEntry};
 use fleet_api::kinds;
 use fleet_api::listener::{self, Beat, ListenerStatus};
+use fleet_api::talk::{self, GatewayStatus};
 use fleet_api::task::{self, TaskStatus};
 use fleet_api::validate::{
     validate_kind, validate_name, validate_object, validate_spec_update, validate_status,
@@ -440,8 +441,23 @@ fn encode_listener(st: &ListenerStatus) -> Result<Value, StoreError> {
     serde_json::to_value(st).map_err(|e| StoreError::Invalid(format!("Listener status: {e}")))
 }
 
+/// Append one entry under the inbox's checks, and record what it answers.
+/// Every append path lands through here, so `answers` is checked and
+/// recorded the same way for `fleet send`, a relay and a plugin.
+fn push_entry(obj: &Object, st: &mut TaskStatus, entry: InboxEntry) -> Result<(), StoreError> {
+    fleet_api::inbox::check_append(&st.inbox, &st.deliveries, &entry)
+        .map_err(|why| inbox_refusal(obj, why))?;
+    talk::check_answers(&st.declared, &entry.answers)
+        .map_err(|why| StoreError::Invalid(format!("{}: {why}", obj.key())))?;
+    st.record_answers(&entry);
+    st.inbox.push(entry);
+    Ok(())
+}
+
 /// Each inbox appender names its source with its own prefix: `cli/<user>`
-/// for `fleet send`, `forge/<change>` for the Forge controller.
+/// for `fleet send`, `forge/<change>` for the Forge controller,
+/// `gateway/<conversation>` or `gateway/child/<child>` for the Gateway
+/// controller.
 fn check_source(by: FieldManager, entry: &InboxEntry) -> Result<(), StoreError> {
     let Some(prefix) = kinds::inbox_source_prefix(by.clone()) else {
         return Ok(());
@@ -463,6 +479,12 @@ fn inbox_refusal(obj: &Object, why: String) -> StoreError {
     } else {
         StoreError::Forbidden(format!("{}: {why}", obj.key()))
     }
+}
+
+/// The Task status field a relay write replaces, decoded for its writer.
+enum RelayField {
+    Forge(Option<ForgeStatus>),
+    Gateway(Option<GatewayStatus>),
 }
 
 fn expect_rv(obj: &Object, expected: u64) -> Result<(), StoreError> {
@@ -671,6 +693,7 @@ impl Store for FileStore {
             )));
         }
         let _guard = self.lock()?;
+        self.check_parent(&obj, &by)?;
         self.insert(obj, None)
     }
 
@@ -711,6 +734,10 @@ impl Store for FileStore {
                 return Err(StoreError::Forbidden(
                     "plugin creator label is assigned by the host".into(),
                 ));
+            }
+            if kind == task::KIND {
+                talk::check_parent_unchanged(&obj.metadata.labels, &labels)
+                    .map_err(|why| StoreError::Forbidden(format!("{}: {why}", obj.key())))?;
             }
             if let Some(creator) = obj.metadata.labels.get(fleet_api::plugin::CREATOR) {
                 labels.insert(fleet_api::plugin::CREATOR.into(), creator.clone());
@@ -830,9 +857,7 @@ impl Store for FileStore {
             )));
         }
         let mut st = task_status(&obj)?;
-        fleet_api::inbox::check_append(&st.inbox, &st.deliveries, &entry)
-            .map_err(|why| inbox_refusal(&obj, why))?;
-        st.inbox.push(entry);
+        push_entry(&obj, &mut st, entry)?;
         obj.status = encode_status(&st)?;
         obj.metadata.resource_version = self.next_rv()?;
         self.write(&obj)?;
@@ -842,25 +867,30 @@ impl Store for FileStore {
     fn record_relay(
         &self,
         name: &str,
-        forge: Value,
+        status: Value,
         appends: Vec<InboxEntry>,
         expected: u64,
         by: FieldManager,
         lease: &LeaseToken,
     ) -> Result<Object, StoreError> {
-        if !kinds::may_record_relay(by.clone()) {
+        let Some(field) = kinds::relay_field(&by) else {
             return Err(StoreError::Forbidden(format!(
-                "{} does not record relays; only the Forge controller does",
+                "{} does not record relays; only the Forge and Gateway controllers do",
                 by.name()
             )));
-        }
-        let forge: Option<ForgeStatus> = if forge.is_null() {
-            None
-        } else {
-            Some(
-                serde_json::from_value(forge)
+        };
+        // The writer's own field, decoded as its readers would.
+        let own = match field {
+            "forge" if status.is_null() => RelayField::Forge(None),
+            "forge" => RelayField::Forge(Some(
+                serde_json::from_value(status)
                     .map_err(|e| StoreError::Invalid(format!("Task status.forge: {e}")))?,
-            )
+            )),
+            _ if status.is_null() => RelayField::Gateway(None),
+            _ => RelayField::Gateway(Some(
+                serde_json::from_value(status)
+                    .map_err(|e| StoreError::Invalid(format!("Task status.gateway: {e}")))?,
+            )),
         };
         for entry in &appends {
             check_source(by.clone(), entry)?;
@@ -871,16 +901,18 @@ impl Store for FileStore {
         expect_rv(&obj, expected)?;
         if obj.is_deleting() {
             return Err(StoreError::Forbidden(format!(
-                "{} is being deleted; nothing of the Forge controller's remains to write",
-                obj.key()
+                "{} is being deleted; nothing of the {}'s remains to write",
+                obj.key(),
+                by.name()
             )));
         }
         let mut st = task_status(&obj)?;
-        st.forge = forge.filter(|f| !f.is_empty());
+        match own {
+            RelayField::Forge(forge) => st.forge = forge.filter(|f| !f.is_empty()),
+            RelayField::Gateway(gateway) => st.gateway = gateway.filter(|g| !g.is_empty()),
+        }
         for entry in appends {
-            fleet_api::inbox::check_append(&st.inbox, &st.deliveries, &entry)
-                .map_err(|why| inbox_refusal(&obj, why))?;
-            st.inbox.push(entry);
+            push_entry(&obj, &mut st, entry)?;
         }
         let status = encode_status(&st)?;
         if obj.status == status {
@@ -1216,6 +1248,62 @@ impl Store for FileStore {
 }
 
 impl FileStore {
+    /// A Task being created may name a parent only with both labels, only
+    /// from a writer that may already append to the parent's inbox, and
+    /// only for a parent that exists with that `uid` and is not being
+    /// deleted. Called under the store lock, before the insert: a parent
+    /// the store cannot read is Unknown, to be retried, never a refusal.
+    fn check_parent(&self, obj: &Object, by: &FieldManager) -> Result<(), StoreError> {
+        if obj.kind != task::KIND {
+            return Ok(());
+        }
+        let Some((name, uid)) = talk::parent_of(&obj.metadata.labels)
+            .map_err(|why| StoreError::Invalid(format!("{}: {why}", obj.key())))?
+        else {
+            return Ok(());
+        };
+        let parent = match self.read(task::KIND, &name) {
+            Observation::Known(Some(p)) => p,
+            Observation::Known(None) => {
+                return Err(StoreError::Invalid(format!(
+                    "{}: the parent Task/{name} does not exist",
+                    obj.key()
+                )));
+            }
+            Observation::Unknown { why } => {
+                return Err(StoreError::Unknown(format!(
+                    "{}: the parent Task/{name} could not be read: {why}",
+                    obj.key()
+                )));
+            }
+        };
+        if parent.metadata.uid != uid {
+            return Err(StoreError::Invalid(format!(
+                "{}: the parent Task/{name} has uid {}, not {uid}",
+                obj.key(),
+                parent.metadata.uid
+            )));
+        }
+        if parent.is_deleting() {
+            return Err(StoreError::Forbidden(format!(
+                "{}: the parent Task/{name} is being deleted; nothing would read its inbox",
+                obj.key()
+            )));
+        }
+        let access = by
+            .name()
+            .strip_prefix("plugin/")
+            .and_then(|plugin| self.plugin_rights.get(plugin).copied());
+        if !talk::may_name_parent(by, access, &parent) {
+            return Err(StoreError::Forbidden(format!(
+                "{}: {} may not name Task/{name} as a parent; only a writer that may append to its inbox does",
+                obj.key(),
+                by.name()
+            )));
+        }
+        Ok(())
+    }
+
     /// The writer is the listener of the account the object's spec names.
     fn check_listener_of(&self, obj: &Object, by: &FieldManager) -> Result<(), StoreError> {
         let account = obj.spec["account"].as_str().unwrap_or_default();

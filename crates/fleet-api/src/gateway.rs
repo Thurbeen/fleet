@@ -611,6 +611,11 @@ pub struct GatewayDefaults {
     /// For a Listener: the account its spec names, while the config has it.
     /// `None`: the account left the config.
     pub account: Option<ListenerAccount>,
+    /// For a Task: every route by name, so the controller finds the one
+    /// its Conversation's spec names, and the people table admission
+    /// sorts by.
+    pub routes: BTreeMap<String, RouteConfig>,
+    pub people: BTreeMap<String, Person>,
 }
 
 /// The account a Listener reports on, as the loaded config has it.
@@ -634,6 +639,8 @@ impl Default for GatewayDefaults {
             beat_ms: 60_000,
             route: None,
             account: None,
+            routes: BTreeMap::new(),
+            people: BTreeMap::new(),
         }
     }
 }
@@ -670,6 +677,8 @@ impl GatewayConfig {
             beat_ms: self.beat_ms.unwrap_or(base.beat_ms),
             route: None,
             account: None,
+            routes: self.routes.clone(),
+            people: self.people.clone(),
         }
     }
 

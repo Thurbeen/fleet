@@ -49,6 +49,11 @@ pub struct InboxEntry {
     /// For a relay: what the message was computed from. Absent for `fleet send`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub about: Option<InboxAbout>,
+    /// The declared Questions this entry answers, by id. The store records
+    /// each in `status.answered` in the same write as the append, first
+    /// answer wins, and refuses an id that names no declared Question.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub answers: Vec<String>,
     /// Unix milliseconds.
     pub queued_at: Millis,
 }
@@ -208,6 +213,7 @@ mod tests {
                 revision,
                 head: None,
             }),
+            answers: Vec::new(),
             queued_at: 1,
         }
     }

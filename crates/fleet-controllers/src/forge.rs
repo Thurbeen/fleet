@@ -1091,6 +1091,7 @@ impl Pass<'_, '_> {
                 revision: ctx.cr.revision,
                 head: ctx.cr.head.as_ref().map(|h| h.id.clone()),
             }),
+            answers: Vec::new(),
             queued_at: self.input.now,
         });
     }
