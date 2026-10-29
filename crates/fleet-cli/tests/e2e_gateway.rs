@@ -1902,3 +1902,55 @@ fn a_crash_between_the_create_intent_and_its_receipt_adopts_the_task() {
     );
     env.assert_no_temp();
 }
+
+#[test]
+fn a_mention_read_from_history_before_the_listener_delivers_it_still_starts_a_task() {
+    let env = Env::gateway("history-then-delivery");
+    let mut stranger = person("U0999ZZZZ", T0 + 100_000, "<@B0FLEET001> me too");
+    stranger.mentions_fleet = true;
+    let mut alex = person(ALEX_ID, T0 + 300_000, "<@B0FLEET001> can you look into it?");
+    alex.mentions_fleet = true;
+    env.fake_gateway()
+        .seed(
+            &ConversationRef::split(THREAD).unwrap(),
+            vec![
+                person(SAM_ID, T0, "The nightly export failed again."),
+                stranger.clone(),
+                alex,
+            ],
+        )
+        .unwrap();
+    env.apply(task_config()).ok();
+    let conv = conversation_name(GATEWAY_ACCOUNT, THREAD);
+    // A stranger's mention opens the mirror; its first history read
+    // numbers Alex's mention before the listener delivers it.
+    env.receive(
+        "Ev01",
+        message_event(
+            THREAD,
+            "1730000100000",
+            "U0999ZZZZ",
+            T0 + 100_000,
+            "<@B0FLEET001> me too",
+        ),
+    )
+    .ok();
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let st = env.conversation_status(&conv);
+    assert_eq!(st["messages"].as_array().map(Vec::len), Some(3), "{st:#}");
+    assert!(st["task"].is_null(), "history alone starts nothing: {st:#}");
+    // The listener's delivery of that mention arrives one pass later.
+    env.receive("Ev02", mention("1730000300000", T0 + 300_000))
+        .ok();
+    env.expire_wait_of("Conversation", &conv);
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let st = env.conversation_status(&conv);
+    assert_eq!(
+        st["task"]["n"], 1,
+        "the delivered mention was judged: {st:#}"
+    );
+    env.fleet(&["get", "task", &format!("{conv}-1")]).ok();
+    env.assert_no_temp();
+}

@@ -586,6 +586,13 @@ impl Pass<'_, '_> {
     /// delivery ids are remembered so a redelivery is still a no-op.
     fn number(&mut self, history: Option<History>, spooled: Vec<Delivery>) {
         let next = self.st.revision + 1;
+        // Only an untied thread judges a message to start a Task; a tied
+        // one keeps its numbers, so the relay does not carry it twice.
+        let untied = self
+            .st
+            .task
+            .as_ref()
+            .is_none_or(|t| t.state == TieState::Gone);
         let mut messages = std::mem::take(&mut self.st.messages);
         let mut fresh: Vec<Fresh> = Vec::new();
         let mut changed = false;
@@ -619,6 +626,21 @@ impl Pass<'_, '_> {
                         Some(stored) => {
                             // Seen from history already: one message.
                             changed |= refresh(stored, &message, next);
+                            if !delivered(&stored.via) {
+                                // The listener delivered what a history
+                                // read numbered first: it is a trigger now.
+                                stored.via = Via {
+                                    verified: delivery.verified,
+                                    received_at: delivery.received_at,
+                                };
+                                stored.mentions_fleet |= message.mentions_fleet;
+                                if untied {
+                                    // Numbered again, so it is judged once.
+                                    stored.seq = next;
+                                    stored.first_seq = next;
+                                    changed = true;
+                                }
+                            }
                         }
                         None => {
                             if let Some(f) = fresh.iter_mut().find(|f| f.message.id == message.id) {
