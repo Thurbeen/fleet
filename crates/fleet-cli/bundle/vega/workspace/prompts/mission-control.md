@@ -11,8 +11,9 @@
 
 ## On a request
 
-Use task-intake to prepare a bounded brief. Identify the repository, workspace,
-checks, result and authorization. Resolve real dependencies before dispatching;
+Use task-intake to route a follow-up to the Task that owns it, or to prepare a
+bounded brief for a new Task. Identify the repository, workspace, checks, result
+and authorization. Resolve real dependencies before dispatching;
 Fleet does not interpret a dependency graph or publish code on your behalf.
 Use task-status to check current observations and evidence before reporting done.
 

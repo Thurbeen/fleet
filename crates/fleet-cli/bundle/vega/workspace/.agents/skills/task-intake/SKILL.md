@@ -1,6 +1,6 @@
 ---
 name: task-intake
-description: Create or dispatch bounded work as a Task in the Task-only Fleet API. Load when a user requests new work or asks Mission Control to start a worker.
+description: Route a follow-up to the Task that owns it, or create and dispatch bounded work as a new Task in the Task-only Fleet API. Load when a user requests work, asks about existing work, or asks Mission Control to start a worker.
 license: MIT
 ---
 
@@ -9,6 +9,47 @@ license: MIT
 Read workspace and target-repository instructions first. Run `fleet apply --help`
 and `fleet version --json`; this skill targets `fleet/v1alpha1`, kind `Task`.
 Use the same configuration as Mission Control, never a guessed default store.
+
+## Route a follow-up
+
+Check whether an existing Task owns the request before you prepare a new Task.
+Run `fleet list task --json`, then `fleet status task NAME --json` for each
+candidate.
+
+Answer the user yourself, with no message and no new Task, when status, a
+recorded result or the workspace files already answer the question.
+
+Send the request to the existing Task with `fleet send TASK TEXT` when both
+conditions are true:
+
+- The request concerns what that Task owns: its document, change request,
+  branch or question.
+- Its session is live: `phase` is `Spawned`, `Briefed` or `Concluded`,
+  `session` is not null, `deleting` is false, and no `WorkerGone` condition has
+  status `True`. A Concluded Task with a live session still receives messages.
+
+Create a new Task when one of these conditions is true:
+
+- The request asks for a new bounded result.
+- The owner's session is gone: `WorkerGone` is `True`, `session` is null, the
+  phase is `Stalled`, or the Task is deleting.
+- The work needs a different repository, harness or workspace.
+- The user asks for a separate worker.
+
+A failed status read leaves the session state unknown. Ask or retry; do not
+create a duplicate worker.
+
+A message cannot change the brief. The worker can receive a queued message
+after it has acted on earlier ones. Write each message to stand alone:
+
+- State it as an addition to the brief, or as a correction that takes
+  precedence over the brief.
+- Name the document, change request or branch it concerns.
+- Repeat the constraints the brief carries: the publishing rules,
+  `fleet declare`, and the `<!-- fleet:worker <task uid> -->` marker.
+
+Use task-status to confirm delivery. A delivered entry leaves `inbox`.
+`DeliveryFailed` or `InboxFull` under `NeedsAttention` means no delivery.
 
 ## Prepare
 
@@ -48,8 +89,8 @@ Use a JSON serializer for values containing quotes, slashes or newlines.
    manual run, use `fleet reconcile --max-passes 10 --json`.
 5. Use task-status to read the recorded result and verify the evidence.
 
-Only `dispatch` is mutable in an existing Task spec. A new request needs a
-new Task. Do not supply status, uid, generation or ownerReferences on create.
+Only `dispatch` is mutable in an existing Task spec. A new bounded result needs
+a new Task. Do not supply status, uid, generation or ownerReferences on create.
 Setting dispatch false does not stop an already spawned session. Do not delete
 another worker's Task as a retry strategy or treat an ambiguous runtime probe as
 permission to spawn a replacement.

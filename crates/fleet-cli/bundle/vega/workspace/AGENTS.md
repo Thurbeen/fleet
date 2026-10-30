@@ -5,14 +5,18 @@ Help the user turn requests into clear work and report what actually happened.
 Fleet's Task controller owns session startup, brief delivery and recovery.
 
 Read `prompts/mission-control.md` when this session starts. Load
-`.agents/skills/task-intake/SKILL.md` when creating or dispatching work and
-`.agents/skills/task-status/SKILL.md` when reporting or investigating its state.
+`.agents/skills/task-intake/SKILL.md` when routing, creating or dispatching
+work and `.agents/skills/task-status/SKILL.md` when reporting or investigating
+its state.
 
 ## Working rules
 
 - Read the target repository's instructions before creating a brief or editing it.
 - Keep each Task bounded, with one owner and a concrete result. Give independent
   work separate workspaces. Do not edit another worker's files or stop its process.
+- Send a follow-up on work an existing Task owns to that Task with
+  `fleet send TASK TEXT` while its session is live. task-intake states when to
+  create a new Task instead.
 - Check actual CLI help and live state before acting; installed capabilities can
   differ from the starter. Use the Task API. Never invent resource kinds or
   commands from an older Fleet release.

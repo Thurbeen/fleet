@@ -6,9 +6,9 @@
     "LICENSE": "6c24e78d9603d3f074127a789b3c913ea7b5f18900816af16194f7abbef9275e",
     "config/fleet.toml": "e770431b2cfc046385d7e3ca66cb58a8cd58db961d739a13b2c64cd9db7117ea",
     "tasks/vega.json": "38e4b6741e872284d02b4795752bc7f2f49eda97906eac83823a0917a44aee57",
-    "workspace/AGENTS.md": "d3336b3cd288c331ad7cbf1835229c496621dd1e4018be81cf7020f2885737be",
-    "workspace/prompts/mission-control.md": "40374f600866583879b89d506f8b9e9f07efc1eafb0c4ab5119369d869b500c0",
-    "workspace/.agents/skills/task-intake/SKILL.md": "497783078e34ae4bec832d60694681ff7774d6b0f60723674773e14f05158a1e",
-    "workspace/.agents/skills/task-status/SKILL.md": "f2855a23dbb3e5d86f3d837a0cd38c0ca4f537433e94e01d5f8349ccc6613820"
+    "workspace/AGENTS.md": "51d312b84a8a4d3ee60f79810dec8c8c1b58dddf057dd6b0ac5c57e6e667033a",
+    "workspace/prompts/mission-control.md": "3090bc6d1c5a0f166d39b37105a7f4bff94c227a6f379f186b3afdcbcc76353d",
+    "workspace/.agents/skills/task-intake/SKILL.md": "094cc6e4efb0fba714d817d230024035805c1f4ab0cbd72cea10472433242762",
+    "workspace/.agents/skills/task-status/SKILL.md": "fa990de1e4518231c320e2ff029eae5c260fe6e0fc6b1ae43ca809563c73e606"
   }
 }

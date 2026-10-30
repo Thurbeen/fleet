@@ -25,7 +25,8 @@ and the result's generation to the current Task; stale observations stay stale.
 | Briefed | Brief delivery is recorded; completion is not yet recorded. |
 | Stalled or NeedsAttention | Explain the recorded condition. Check the runtime before proposing recovery. |
 | Unknown or disconnected runtime | State is unknown. Do not create a replacement blindly. |
-| Concluded with a result | A worker recorded a claim. Check the result and artifact evidence. |
+| Concluded with a result | A worker recorded a claim. Check the result and artifact evidence. Its live session still receives `fleet send`. |
+| WorkerGone True | The recorded session is gone. Messages are not delivered. Never respawn it; new work needs a new Task. |
 | Releasing | Deletion is waiting for session cleanup; do not bypass the finalizer. |
 
 Inspect CLI errors and exit codes; never turn an unreadable store into an empty

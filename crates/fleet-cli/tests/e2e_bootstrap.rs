@@ -205,6 +205,29 @@ fn installed_first_run_creates_runnable_config_and_editable_workspace_without_gi
 }
 
 #[test]
+fn installed_vega_routes_follow_ups_to_a_live_owner_before_creating_a_task() {
+    let env = Env::without_tools("installed-routing");
+    wait(installed(&env, &["init"]).spawn().unwrap()).ok();
+    let workspace = env.root.join("local-data/fleet/vega");
+    let intake = fs::read_to_string(workspace.join(".agents/skills/task-intake/SKILL.md")).unwrap();
+    let route = intake
+        .split_once("## Route a follow-up")
+        .expect("intake routes follow-ups before preparing a new Task")
+        .1;
+    for needle in ["fleet send TASK TEXT", "`WorkerGone`", "`session`"] {
+        assert!(route.contains(needle), "routing rule names {needle}");
+    }
+    assert!(
+        intake.find("## Route a follow-up") < intake.find("## Prepare"),
+        "the rule is read before a new Task is prepared"
+    );
+    let agents = fs::read_to_string(workspace.join("AGENTS.md")).unwrap();
+    assert!(agents.contains("fleet send"), "AGENTS.md states the rule");
+    // The command the rule names is served by the installed binary.
+    wait(installed(&env, &["send", "--help"]).spawn().unwrap()).ok();
+}
+
+#[test]
 fn concurrent_init_preserves_identity_config_and_private_files_and_updates_safely() {
     let env = Env::without_tools("concurrent-init");
     let one = installed(&env, &["init"]).spawn().unwrap();
