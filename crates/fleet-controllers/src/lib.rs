@@ -84,4 +84,4 @@ pub use conversation::{ConversationController, ConversationInput, ConversationOb
 pub use forge::{ForgeController, ForgeInput, ForgeObservations};
 pub use gateway::{GatewayController, GatewayInput, GatewayObservations};
 pub use listener::{ListenerController, ListenerInput, ListenerObservations};
-pub use task::{MAX_ATTEMPTS, RETRY_DELAY_MS, TaskController, TaskInput};
+pub use task::{MAX_ATTEMPTS, RETRY_DELAY_MS, SESSION_RECHECK_MS, TaskController, TaskInput};

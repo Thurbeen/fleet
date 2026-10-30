@@ -95,6 +95,7 @@ typed mutations described under [Inbox](#inbox).
 | `spawnAttempts`, `briefSends` | Spawn and brief-send counters, each bounded at 3. A spawn refused for an unmapped repository does not count. |
 | `briefProbeFailures`, `releaseAttempts` | Three failures raise `NeedsAttention`; reads and releases continue after each wait. |
 | `notBefore` | Earliest next reconcile after a failed attempt, in Unix milliseconds. The fixed retry delay is 30 seconds and survives manager restarts. |
+| `sessionCheckedAt` | When a Concluded Task's session was last looked up, in Unix milliseconds. At rest, the next lookup is due 5 minutes later. |
 | `brief` | The brief's key and the generation it was sent for, once it has a receipt. |
 | `result` | The worker's claim: outcome, generation, summary, artifacts, outputs. |
 | `inbox` | Messages queued for the session, oldest first: `{key, from, text, about, queuedAt}`. Appended by `fleet send`, removed by TaskController once delivered, each through a typed store mutation; never replaced as a list. |
@@ -168,7 +169,7 @@ journal, never repeated blindly. An entry that exhausts its sends raises
 `NeedsAttention/DeliveryFailed` naming it and stays queued behind nothing:
 later entries are still delivered. More than 20 undelivered entries raise
 `NeedsAttention/InboxFull`. A Concluded Task with a nonempty inbox is due
-again, for delivery only, as the
+again for delivery, and at rest for a session recheck every 5 minutes, as the
 [Task state machine](../controllers/task/state-machine.md#transition-rules)
 describes; a readable lookup that no longer shows its session is
 `WorkerGone` and `NeedsAttention`, never a respawn. A Stalled or deleting

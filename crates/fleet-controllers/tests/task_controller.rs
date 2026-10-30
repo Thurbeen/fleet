@@ -7,7 +7,9 @@ use fleet_api::plan::{Action, EffectOutcome, Observations, Plan, Probe, Receipt}
 use fleet_api::runtime::{TrustGap, WorkspaceTrust};
 use fleet_api::task::{Phase, SessionRef, TaskStatus};
 use fleet_api::{Object, Observation};
-use fleet_controllers::{MAX_ATTEMPTS, RETRY_DELAY_MS, TaskController, TaskInput};
+use fleet_controllers::{
+    MAX_ATTEMPTS, RETRY_DELAY_MS, SESSION_RECHECK_MS, TaskController, TaskInput,
+};
 use serde_json::json;
 
 const NOW: u64 = 1_000_000;
@@ -989,18 +991,31 @@ fn an_entry_whose_sends_ran_out_raises_delivery_failed_and_later_entries_still_g
 
 #[test]
 fn a_concluded_task_delivers_its_inbox_and_concludes_nothing_else() {
-    let concluded = |inbox: &[&str]| {
+    let concluded_checked = |inbox: &[&str], checked: Option<u64>| {
         briefed_with(inbox, |st| {
             st.phase = Phase::Concluded;
             st.result = Some(
                 serde_json::from_value(json!({"outcome": "shipped", "generation": 1})).unwrap(),
             );
+            st.session_checked_at = checked;
         })
     };
+    let concluded = |inbox: &[&str]| concluded_checked(inbox, Some(NOW));
     assert!(
         probes(&concluded(&[])).is_empty(),
-        "nothing queued: at rest"
+        "nothing queued, session just looked up: at rest"
     );
+    // At rest, the session is looked up again once per recheck interval.
+    for checked in [None, Some(NOW - SESSION_RECHECK_MS)] {
+        assert_eq!(
+            probes(&concluded_checked(&[], checked)),
+            vec![Probe::Find {
+                host: "local".into(),
+                key: "t.u7".into()
+            }],
+            "{checked:?}"
+        );
+    }
     let obj = concluded(&["task/t/u7/send/1"]);
     assert_eq!(
         probes(&obj),

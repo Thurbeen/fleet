@@ -558,6 +558,17 @@ impl Env {
         }
     }
 
+    /// Let a Concluded Task's session recheck come due now, as time would.
+    pub fn expire_session_check(&self, name: &str) {
+        let path = self.object_path("Task", name);
+        let mut obj: Value =
+            serde_json::from_slice(&fs::read(&path).expect("record")).expect("json");
+        if obj["status"]["sessionCheckedAt"].is_u64() {
+            obj["status"]["sessionCheckedAt"] = json!(0);
+            fs::write(&path, obj.to_string()).expect("record");
+        }
+    }
+
     pub fn object_path(&self, kind: &str, name: &str) -> PathBuf {
         self.data
             .join("objects")

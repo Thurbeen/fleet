@@ -36,6 +36,11 @@ pub const MAX_ATTEMPTS: u32 = 3;
 /// as `status.notBefore` so a new manager run honours it too.
 pub const RETRY_DELAY_MS: Millis = 30_000;
 
+/// How often a Concluded Task at rest has its session looked up again, so
+/// a session deleted out of band is reported. Recorded as
+/// `status.sessionCheckedAt`.
+pub const SESSION_RECHECK_MS: Millis = 300_000;
+
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TaskController;
 
@@ -121,9 +126,12 @@ impl TaskController {
                 }
                 probes
             }
-            // A Concluded Task is due for delivery only; its session is
-            // looked up, so a vanished worker is reported, never respawned.
-            Phase::Concluded if next_entry(&st).is_some() => {
+            // A Concluded Task is due for delivery, and at rest once per
+            // recheck interval; its session is looked up, so a vanished
+            // worker is reported, never respawned.
+            Phase::Concluded
+                if next_entry(&st).is_some() || session_recheck_due(&st, input.now) =>
+            {
                 let mut probes = vec![find];
                 if let Some(s) = &st.session {
                     inbox_probes(&st, s, &mut probes);
@@ -630,6 +638,11 @@ impl Pass<'_, '_> {
     /// shows the session is WorkerGone and attention, never a respawn.
     fn concluded(&mut self) {
         if next_entry(&self.st).is_none() {
+            // At rest: a recheck. Only an answered lookup counts as one.
+            if self.input.observations.find.is_some() {
+                self.st.session_checked_at = Some(self.now());
+                self.worker_gone();
+            }
             return;
         }
         if self.worker_gone() {
@@ -806,7 +819,7 @@ impl Pass<'_, '_> {
             "SessionGone",
             "the session list no longer shows the session holding its key",
         );
-        self.needs_attention("WorkerGone", "the session vanished before a result");
+        self.needs_attention("WorkerGone", "the session list no longer shows the session");
         true
     }
 
@@ -979,6 +992,13 @@ fn next_entry(st: &TaskStatus) -> Option<&InboxEntry> {
 
 /// What delivering the next entry needs observed: readiness, and the
 /// journal when the entry was sent without a Known receipt.
+/// Whether a Concluded Task at rest is due to have its session looked up
+/// again: never looked up yet, or [`SESSION_RECHECK_MS`] since the last time.
+pub fn session_recheck_due(st: &TaskStatus, now: Millis) -> bool {
+    st.session_checked_at
+        .is_none_or(|t| t.saturating_add(SESSION_RECHECK_MS) <= now)
+}
+
 fn inbox_probes(st: &TaskStatus, session: &SessionRef, probes: &mut Vec<Probe>) {
     let Some(entry) = next_entry(st) else {
         return;

@@ -72,7 +72,7 @@ use fleet_controllers::{
     ChangeRequestController, ChangeRequestInput, ChangeRequestObservations, ConversationController,
     ConversationInput, ConversationObservations, ForgeController, ForgeInput, ForgeObservations,
     GatewayController, GatewayInput, GatewayObservations, ListenerController, ListenerInput,
-    ListenerObservations, TaskController, TaskInput,
+    ListenerObservations, SESSION_RECHECK_MS, TaskController, TaskInput,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1387,8 +1387,9 @@ impl Manager<'_> {
 
     /// A Task waiting out `notBefore` after a failed or unknown attempt is
     /// not looked at again until then, in this run or the next. A Concluded
-    /// Task is at rest, and due again only while its inbox holds something
-    /// to deliver, or once it is being deleted.
+    /// Task is at rest, and due again while its inbox holds something to
+    /// deliver, once it is being deleted, or when its session is due to be
+    /// looked up again.
     fn due(&self, obj: &Object) -> bool {
         let waiting = obj
             .status
@@ -1404,7 +1405,12 @@ impl Manager<'_> {
             .get("inbox")
             .and_then(Value::as_array)
             .is_none_or(Vec::is_empty);
-        !(concluded && inbox_empty && !obj.is_deleting())
+        let recheck_due = obj
+            .status
+            .get("sessionCheckedAt")
+            .and_then(Value::as_u64)
+            .is_none_or(|t| t.saturating_add(SESSION_RECHECK_MS) <= self.clock.now());
+        !(concluded && inbox_empty && !obj.is_deleting() && !recheck_due)
     }
 
     fn tally(
