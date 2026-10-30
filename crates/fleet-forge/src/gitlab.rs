@@ -287,18 +287,22 @@ fn failed(why: impl Into<String>) -> Observation<EffectOutcome> {
     Observation::Known(EffectOutcome::Failed { why: why.into() })
 }
 
+/// The state of a merge request. Only an open merge request is a draft:
+/// GitLab keeps the draft flag on a draft that is closed or merged.
+fn state_of(mr: &Value) -> Result<ChangeState, String> {
+    let draft = mr["draft"] == true || mr["work_in_progress"] == true;
+    match mr["state"].as_str() {
+        Some("opened") if draft => Ok(ChangeState::Draft),
+        Some("opened") => Ok(ChangeState::Open),
+        Some("closed") => Ok(ChangeState::Closed),
+        Some("merged") => Ok(ChangeState::Merged),
+        other => Err(format!("state {other:?} cannot be placed")),
+    }
+}
+
 /// The head and state of a fresh read, by the same rule as the snapshot.
 fn head_and_state(mr: &Value) -> Result<(String, ChangeState), String> {
-    let state = if mr["draft"] == true || mr["work_in_progress"] == true {
-        ChangeState::Draft
-    } else {
-        match mr["state"].as_str() {
-            Some("opened") => ChangeState::Open,
-            Some("closed") => ChangeState::Closed,
-            Some("merged") => ChangeState::Merged,
-            other => return Err(format!("state {other:?} cannot be placed")),
-        }
-    };
+    let state = state_of(mr)?;
     let head = mr["sha"].as_str().ok_or("no sha")?.to_string();
     Ok((head, state))
 }
@@ -409,16 +413,7 @@ pub fn snapshot(
     discussions: &[Value],
     approvals: &Value,
 ) -> Result<ChangeSnapshot, String> {
-    let state = if mr["draft"] == true || mr["work_in_progress"] == true {
-        ChangeState::Draft
-    } else {
-        match mr["state"].as_str() {
-            Some("opened") => ChangeState::Open,
-            Some("closed") => ChangeState::Closed,
-            Some("merged") => ChangeState::Merged,
-            other => return Err(format!("state {other:?} cannot be placed")),
-        }
-    };
+    let state = state_of(mr)?;
     let head_id = mr["sha"].as_str().ok_or("no sha")?.to_string();
     let pipeline = &mr["head_pipeline"];
     let (checks, failing) = if pipeline.is_null() {
@@ -587,14 +582,20 @@ mod tests {
     }
 
     #[test]
-    fn draft_then_state_and_the_pipeline_folds() {
-        let s = snapshot(
-            &mr(json!({"draft": true, "state": "merged"})),
-            &[],
-            &Value::Null,
-        )
-        .unwrap();
-        assert_eq!(s.state, ChangeState::Draft);
+    fn state_then_draft_and_the_pipeline_folds() {
+        let state = |m: Value| snapshot(&mr(m), &[], &Value::Null).unwrap().state;
+        assert_eq!(
+            state(json!({"draft": true, "state": "merged"})),
+            ChangeState::Merged
+        );
+        assert_eq!(
+            state(json!({"work_in_progress": true, "state": "closed"})),
+            ChangeState::Closed
+        );
+        assert_eq!(
+            state(json!({"draft": true, "state": "opened"})),
+            ChangeState::Draft
+        );
         let s = snapshot(
             &mr(json!({"head_pipeline": {"status": "failed", "web_url": "u"}})),
             &[],

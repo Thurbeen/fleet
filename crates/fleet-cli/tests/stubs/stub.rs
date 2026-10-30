@@ -426,7 +426,7 @@ mod forge {
                 _ => "OPEN",
             };
             return answer(ExitCode::SUCCESS, HEAD, &json!({"data": {"repository": {"pullRequest": {
-                "id": format!("PR_{owner}/{name}#{number}"), "isDraft": c["state"] == "draft", "state": state_word, "headRefOid": head
+                "id": format!("PR_{owner}/{name}#{number}"), "isDraft": c["state"] == "draft" || c["draft"] == true, "state": state_word, "headRefOid": head
             }}}}).to_string());
         }
         let mut pr = json!({});
@@ -457,7 +457,7 @@ mod forge {
                 }
             }).collect();
             pr = json!({
-                "isDraft": c["state"] == "draft",
+                "isDraft": c["state"] == "draft" || c["draft"] == true,
                 "state": state_word,
                 "reviewDecision": match c["reviewDecision"].as_str() { Some("approved") => json!("APPROVED"), Some("changes-requested") => json!("CHANGES_REQUESTED"), _ => Value::Null },
                 "mergeable": mergeable,
@@ -617,7 +617,7 @@ mod forge {
                 json!({
                     "iid": iid.parse::<u64>().unwrap_or(0),
                     "state": match c["state"].as_str().unwrap_or("open") { "closed" => "closed", "merged" => "merged", _ => "opened" },
-                    "draft": c["state"] == "draft",
+                    "draft": c["state"] == "draft" || c["draft"] == true,
                     "title": title(c),
                     "sha": head,
                     "detailed_merge_status": c["mergeable"].as_str().unwrap_or("mergeable"),
@@ -779,7 +779,7 @@ mod forge {
                     "type": "pullrequest",
                     "id": id.parse::<u64>().unwrap_or(0),
                     "state": match c["state"].as_str().unwrap_or("open") { "merged" => "MERGED", "closed" => "DECLINED", _ => "OPEN" },
-                    "draft": c["state"] == "draft",
+                    "draft": c["state"] == "draft" || c["draft"] == true,
                     "source": {"commit": {"hash": if final_read && state["moveHeadOnFinal"] == true { json!("moved-head") } else { c["head"].clone() }}},
                     "destination": {
                         "commit": {"hash": if final_read && state["moveTargetOnFinal"] == true { "moved-target" } else { c["target"].as_str().unwrap_or("target-head") }},
@@ -1032,7 +1032,7 @@ mod forge {
                 json!({
                     "pullRequestId": id.parse::<u64>().unwrap_or(0),
                     "status": match c["state"].as_str() { Some("closed") => "abandoned", Some("merged") => "completed", _ => "active" },
-                    "isDraft": c["state"] == "draft",
+                    "isDraft": c["state"] == "draft" || c["draft"] == true,
                     "lastMergeSourceCommit": {"commitId": "stale-merge-test-head"},
                     "mergeStatus": match c["mergeable"].as_str() { Some("conflicting") => "conflicts", Some("unstable") => "rejectedByPolicy", Some("unknown") => "queued", _ => "succeeded" },
                     "repository": {"id": "repo-id", "name": repository, "project": {"id": "project-id", "name": project}},

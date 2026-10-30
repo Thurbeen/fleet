@@ -267,10 +267,9 @@ fn state_of(pr: &Value) -> Result<ChangeState, String> {
     let is_draft = pr["isDraft"]
         .as_bool()
         .ok_or("pull request has no isDraft flag")?;
-    if is_draft {
-        return Ok(ChangeState::Draft);
-    }
+    // Only an active pull request is a draft; an abandoned draft keeps the flag.
     match pr["status"].as_str() {
+        Some("active") if is_draft => Ok(ChangeState::Draft),
         Some("active") => Ok(ChangeState::Open),
         Some("abandoned") => Ok(ChangeState::Closed),
         Some("completed") => Ok(ChangeState::Merged),
