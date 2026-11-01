@@ -17,22 +17,24 @@ inspect `fleet status task vega --json` and Thurbox's session before retrying.
 ## Choosing the harness
 
 The harness is the coding agent that a Task's session runs, such as `claude`
-or `codex`. `fleet init` chooses one harness for VEGA:
+or `codex`. `fleet init` writes one harness into the workspace's `task.json`:
 
-- `fleet init --harness NAME` uses `NAME`.
-- Without the flag, the first `init` asks in a terminal. An empty answer, or
-  no terminal, keeps the bundled default, `codex`.
-- Without the flag, a repeated `init` keeps the harness of the installed
-  `task.json`.
+- `fleet init --harness NAME` writes `NAME`.
+- With no flag and no installed `task.json`, `init` asks at a terminal. An
+  empty answer, or no terminal, keeps the bundled default, `codex`.
+- With no flag and an installed `task.json`, `init` keeps its harness.
 
-`init` writes the harness into `task.json` and into VEGA's brief. The brief
-tells VEGA to give its worker Tasks the same harness. A user or a repository
-can still ask for another harness for one worker.
+VEGA's brief tells VEGA to give each worker Task the same harness as
+`Task/vega`. A user or a repository can ask for another harness for one
+worker.
 
-The first `fleet up` creates `Task/vega` from `task.json`. Before then,
-`init --harness NAME` rewrites an unedited `task.json`. An edited `task.json`
-is kept, and `init` reports the candidate as a conflict copy. After the first
-`up`, the Task's harness is immutable.
+The first `fleet up` creates `Task/vega` from `task.json`. Before that,
+`init --harness NAME` rewrites an unedited `task.json`. If you edited
+`task.json`, `init` keeps your file. It writes its own version as a conflict
+copy, as `init --update` does.
+
+After the first `up`, the harness of `Task/vega` is immutable.
+`init --harness` refuses a different harness at that point.
 
 ## Running `fleet up`
 

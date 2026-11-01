@@ -291,28 +291,28 @@ fn run(cli: Cli) -> Result<(), Failure> {
             .ok_or_else(|| fail("no config location: pass --config or set HOME/APPDATA"))?;
         let root = default_data_dir()
             .unwrap_or_else(|| path.parent().unwrap_or(Path::new(".")).join("fleet-data"));
-        let harness = match harness {
-            Some(h) => Some(h),
-            None if !path.try_exists().map_err(|e| fail(e.to_string()))? => ask_harness()?,
-            None => None,
-        };
         let done = bootstrap::init(
             &path,
             &root,
             cli.data_dir.as_deref(),
             update,
             harness.as_deref(),
+            &ask_harness,
         )
         .map_err(fail)?;
         for notice in done.notices {
             println!("{notice}");
         }
-        println!(
-            "initialized {}; task.json chooses harness {} for VEGA and its workers; run fleet up (Thurbox and an authenticated {} are required)",
-            path.display(),
-            done.harness,
-            done.harness
-        );
+        match done.harness {
+            Some(h) => println!(
+                "initialized {}; task.json chooses harness {h} for VEGA and its workers; run fleet up (Thurbox and an authenticated {h} are required)",
+                path.display()
+            ),
+            None => println!(
+                "initialized {}; run fleet up (Thurbox and an authenticated harness are required)",
+                path.display()
+            ),
+        }
         return Ok(());
     }
     // The text is kept: `fleet up` compares later edits against it.
@@ -695,21 +695,20 @@ fn gateway_side<'a>(
     })
 }
 
-/// Ask for the coding agent on first init, only when a person is at a
-/// terminal. An empty answer keeps the bundled default.
-fn ask_harness() -> Result<Option<String>, Failure> {
+/// Ask for the coding agent, only when a person is at a terminal. An empty
+/// answer keeps `default`.
+fn ask_harness(default: &str) -> Result<Option<String>, String> {
     use std::io::{BufRead, IsTerminal, Write};
     if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
         return Ok(None);
     }
-    let default = bootstrap::default_harness().map_err(fail)?;
     eprint!("Coding agent for VEGA and its workers, such as claude or codex [{default}]: ");
-    std::io::stderr().flush().map_err(|e| fail(e.to_string()))?;
+    std::io::stderr().flush().map_err(|e| e.to_string())?;
     let mut answer = String::new();
     std::io::stdin()
         .lock()
         .read_line(&mut answer)
-        .map_err(|e| fail(e.to_string()))?;
+        .map_err(|e| e.to_string())?;
     let answer = answer.trim();
     Ok((!answer.is_empty()).then(|| answer.to_string()))
 }

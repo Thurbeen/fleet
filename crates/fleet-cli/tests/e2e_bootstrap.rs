@@ -1089,7 +1089,7 @@ fn init_harness_flag_reaches_mission_control_and_its_workers() {
     assert_eq!(task[0]["spec"]["harness"], "claude");
     let brief = task[0]["spec"]["brief"].as_str().unwrap();
     assert!(
-        brief.contains("Give each worker Task the harness \"claude\""),
+        brief.contains("Give each worker Task the same harness as Task/vega"),
         "{brief}"
     );
     assert_config_instruction(brief, &env.config);
@@ -1126,10 +1126,36 @@ fn init_without_a_harness_flag_uses_the_bundled_default_and_keeps_edits() {
     task[0]["spec"]["model"] = serde_json::json!("custom");
     let edited = serde_json::to_vec_pretty(&task).unwrap();
     fs::write(&path, &edited).unwrap();
-    env.fleet(&["init", "--harness", "claude"])
-        .ok()
-        .stdout_has("preserved customization");
+    let run = env.fleet(&["init", "--harness", "claude"]);
+    run.ok().stdout_has("preserved customization");
     assert_eq!(fs::read(&path).unwrap(), edited);
+    // The candidate carries the new choice for the user to merge.
+    let stdout = run.stdout.clone();
+    let (_, candidate) = stdout.split_once("; candidate ").unwrap();
+    let candidate: serde_json::Value =
+        serde_json::from_slice(&fs::read(candidate.lines().next().unwrap()).unwrap()).unwrap();
+    assert_eq!(candidate[0]["spec"]["harness"], "claude");
+
+    // A deleted task.json is not reported as choosing a harness.
+    fs::remove_file(&path).unwrap();
+    let run = env.fleet(&["init", "--harness", "claude"]);
+    let stdout = run.stdout.clone();
+    assert!(!stdout.contains("chooses harness"), "{stdout}");
+}
+
+/// After the first `fleet up`, Task/vega's harness is immutable, so init
+/// refuses another choice instead of reporting one that never applies.
+#[test]
+fn init_refuses_a_new_harness_once_mission_control_exists() {
+    let env = fake_bootstrap("init-harness-after-up");
+    let (path, task) = starter_task(&env);
+    env.apply(task).ok();
+    let before = fs::read(&path).unwrap();
+    env.fleet(&["init", "--harness", "claude"])
+        .code(1)
+        .stderr_has("immutable");
+    assert_eq!(fs::read(&path).unwrap(), before);
+    env.fleet(&["init", "--harness", "codex"]).ok();
 }
 
 #[test]

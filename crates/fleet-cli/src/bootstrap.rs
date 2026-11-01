@@ -140,7 +140,7 @@ fn substitute(value: &mut Value, workspace: &str) -> Result<(), String> {
 }
 
 /// The harness the bundled starter gives Mission Control.
-pub fn default_harness() -> Result<String, String> {
+fn default_harness() -> Result<String, String> {
     let (_, content) = FILES
         .iter()
         .find(|(name, _)| *name == "tasks/vega.json")
@@ -166,21 +166,27 @@ fn check_harness(harness: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// What `init` did: notices to print, and the harness VEGA's `task.json`
-/// gives Mission Control and its workers.
+/// What `init` did: notices to print, and the harness that the installed
+/// `task.json` names, if it names one.
 pub struct Initialized {
     pub notices: Vec<String>,
-    pub harness: String,
+    pub harness: Option<String>,
 }
 
+/// Asks for a harness when no `task.json` was ever installed, given the
+/// bundled default. `None` keeps that default.
+pub type Ask<'a> = &'a dyn Fn(&str) -> Result<Option<String>, String>;
+
 /// `harness` chooses the coding agent. Without it, an installed `task.json`
-/// keeps its harness, and a new one gets the bundled default.
+/// keeps its harness, and a new one gets `ask`'s answer or the bundled
+/// default.
 pub fn init(
     config_path: &Path,
     data_root: &Path,
     store_override: Option<&Path>,
     update: bool,
     harness: Option<&str>,
+    ask: Ask,
 ) -> Result<Initialized, String> {
     if let Some(h) = harness {
         check_harness(h)?;
@@ -288,8 +294,19 @@ pub fn init(
     }
     let mut notices = Vec::new();
     let installed_task = bytes(&workspace.join("task.json"))?;
-    let chosen = match harness {
-        Some(h) => h.to_string(),
+    let harness = match harness {
+        Some(h) => Some(h.to_string()),
+        None if installed_task.is_none() && !state.files.contains_key("task.json") => {
+            ask(&default_harness()?)?
+        }
+        None => None,
+    };
+    let chosen = match &harness {
+        Some(h) => {
+            check_harness(h)?;
+            refuse_after_creation(&store_dir, h)?;
+            h.clone()
+        }
         None => match installed_task.as_deref().and_then(harness_of) {
             Some(h) => h,
             None => default_harness()?,
@@ -355,9 +372,9 @@ pub fn init(
             let brief = tasks[0]["spec"]["brief"]
                 .as_str()
                 .ok_or("starter brief must be text")?;
-            // The harness chosen at init is the workers' default too.
+            // Mission Control's harness is the workers' default too.
             tasks[0]["spec"]["brief"] = Value::String(format!(
-                "{brief}\n\nGive each worker Task the harness \"{chosen}\", chosen at fleet init, unless the user or the repository asks for another.\n\nFleet configuration path (JSON string): {}. Use this exact file with fleet --config for every Task operation, and pass it to child workers. Do not initialize another store.",
+                "{brief}\n\nGive each worker Task the same harness as Task/vega (fleet get task vega shows spec.harness), unless the user or the repository asks for another.\n\nFleet configuration path (JSON string): {}. Use this exact file with fleet --config for every Task operation, and pass it to child workers. Do not initialize another store.",
                 serde_json::to_string(&config_path).map_err(|e| e.to_string())?
             ));
             tasks[0]["spec"]["harness"] = Value::String(chosen.clone());
@@ -440,9 +457,30 @@ pub fn init(
         checked(&path)?;
         replace(&tmp, &path, content.as_bytes()).map_err(|e| e.to_string())?;
     }
-    let harness = match bytes(&workspace.join("task.json"))? {
-        Some(b) => harness_of(&b).unwrap_or(chosen),
-        None => chosen,
-    };
+    let harness = bytes(&workspace.join("task.json"))?
+        .as_deref()
+        .and_then(harness_of);
     Ok(Initialized { notices, harness })
+}
+
+/// The first `fleet up` creates Task/vega, and its harness is immutable
+/// after that. A different choice must not look as if it applied.
+fn refuse_after_creation(store_dir: &Path, harness: &str) -> Result<(), String> {
+    use fleet_api::{Observation, Store};
+    if bytes(&store_dir.join("store.json"))?.is_none() {
+        return Ok(());
+    }
+    let store = fleet_store::FileStore::open(store_dir).map_err(|e| e.to_string())?;
+    let current = match store.get("Task", "vega") {
+        Observation::Known(Some(task)) => task.spec["harness"].as_str().map(str::to_string),
+        Observation::Known(None) => return Ok(()),
+        Observation::Unknown { why } => return Err(format!("Task/vega: {why}")),
+    };
+    if current.as_deref() == Some(harness) {
+        return Ok(());
+    }
+    Err(format!(
+        "Task/vega already exists with harness {}, and a Task's harness is immutable; delete Task/vega after its session is released to choose {harness}",
+        current.as_deref().unwrap_or("from its TaskConfig")
+    ))
 }
