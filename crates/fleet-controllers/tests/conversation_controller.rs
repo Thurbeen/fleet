@@ -1373,14 +1373,20 @@ fn a_strangers_mention_earns_one_refusal_per_author_up_to_the_cap() {
         },
     );
     let (plan, st) = run(&object(Some(&failed)), ConversationObservations::default());
-    assert!(plan.effects.is_empty(), "the delay has not run out");
+    assert!(
+        plan.effects.is_empty(),
+        "the delay has not run out, and the marker is not known"
+    );
     assert!(
         st.not_before.unwrap() <= NOW - 1_000 + fleet_controllers::RETRY_DELAY_MS,
         "looked at again by the retry: {st:#?}"
     );
     let (plan, st) = run_with(
         &object(Some(&failed)),
-        ConversationObservations::default(),
+        ConversationObservations {
+            capabilities: Some(caps(true)),
+            ..ConversationObservations::default()
+        },
         defaults(),
         NOW + fleet_controllers::RETRY_DELAY_MS,
     );
@@ -1391,7 +1397,10 @@ fn a_strangers_mention_earns_one_refusal_per_author_up_to_the_cap() {
     spent.effects.get_mut(&key).unwrap().attempts = fleet_controllers::MAX_ATTEMPTS;
     let (plan, st) = run_with(
         &object(Some(&spent)),
-        ConversationObservations::default(),
+        ConversationObservations {
+            capabilities: Some(caps(true)),
+            ..ConversationObservations::default()
+        },
         defaults(),
         NOW + fleet_controllers::RETRY_DELAY_MS,
     );
@@ -1668,6 +1677,16 @@ fn a_post_whose_outcome_is_unknown_is_resent_under_its_nonce_inside_the_window()
     );
     assert!(plan.effects.is_empty(), "{plan:?}");
     assert_eq!(cond(&st, "NeedsAttention").reason, "PostFailed");
+    // The marker cannot be read this pass: no retry, which could slide
+    // past a nonce window; a later pass decides.
+    let (plan, _) = run(
+        &inside,
+        ConversationObservations {
+            capabilities: Some(Observation::unknown("throttled")),
+            ..ConversationObservations::default()
+        },
+    );
+    assert!(plan.effects.is_empty(), "{plan:?}");
 }
 
 /// A pending tie whose create has `receipt`, with its trigger numbered.

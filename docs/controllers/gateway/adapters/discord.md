@@ -246,13 +246,19 @@ A refused post (a 4xx or a 429) is retried after the controller's delay
 under the same rule: inside the first send's window, under the first intent.
 Past the window, it raises `NeedsAttention/PostFailed`. Reason: an earlier
 send under the key may have landed, and only the nonce window makes a resend
-safe.
+safe. A refused post is not retried in a pass that cannot read the
+platform's capabilities.
 
 The controller looks at a post's receipt on the next pass, not at the next
-poll. Reason: the window is shorter than the poll interval. One exception
-applies: a busy notice planned while the thread waits for its workspace
-keeps the waiting interval. A busy notice whose answer is lost therefore
-raises `PostUnconfirmed`.
+poll. Reason: the window is shorter than the poll interval.
+
+Two cases end with a person, although a later send would be safe:
+
+- A post planned while the thread's Task create is pending or busy keeps
+  that create's interval. If its answer is lost, it raises
+  `PostUnconfirmed`.
+- A post refused twice, such as by two 429 answers, has its second retry
+  due past the 60-second window. It raises `PostFailed`.
 Fleet never reads history to find a nonce. Reason: a read without
 `READ_MESSAGE_HISTORY` is an empty list, so an empty read proves nothing.
 

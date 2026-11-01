@@ -1177,6 +1177,15 @@ impl Pass<'_, '_> {
                         continue;
                     }
                     let retry_at = at.saturating_add(RETRY_DELAY_MS);
+                    if readable.is_none() {
+                        // Whether a nonce window binds the retry is not
+                        // known this pass: decide on a later one.
+                        let poll = self.spec.poll_ms(self.input.defaults.poll_ms);
+                        self.wake_at(
+                            retry_at.max(self.now().saturating_add(poll.min(RETRY_DELAY_MS))),
+                        );
+                        continue;
+                    }
                     // On a nonce platform an earlier send under the key may
                     // have landed: every send stays inside the window of
                     // the first one, under the first intent.
