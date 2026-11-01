@@ -48,6 +48,56 @@ fn checked(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Codex reads project skills from `.agents/skills`, Claude Code only from
+/// `.claude/skills`. This one relative link is the single managed symlink:
+/// both harnesses then load the one canonical copy of each skill.
+fn claude_skills_target() -> PathBuf {
+    Path::new("..").join(".agents").join("skills")
+}
+
+fn link_claude_skills(workspace: &Path) -> Result<Option<String>, String> {
+    let dir = workspace.join(".claude");
+    let link = dir.join("skills");
+    let target = claude_skills_target();
+    let preserved = |path: &Path| {
+        Some(format!(
+            "preserved {}; Claude Code does not load VEGA's skills from {}",
+            path.display(),
+            workspace.join(".agents/skills").display()
+        ))
+    };
+    // A user-owned `.claude` that is a link or a file is kept as it is.
+    match fs::symlink_metadata(&dir) {
+        Ok(meta) if !meta.is_dir() => return Ok(preserved(&dir)),
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("{}: {e}", dir.display())),
+    }
+    match fs::symlink_metadata(&link) {
+        Ok(meta) => {
+            let ours = meta.file_type().is_symlink()
+                && fs::read_link(&link).is_ok_and(|found| found == target);
+            return Ok(if ours { None } else { preserved(&link) });
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("{}: {e}", link.display())),
+    }
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&target, &link).map_err(|e| format!("{}: {e}", link.display()))?;
+    // Windows creates a symlink only with Developer Mode or the symlink
+    // privilege. Without it, Claude Code sessions do not see the skills.
+    #[cfg(windows)]
+    if let Err(e) = std::os::windows::fs::symlink_dir(&target, &link) {
+        return Ok(Some(format!(
+            "could not link {} to {}: {e}; enable Developer Mode and run init again so Claude Code finds the skills",
+            link.display(),
+            target.display()
+        )));
+    }
+    Ok(None)
+}
+
 fn bytes(path: &Path) -> Result<Option<Vec<u8>>, String> {
     fs::read(path).map(Some).or_else(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -324,6 +374,7 @@ pub fn init(
         )
         .map_err(|e| e.to_string())?;
     }
+    notices.extend(link_claude_skills(&workspace)?);
     for (name, content) in [("starter.toml", MANIFEST), ("provenance.json", PROVENANCE)] {
         let path = meta.join(name);
         checked(&path)?;
