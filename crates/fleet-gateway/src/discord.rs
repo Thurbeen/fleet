@@ -36,8 +36,8 @@ use std::time::Duration;
 
 use fleet_api::gateway::{
     AccountConfig, Author, AuthorKind, Capabilities, ConversationRef, Delivery, Envelope, Event,
-    Gateway, History, HistoryObservation, HistoryQuery, Identity, Inbound, Marker, Message,
-    Starter, Uncertainty,
+    History, HistoryObservation, HistoryQuery, Identity, Inbound, Marker, Message, Starter,
+    Uncertainty,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
@@ -45,7 +45,7 @@ use fleet_exec::{Outcome, Spec, run};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::curl::{Budget, Reply};
+use crate::curl::{Budget, CurlPlatform, Reply};
 use crate::text::split;
 
 pub const KIND: &str = "discord";
@@ -153,15 +153,6 @@ impl DiscordGateway {
             cli: config.cli.as_deref().unwrap_or(DEFAULT_CLI).into(),
             curl_config,
             call_timeout,
-        })
-    }
-
-    fn other_account(&self, account: &str) -> Option<String> {
-        (account != self.account).then(|| {
-            format!(
-                "account {account} is not this Discord gateway, which serves {}",
-                self.account
-            )
         })
     }
 
@@ -544,30 +535,58 @@ impl DiscordGateway {
     }
 }
 
-impl Gateway for DiscordGateway {
-    fn operation_bound(&self) -> Millis {
-        let one = fleet_exec::worst_case(self.call_timeout) * MAX_CALLS_PER_OPERATION;
-        u64::try_from(one.as_millis()).unwrap_or(u64::MAX)
+crate::curl::curl_gateway!(DiscordGateway);
+
+impl CurlPlatform for DiscordGateway {
+    const NAME: &'static str = "Discord";
+
+    fn account(&self) -> &str {
+        &self.account
     }
 
-    fn parse(&self, account: &str, address: &str) -> Observation<ConversationRef> {
-        if let Some(why) = self.other_account(account) {
-            return Observation::unknown(why);
-        }
-        match parse_address(address) {
-            Ok(r) => Observation::Known(r),
-            Err(why) => Observation::unknown(why),
-        }
+    fn call_timeout(&self) -> Duration {
+        self.call_timeout
     }
 
-    fn event(&self, account: &AccountConfig, envelope: &Envelope) -> Observation<Option<Delivery>> {
+    fn max_calls(&self) -> u32 {
+        MAX_CALLS_PER_OPERATION
+    }
+
+    fn check_ref(&self, r: &ConversationRef) -> Result<(), String> {
+        check_ref(r)
+    }
+
+    fn parse_address(&self, address: &str) -> Result<ConversationRef, String> {
+        parse_address(address)
+    }
+
+    fn read_event(
+        &self,
+        account: &AccountConfig,
+        envelope: &Envelope,
+    ) -> Observation<Option<Delivery>> {
         read_event(account, envelope)
     }
 
-    fn whoami(&self, account: &str) -> Observation<Identity> {
-        if let Some(why) = self.other_account(account) {
-            return Observation::unknown(why);
-        }
+    fn thread_history(&self, chat: &str, thread: &str, query: &HistoryQuery) -> HistoryObservation {
+        DiscordGateway::thread_history(self, chat, thread, query)
+    }
+
+    fn channel_history(&self, chat: &str, query: &HistoryQuery) -> HistoryObservation {
+        DiscordGateway::channel_history(self, chat, query)
+    }
+
+    fn post_chunks(
+        &self,
+        chat: &str,
+        thread: Option<&str>,
+        text: &str,
+        key: &str,
+    ) -> Observation<EffectOutcome> {
+        DiscordGateway::post_chunks(self, chat, thread, text, key)
+    }
+
+    fn identity(&self) -> Observation<Identity> {
         let me = match self.call("GET", "users/@me", None, self.call_timeout) {
             Ok(v) => v,
             Err(e) => return Observation::unknown(e.why()),
@@ -593,10 +612,7 @@ impl Gateway for DiscordGateway {
     /// History, the nonce window and threads are Discord's own; unmentioned
     /// messages reach Fleet only when the account says it holds the message
     /// content intent and the application has it.
-    fn capabilities(&self, account: &str) -> Observation<Capabilities> {
-        if let Some(why) = self.other_account(account) {
-            return Observation::unknown(why);
-        }
+    fn offers(&self) -> Observation<Capabilities> {
         let app = match self.call("GET", "applications/@me", None, self.call_timeout) {
             Ok(v) => v,
             Err(e) => return Observation::unknown(e.why()),
@@ -610,69 +626,6 @@ impl Gateway for DiscordGateway {
             unmentioned: self.message_content && flags & APP_MESSAGE_CONTENT != 0,
             threads: true,
         })
-    }
-
-    fn history(
-        &self,
-        account: &str,
-        conversation: &ConversationRef,
-        query: &HistoryQuery,
-    ) -> HistoryObservation {
-        if let Some(why) = self.other_account(account) {
-            return HistoryObservation::unknown(Uncertainty::Unavailable, why);
-        }
-        if let Err(why) = check_ref(conversation) {
-            return HistoryObservation::unknown(Uncertainty::Unreadable, why);
-        }
-        match &conversation.thread {
-            Some(thread) => self.thread_history(&conversation.chat, thread, query),
-            None => self.channel_history(&conversation.chat, query),
-        }
-    }
-
-    fn open(
-        &self,
-        account: &str,
-        channel: &ConversationRef,
-        text: &str,
-        intent_key: &str,
-    ) -> Observation<EffectOutcome> {
-        if let Some(why) = self.other_account(account) {
-            return Observation::Known(EffectOutcome::Failed { why });
-        }
-        if let Err(why) = check_ref(channel) {
-            return Observation::Known(EffectOutcome::Failed { why });
-        }
-        if channel.thread.is_some() {
-            return Observation::Known(EffectOutcome::Failed {
-                why: format!("{} is a thread, not a channel", channel.address()),
-            });
-        }
-        self.post_chunks(&channel.chat, None, text, intent_key)
-    }
-
-    fn post(
-        &self,
-        account: &str,
-        conversation: &ConversationRef,
-        text: &str,
-        intent_key: &str,
-    ) -> Observation<EffectOutcome> {
-        if let Some(why) = self.other_account(account) {
-            return Observation::Known(EffectOutcome::Failed { why });
-        }
-        if let Err(why) = check_ref(conversation) {
-            return Observation::Known(EffectOutcome::Failed { why });
-        }
-        let Some(thread) = &conversation.thread else {
-            return Observation::Known(EffectOutcome::Failed {
-                why: format!(
-                    "{} is a channel, not a thread; a Discord conversation is a thread",
-                    conversation.address()
-                ),
-            });
-        };
-        self.post_chunks(&conversation.chat, Some(thread), text, intent_key)
     }
 }
 
