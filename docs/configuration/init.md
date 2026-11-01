@@ -37,6 +37,11 @@ copy, as `init --update` does.
 After the first `up`, the harness of `Task/vega` is immutable.
 `init --harness` refuses a different harness at that point.
 
+Fleet trusts the `codex`, `claude` and `claude-code` harnesses in their
+workspaces by default. For another harness, set
+[`runtime.workspaceTrust`](fleet-toml.md) before the first `up`. Without that
+entry, `Task/vega` waits and starts no session.
+
 ## Running `fleet up`
 
 `up` runs in the foreground and continuously reconciles every due Task, even
