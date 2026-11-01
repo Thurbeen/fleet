@@ -9,10 +9,30 @@ reference owns the config fields.
 
 `init` works offline. To run real sessions, install Thurbox (`thurbox-cli`
 on PATH), configure its local multiplexer, and install and authenticate the
-starter's `codex` harness first. Fleet does not install prerequisites or change
+chosen harness first. Fleet does not install prerequisites or change
 login state. `up` checks host availability and reports unavailable or unknown
 prerequisites. Harness login/readiness failures remain visible in Task status;
 inspect `fleet status task vega --json` and Thurbox's session before retrying.
+
+## Choosing the harness
+
+The harness is the coding agent that a Task's session runs, such as `claude`
+or `codex`. `fleet init` chooses one harness for VEGA:
+
+- `fleet init --harness NAME` uses `NAME`.
+- Without the flag, the first `init` asks in a terminal. An empty answer, or
+  no terminal, keeps the bundled default, `codex`.
+- Without the flag, a repeated `init` keeps the harness of the installed
+  `task.json`.
+
+`init` writes the harness into `task.json` and into VEGA's brief. The brief
+tells VEGA to give its worker Tasks the same harness. A user or a repository
+can still ask for another harness for one worker.
+
+The first `fleet up` creates `Task/vega` from `task.json`. Before then,
+`init --harness NAME` rewrites an unedited `task.json`. An edited `task.json`
+is kept, and `init` reports the candidate as a conflict copy. After the first
+`up`, the Task's harness is immutable.
 
 ## Running `fleet up`
 
@@ -54,7 +74,7 @@ Default init writes a workspace at `$XDG_DATA_HOME/fleet/vega` (fallback
 directory at `store-v1`. The config records absolute paths and a generated
 per-instance session key prefix. `[starter] workspace` selects the workspace.
 Its `task.json` is a runnable JSON array containing one Task. Before first
-`up`, edit its harness or brief and customize `AGENTS.md`, prompts and skills.
+`up`, edit its brief and customize `AGENTS.md`, prompts and skills.
 To set `spec.model`, first configure the matching `[runtime.modelEnv]`
 harness-to-variable mapping; the starter does not assume a Codex model
 environment variable. After creation, reconnect keeps the stored immutable

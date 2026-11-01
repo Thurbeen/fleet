@@ -60,6 +60,10 @@ enum Command {
         /// Offer bundled updates, preserving edited files with conflict copies.
         #[arg(long)]
         update: bool,
+        /// The coding agent for VEGA and, by default, its workers, such as
+        /// claude or codex. Without it, a terminal prompts on first init.
+        #[arg(long, value_name = "NAME")]
+        harness: Option<String>,
     },
     /// Start/reconnect VEGA and keep all due Tasks reconciling until Ctrl-C.
     Up {
@@ -282,19 +286,32 @@ fn run(cli: Cli) -> Result<(), Failure> {
         .map(|p| bootstrap::absolute(&p))
         .transpose()
         .map_err(fail)?;
-    if let Command::Init { update } = cli.command {
+    if let Command::Init { update, harness } = cli.command {
         let path = config_path
             .ok_or_else(|| fail("no config location: pass --config or set HOME/APPDATA"))?;
         let root = default_data_dir()
             .unwrap_or_else(|| path.parent().unwrap_or(Path::new(".")).join("fleet-data"));
-        for notice in
-            bootstrap::init(&path, &root, cli.data_dir.as_deref(), update).map_err(fail)?
-        {
+        let harness = match harness {
+            Some(h) => Some(h),
+            None if !path.try_exists().map_err(|e| fail(e.to_string()))? => ask_harness()?,
+            None => None,
+        };
+        let done = bootstrap::init(
+            &path,
+            &root,
+            cli.data_dir.as_deref(),
+            update,
+            harness.as_deref(),
+        )
+        .map_err(fail)?;
+        for notice in done.notices {
             println!("{notice}");
         }
         println!(
-            "initialized {}; run fleet up (Thurbox and an authenticated harness are required)",
-            path.display()
+            "initialized {}; task.json chooses harness {} for VEGA and its workers; run fleet up (Thurbox and an authenticated {} are required)",
+            path.display(),
+            done.harness,
+            done.harness
         );
         return Ok(());
     }
@@ -676,6 +693,25 @@ fn gateway_side<'a>(
         digests,
         briefs: config.gateway_briefs.clone(),
     })
+}
+
+/// Ask for the coding agent on first init, only when a person is at a
+/// terminal. An empty answer keeps the bundled default.
+fn ask_harness() -> Result<Option<String>, Failure> {
+    use std::io::{BufRead, IsTerminal, Write};
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return Ok(None);
+    }
+    let default = bootstrap::default_harness().map_err(fail)?;
+    eprint!("Coding agent for VEGA and its workers, such as claude or codex [{default}]: ");
+    std::io::stderr().flush().map_err(|e| fail(e.to_string()))?;
+    let mut answer = String::new();
+    std::io::stdin()
+        .lock()
+        .read_line(&mut answer)
+        .map_err(|e| fail(e.to_string()))?;
+    let answer = answer.trim();
+    Ok((!answer.is_empty()).then(|| answer.to_string()))
 }
 
 fn cmd_up(

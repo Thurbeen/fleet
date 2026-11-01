@@ -139,12 +139,52 @@ fn substitute(value: &mut Value, workspace: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The harness the bundled starter gives Mission Control.
+pub fn default_harness() -> Result<String, String> {
+    let (_, content) = FILES
+        .iter()
+        .find(|(name, _)| *name == "tasks/vega.json")
+        .ok_or("starter has no tasks/vega.json")?;
+    harness_of(content).ok_or_else(|| "starter Task has no harness".into())
+}
+
+fn harness_of(task_json: &[u8]) -> Option<String> {
+    let tasks: Value = serde_json::from_slice(task_json).ok()?;
+    Some(tasks[0]["spec"]["harness"].as_str()?.to_string())
+}
+
+/// A harness is a runtime agent name, such as `claude` or `codex`.
+fn check_harness(harness: &str) -> Result<(), String> {
+    let plain = harness
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_' | b'.'));
+    if harness.is_empty() || harness.starts_with('-') || !plain {
+        return Err(format!(
+            "invalid harness {harness:?}: use an agent name such as claude or codex"
+        ));
+    }
+    Ok(())
+}
+
+/// What `init` did: notices to print, and the harness VEGA's `task.json`
+/// gives Mission Control and its workers.
+pub struct Initialized {
+    pub notices: Vec<String>,
+    pub harness: String,
+}
+
+/// `harness` chooses the coding agent. Without it, an installed `task.json`
+/// keeps its harness, and a new one gets the bundled default.
 pub fn init(
     config_path: &Path,
     data_root: &Path,
     store_override: Option<&Path>,
     update: bool,
-) -> Result<Vec<String>, String> {
+    harness: Option<&str>,
+) -> Result<Initialized, String> {
+    if let Some(h) = harness {
+        check_harness(h)?;
+    }
     let config_path = absolute(config_path)?;
     // Each explicit alternate config gets its own default data/workspace
     // root. Sharing a workspace would also share boot instructions and keys.
@@ -247,6 +287,14 @@ pub fn init(
         return Err("unsupported starter baseline version".into());
     }
     let mut notices = Vec::new();
+    let installed_task = bytes(&workspace.join("task.json"))?;
+    let chosen = match harness {
+        Some(h) => h.to_string(),
+        None => match installed_task.as_deref().and_then(harness_of) {
+            Some(h) => h,
+            None => default_harness()?,
+        },
+    };
     for (name, content) in FILES {
         let (key, path, rendered) = if *name == "config/fleet.toml" {
             let mut config: toml::Value =
@@ -307,10 +355,12 @@ pub fn init(
             let brief = tasks[0]["spec"]["brief"]
                 .as_str()
                 .ok_or("starter brief must be text")?;
+            // The harness chosen at init is the workers' default too.
             tasks[0]["spec"]["brief"] = Value::String(format!(
-                "{brief}\n\nFleet configuration path (JSON string): {}. Use this exact file with fleet --config for every Task operation, and pass it to child workers. Do not initialize another store.",
+                "{brief}\n\nGive each worker Task the harness \"{chosen}\", chosen at fleet init, unless the user or the repository asks for another.\n\nFleet configuration path (JSON string): {}. Use this exact file with fleet --config for every Task operation, and pass it to child workers. Do not initialize another store.",
                 serde_json::to_string(&config_path).map_err(|e| e.to_string())?
             ));
+            tasks[0]["spec"]["harness"] = Value::String(chosen.clone());
             let obj: fleet_api::Object =
                 serde_json::from_value(tasks[0].clone()).map_err(|e| e.to_string())?;
             fleet_api::validate::validate_object(&obj).map_err(|e| e.to_string())?;
@@ -348,8 +398,10 @@ pub fn init(
             .is_some_and(|(b, h)| hash(b) == *h);
         // Config is user-owned after creation. A missing tracked file also
         // counts as customization. Updates never delete files.
-        let install =
-            (current.is_none() && baseline.is_none()) || (update && key != "config" && pristine);
+        // An explicit harness choice rewrites an unedited task.json.
+        let rechoose = harness.is_some() && key == "task.json";
+        let install = (current.is_none() && baseline.is_none())
+            || ((update || rechoose) && key != "config" && pristine);
         if install {
             fs::create_dir_all(path.parent().ok_or("starter path has no parent")?)
                 .map_err(|e| e.to_string())?;
@@ -360,7 +412,7 @@ pub fn init(
                 replace(&tmp, &path, &rendered).map_err(|e| e.to_string())?;
             }
             state.files.insert(key, wanted);
-        } else if update {
+        } else if update || rechoose {
             let conflict = meta.join("conflicts").join(&wanted).join(&key);
             checked(&conflict)?;
             fs::create_dir_all(conflict.parent().ok_or("conflict parent")?)
@@ -388,5 +440,9 @@ pub fn init(
         checked(&path)?;
         replace(&tmp, &path, content.as_bytes()).map_err(|e| e.to_string())?;
     }
-    Ok(notices)
+    let harness = match bytes(&workspace.join("task.json"))? {
+        Some(b) => harness_of(&b).unwrap_or(chosen),
+        None => chosen,
+    };
+    Ok(Initialized { notices, harness })
 }
