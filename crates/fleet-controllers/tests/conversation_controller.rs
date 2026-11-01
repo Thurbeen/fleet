@@ -1525,6 +1525,90 @@ fn a_post_whose_outcome_is_unknown_is_looked_for_and_never_repeated_blindly() {
     );
 }
 
+#[test]
+fn a_post_whose_outcome_is_unknown_is_resent_under_its_nonce_inside_the_window() {
+    let nonce = |window_ms| {
+        Some(Observation::Known(Capabilities {
+            marker: Marker::Nonce { window_ms },
+            ..caps(true).known().copied().unwrap()
+        }))
+    };
+    let key = refusal_key(UID, "U0999ZZZZ");
+    let unknown_since = |intent_at: u64, attempts: u32| {
+        let mut st = judged(vec![stored(
+            person("U0999ZZZZ", T0 + 300_000, "<@B0FLEET001> hi"),
+            1,
+        )]);
+        st.refusals = vec!["U0999ZZZZ".into()];
+        st.effects.insert(
+            key.clone(),
+            EffectRecord {
+                intent: Intent {
+                    action: "post".into(),
+                    at: intent_at,
+                    generation: 1,
+                },
+                receipt: Some(Receipt {
+                    action: "post".into(),
+                    at: intent_at + 3_000,
+                    outcome: Observation::unknown("lost"),
+                }),
+                attempts,
+                recovery: 0,
+            },
+        );
+        object(Some(&st))
+    };
+    // A post with an unknown outcome asks what the platform offers, and
+    // never reads history to find a nonce.
+    let obj = unknown_since(NOW - 10_000, 1);
+    assert_eq!(
+        probes(&obj, ConversationObservations::default()),
+        vec![Probe::Capabilities {
+            account: ACCOUNT.into()
+        }]
+    );
+    assert!(
+        probes(
+            &obj,
+            ConversationObservations {
+                capabilities: nonce(60_000),
+                ..ConversationObservations::default()
+            }
+        )
+        .is_empty()
+    );
+    // Inside the window: the same key again, the first intent kept.
+    let (plan, st) = run(
+        &obj,
+        ConversationObservations {
+            capabilities: nonce(60_000),
+            ..ConversationObservations::default()
+        },
+    );
+    assert_eq!(plan.effects.len(), 1, "{plan:?}");
+    assert_eq!(plan.effects[0].key, key);
+    let record = &st.effects[&key];
+    assert_eq!((record.attempts, record.intent.at), (2, NOW - 10_000));
+    assert!(record.receipt.is_none());
+    assert!(st.conditions.iter().all(|c| c.reason != "PostUnconfirmed"));
+    // Past the window, or out of attempts: a person decides.
+    for obj in [
+        unknown_since(NOW - 60_000, 1),
+        unknown_since(NOW - 10_000, 3),
+    ] {
+        let (plan, st) = run(
+            &obj,
+            ConversationObservations {
+                capabilities: nonce(60_000),
+                ..ConversationObservations::default()
+            },
+        );
+        assert!(plan.effects.is_empty(), "{plan:?}");
+        assert_eq!(cond(&st, "NeedsAttention").reason, "PostUnconfirmed");
+    }
+}
+
 /// A pending tie whose create has `receipt`, with its trigger numbered.
 fn pending(receipt_: Option<Receipt>, attempts: u32) -> ConversationStatus {
     let mut st = judged(vec![

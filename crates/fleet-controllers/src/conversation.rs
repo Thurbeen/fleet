@@ -820,6 +820,27 @@ impl Pass<'_, '_> {
         }
     }
 
+    /// Send a post with an unknown outcome again under its key, keeping its
+    /// intent, so a nonce derived from the key is the same and the window
+    /// still counts from the first send.
+    fn resend_post(&mut self, key: &str, text: String) {
+        let Some(reference) = self.st.reference.clone() else {
+            return;
+        };
+        if let Some(record) = self.st.effects.get_mut(key) {
+            record.receipt = None;
+            record.attempts += 1;
+        }
+        self.effects.push(Effect {
+            key: key.to_string(),
+            action: Action::Post {
+                account: self.spec.account.clone(),
+                conversation: reference,
+                text,
+            },
+        });
+    }
+
     /// Ask the manager to post `text` under `key`, intent first.
     fn plan_post(&mut self, key: &str, text: String, counted: bool) {
         let Some(reference) = self.st.reference.clone() else {
@@ -1070,8 +1091,9 @@ impl Pass<'_, '_> {
 
     /// Each post's receipt: Posted settles it; Failed is tried again,
     /// three times; a missing or Unknown outcome is looked for in the
-    /// mirror, then by one recovery read where the platform reads markers
-    /// back, and otherwise waits for a person.
+    /// mirror, then resent under its nonce inside the window where the
+    /// platform honours one, or found by one recovery read where the
+    /// platform reads markers back, and otherwise waits for a person.
     fn settle_posts(&mut self) {
         let keys: Vec<String> = self
             .st
@@ -1085,6 +1107,15 @@ impl Pass<'_, '_> {
         // capabilities were not asked or could not be read.
         let readable = match &self.input.observations.capabilities {
             Some(Observation::Known(caps)) => Some(caps.history && caps.marker == Marker::Metadata),
+            _ => None,
+        };
+        // The window a resent nonce is honoured for, where the platform
+        // recognises posts by nonce.
+        let nonce_window = match &self.input.observations.capabilities {
+            Some(Observation::Known(Capabilities {
+                marker: Marker::Nonce { window_ms },
+                ..
+            })) => Some(*window_ms),
             _ => None,
         };
         let mut any_unconfirmed = false;
@@ -1125,6 +1156,22 @@ impl Pass<'_, '_> {
                             at: found.at,
                         };
                         self.recover_receipt(&key, "post", outcome);
+                        continue;
+                    }
+                    if let Some(window) = nonce_window {
+                        // Resent under the same key, the post carries the
+                        // same nonce: inside the window the platform returns
+                        // the post that landed, or makes it. The window
+                        // counts from the first intent, which a resend keeps.
+                        let open = self.now() < record.intent.at.saturating_add(window);
+                        if open
+                            && record.attempts < MAX_ATTEMPTS
+                            && let Some(text) = self.post_text(&key)
+                        {
+                            self.resend_post(&key, text);
+                        } else {
+                            any_unconfirmed = true;
+                        }
                         continue;
                     }
                     if readable == Some(false) {
