@@ -215,16 +215,14 @@ pub fn apply_change_request(
                 verify_mirrors(forge, &current, &reference)?;
                 let rv = current.metadata.resource_version;
                 let labels = Some(obj.metadata.labels.clone());
-                let mut spec = obj.spec.clone();
-                // A manifest carries no amendments: re-applying it keeps the
-                // stored ones, which only `fleet amend` writes.
-                if obj.kind == task::KIND
-                    && let (Some(fields), Some(kept)) =
-                        (spec.as_object_mut(), current.spec.get("amendments"))
-                {
-                    fields.entry("amendments").or_insert_with(|| kept.clone());
-                }
-                match store.update_spec(&obj.kind, &name, spec, labels, rv, FieldManager::Apply) {
+                match store.update_spec(
+                    &obj.kind,
+                    &name,
+                    obj.spec.clone(),
+                    labels,
+                    rv,
+                    FieldManager::Apply,
+                ) {
                     Ok(o) if o.metadata.resource_version == rv => {
                         return Ok((ApplyOutcome::Unchanged, o));
                     }
