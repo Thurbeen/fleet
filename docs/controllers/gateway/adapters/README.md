@@ -46,8 +46,9 @@ Every adapter that reaches a real platform keeps these rules:
 - **A history read is complete or Unknown.** A read pages under the budget of
   calls. When the budget runs out, the answer is Unknown (`Incomplete`), never
   a partial list.
-- **A throttled call is Unknown with `retryAfter`.** HTTP 429 carries the
-  platform's wait time where it gives one.
+- **A throttled read is Unknown with `retryAfter`.** HTTP 429 carries the
+  platform's wait time where it gives one. A throttled write is per platform:
+  see each platform's page.
 
 ## Capabilities
 

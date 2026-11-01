@@ -119,7 +119,7 @@ fn seed(env: &Env, messages: &[Value]) {
 }
 
 /// `fleet gateway receive` with the listener's envelope: the raw Gateway
-/// dispatch, and no `parentId` for a message in a text channel.
+/// dispatch, and a `null` parentId for a message in a text channel.
 fn receive(env: &Env, seq: u64, m: &Value) -> support::Run {
     let mut d = m.clone();
     let at = d["_at"].as_u64().unwrap();
@@ -129,7 +129,7 @@ fn receive(env: &Env, seq: u64, m: &Value) -> support::Run {
     let envelope = json!({
         "verified": "connection",
         "receivedAt": support::now_ms(),
-        "payload": {"dispatch": {"op": 0, "t": "MESSAGE_CREATE", "s": seq, "d": d}},
+        "payload": {"dispatch": {"op": 0, "t": "MESSAGE_CREATE", "s": seq, "d": d}, "parentId": null},
     });
     env.fleet_stdin(
         &["gateway", "receive", "--account", ACCOUNT, "--json"],
@@ -237,10 +237,11 @@ fn a_discord_mention_reaches_a_conversation_and_the_reply_starts_its_thread() {
     // starts it from the mention, and the first answer is lost: the
     // resend inside the nonce window finds the post that landed.
     env.edit_stub(|s| s["discord"]["loseNextPost"] = json!(true));
+    // No clock is moved here: a post on a nonce platform brings the
+    // Conversation back at once, while the window is open.
     let report = env.reconcile().ok().json();
     assert_eq!(report["errors"], json!([]), "{report:#}");
     for _ in 0..3 {
-        env.expire_wait_of("Conversation", &conv);
         env.reconcile().ok();
     }
     let d = discord(&env);
@@ -399,7 +400,11 @@ fn the_discord_adapter_opens_reads_and_answers_unknown_where_discord_leaves_doub
     let d = discord(&env);
     assert_eq!(d["threads"][0]["name"], "Question: which export?");
     let posts = d["posts"].as_array().unwrap();
-    assert_eq!(posts.len(), 3, "the first line, then the long line in two: {d:#}");
+    assert_eq!(
+        posts.len(),
+        3,
+        "the first line, then the long line in two: {d:#}"
+    );
     assert_eq!(posts[0]["channel"], CHANNEL);
     assert_eq!(posts[1]["channel"], message.as_str());
     assert_eq!(posts[2]["channel"], message.as_str());
@@ -421,6 +426,32 @@ fn the_discord_adapter_opens_reads_and_answers_unknown_where_discord_leaves_doub
         known.starter.as_ref().unwrap().id.as_deref(),
         Some(message.as_str())
     );
+    // A first read of a long thread takes its newest messages, paging
+    // backward, and never runs out of budget walking from the oldest.
+    let first_at = 1_730_000_600_000u64;
+    env.edit_stub(|s| {
+        let thread = &mut s["discord"]["channels"][message.as_str()]["messages"];
+        for i in 0..1_200u64 {
+            let at = first_at + i * 1000;
+            thread.as_array_mut().unwrap().push(json!({
+                "id": snowflake(at), "channel_id": message, "type": 0,
+                "author": {"id": ALEX, "username": "alex"}, "content": format!("line {i}"),
+                "timestamp": iso(at), "mentions": [],
+            }));
+        }
+    });
+    let h = g.history(
+        ACCOUNT,
+        &conversation,
+        &HistoryQuery::After {
+            id: None,
+            limit: 200,
+        },
+    );
+    let known = h.known().unwrap_or_else(|| panic!("{h:?}"));
+    assert_eq!(known.messages.len(), 200);
+    assert_eq!(known.messages[199].text, "line 1199");
+    assert_eq!(known.messages[0].text, "line 1000");
     // A throttled read carries Discord's retry_after.
     env.stub_fault("curl", "rate-limit", 1);
     match g.history(ACCOUNT, &conversation, &HistoryQuery::Since { at: 0 }) {

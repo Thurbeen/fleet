@@ -1789,7 +1789,7 @@ mod slack {
 /// Discord's own shape (`id`, `channel_id`, `author`, `content`,
 /// `timestamp`, `type`, `mentions`, `nonce`). A channel with a `parent` is a
 /// thread. `GET …/messages` answers newest first, at most `limit`, after
-/// `after`; `POST …/messages` appends a message at the clock, which advances
+/// `after` or before `before`; `POST …/messages` appends a message at the clock, which advances
 /// one second per post, and returns the bot's earlier message with the same
 /// nonce when `enforce_nonce` is set. `loseNextPost` lets one post land and
 /// then hangs, a lost answer. `POST …/messages/{id}/threads` starts a
@@ -1908,15 +1908,23 @@ mod discord {
                 let Some(all) = d["channels"][*c]["messages"].as_array() else {
                     return error(404, 10003, "Unknown Channel");
                 };
-                let after = param("after").map_or(0, |a| a.parse().unwrap_or(0));
+                let after = param("after").and_then(|a| a.parse::<u64>().ok());
+                let before = param("before").and_then(|b| b.parse::<u64>().ok());
                 let limit = param("limit").map_or(50, |l| l.parse().unwrap_or(50));
                 let mut page: Vec<Value> = all
                     .iter()
-                    .filter(|m| id_of(&m["id"]) > after)
+                    .filter(|m| after.is_none_or(|a| id_of(&m["id"]) > a))
+                    .filter(|m| before.is_none_or(|b| id_of(&m["id"]) < b))
                     .cloned()
                     .collect();
                 page.sort_by_key(|m| id_of(&m["id"]));
-                page.truncate(limit);
+                // After a message: the ones right after it. Otherwise the
+                // newest. Either way newest first, as Discord answers.
+                if after.is_some() {
+                    page.truncate(limit);
+                } else {
+                    page.drain(..page.len().saturating_sub(limit));
+                }
                 page.reverse();
                 answer(200, &json!(page))
             }

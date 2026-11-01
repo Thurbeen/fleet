@@ -62,8 +62,9 @@ The listener is a program outside Fleet. It does these things:
    `GUILD_CREATE`, `THREAD_CREATE`, `THREAD_UPDATE` and `THREAD_LIST_SYNC`.
 4. For each `MESSAGE_CREATE`, `MESSAGE_UPDATE` and `MESSAGE_DELETE` dispatch,
    it runs `fleet gateway receive --account NAME` with one envelope. The
-   envelope claims `verified = "connection"`. For a message in a thread, the
-   payload adds the thread's `parentId`.
+   envelope claims `verified = "connection"`. The payload adds `parentId` to
+   every envelope: the thread's parent channel for a message in a thread, and
+   `null` for a message in a channel.
 5. It beats with `--beat` on every state change, and at least every
    `gateway.beatMs`.
 6. It persists `session_id`, `resume_gateway_url` and the sequence number of
@@ -150,8 +151,11 @@ A Discord conversation is a thread. Its address is
 `discord:<parent channel>:<thread>`. Both parts are snowflakes. A channel
 address, `discord:<channel>`, names where Fleet opens a thread.
 
-- A thread is a channel with a `parent_id`
+- A thread is a channel of type 10, 11 or 12, and its `parent_id` is the
+  channel it lives in
   ([threads](https://docs.discord.com/developers/topics/threads#thread-fields)).
+  A text channel's `parent_id` is its category, so the listener maps thread
+  ids only.
 - A thread started from a message has that message's id: "The id of the
   created thread will be the same as the id of the source message"
   ([start thread from
@@ -190,13 +194,13 @@ no Authorization header itself.
 | `event` | Reads the envelope's `dispatch` with op `0`: `MESSAGE_CREATE` becomes `Message`, `MESSAGE_UPDATE` becomes `Edited`, and `MESSAGE_DELETE` becomes `Removed` ([gateway events](https://docs.discord.com/developers/events/gateway-events#message-create)). |
 | Delivery id | `create/<id>`, `update/<id>/<edited_timestamp>` or `delete/<id>`. The Gateway has no event id, so the adapter derives one. A replayed event gets the same id. |
 | Ignored events | Other dispatches; another guild; DMs (no `guild_id`); private threads (`channel_type` 12); message types other than `0` (DEFAULT) and `19` (REPLY), such as `21` starter references; a `MESSAGE_UPDATE` without `edited_timestamp` or without `content`. |
-| Unknown events | A payload without a `dispatch` object; a message without `id` or `channel_id`; a public thread's message (`channel_type` 10 or 11) without `parentId`. |
+| Unknown events | A payload without a `dispatch` object; a message without `id` or `channel_id`; an envelope without the `parentId` key; a public thread's message (`channel_type` 10 or 11) whose `parentId` is `null`. Reason: an edit or a removal carries no channel type, so only the listener can say whether its channel is a thread. |
 | Mention | The bot's user id in the `mentions` array ([message object](https://docs.discord.com/developers/resources/message#message-object-message-structure)). A role mention is not a mention of Fleet. |
 | Authors | The account's `bot` is `fleet`. Another message with `author.bot` or a `webhook_id` is a `bot`. Anyone else is a `person`. The name is `global_name`, else `username`. |
 | Message time | The snowflake's time: `(snowflake >> 22) + 1420070400000` ([snowflakes](https://docs.discord.com/developers/reference#snowflakes)). |
 | `startsThread` | `true` for a top-level message, `false` in a thread. |
 | Message `key` | None. Fleet recognises its posts by author id. |
-| `history` | Reads the starter with `GET /channels/{C}/messages/{T}`. Then pages `GET /channels/{T}/messages?limit=100&after=…` forward, under a budget of 10 calls. The starter is one of the messages. A `since` read starts after the snowflake for that time. |
+| `history` | Reads the starter with `GET /channels/{C}/messages/{T}`. Then reads `GET /channels/{T}/messages?limit=100`, under a budget of 10 calls. A first read pages backward with `before` until it holds the newest `limit` messages; its `leftOut` counts only the older messages it happened to read, so it is a lower bound. Every other read pages forward with `after` from its bound. The starter is one of the messages. A `since` read starts after the snowflake for that time. |
 | `starter` | Error 10008 Unknown Message on the starter read makes it `removed`. |
 | `post` | `POST /channels/{T}/messages` ([create message](https://docs.discord.com/developers/resources/message#create-message-json/form-params)). On error 10003 Unknown Channel, the thread is not started yet. The adapter starts it with `POST /channels/{C}/messages/{T}/threads`, then sends again. Error 160004 (a thread already exists) counts as started. |
 | `open` | Posts the first chunk in `C`, then starts a thread from that post. The other chunks go into the thread. The answer is `Opened { conversation: discord:C:M }`. |
@@ -220,7 +224,7 @@ A Discord answer maps onto the port as follows:
 | Answer | Port |
 | --- | --- |
 | 2xx | Known. |
-| 429 | Unknown (`Throttled`). `retryAfter` is the body's `retry_after` in seconds, else the `Retry-After` header ([rate limits](https://docs.discord.com/developers/topics/rate-limits)). |
+| 429 | Nothing was done. A read is Unknown (`Throttled`), and `retryAfter` is the body's `retry_after` in seconds, else the `Retry-After` header ([rate limits](https://docs.discord.com/developers/topics/rate-limits)). A write is a Known failure, which the controller retries after its delay. |
 | Another 4xx | Refused: a Known failure for a write. The write was not made. |
 | 5xx, or an unreadable body | Unknown. |
 
@@ -238,6 +242,9 @@ ConversationController settles an Unknown post as follows:
 3. Otherwise it raises `NeedsAttention/PostUnconfirmed` and waits for a person.
 
 A resend keeps the first intent, so the window counts from the first send.
+On a nonce platform, the controller looks at a post's receipt on the next
+pass, not at the next poll. Reason: the window is shorter than the poll
+interval.
 Fleet never reads history to find a nonce. Reason: a read without
 `READ_MESSAGE_HISTORY` is an empty list, so an empty read proves nothing.
 
@@ -280,7 +287,7 @@ These points are **unverified**:
 | The listener closes with 4014 | The listener asked for `MESSAGE_CONTENT`, and the application lacks it in the portal. | Set `messageContent = false`, or enable the Message Content intent in the portal. |
 | The listener closes with 4004 | The listener's token is wrong. | Fix the token in the listener's secret store. |
 | `NeedsAttention/MentionsOnly` | `messageContent` is `false`, or the application lacks the intent. | Mention the bot on each turn. Or enable the intent in the portal and set `messageContent = true`. |
-| `fleet gateway receive` exits 4: `… the envelope has no parentId` | The listener does not know the thread's parent. | Fix the listener's thread map. Discord replays the event after a resume. |
+| `fleet gateway receive` exits 4: `… the envelope has no parentId …` or `… the envelope's parentId is null` | The listener sent no `parentId`, or does not know the thread's parent. | Send `parentId` on every envelope, and fix the listener's thread map. Discord replays the event after a resume. |
 | `Resolved` is Unknown: `the bot cannot see guild …` | The bot is not in the guild, or `team` is wrong. | Invite the bot to the guild, or fix `team`. |
 | `Resolved` is False with `IdentityMismatch` | `bot` is not the token's bot user. | Set `bot` to the id that `GET /users/@me` returns. |
 | `ListenerConfigOld` after a change of `messageContent` | The digest covers `intents`. | Restart the listener, so it Identifies with the new `intents`. |

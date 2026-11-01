@@ -283,6 +283,58 @@ impl DiscordGateway {
         }
     }
 
+    /// The newest `limit` messages of `channel` at least, paged backward
+    /// from the newest. `None` when Discord does not know the channel.
+    fn read_newest(
+        &self,
+        channel: &str,
+        limit: u32,
+        budget: &mut Budget,
+    ) -> Result<Option<Vec<Value>>, CallError> {
+        let mut items: Vec<Value> = Vec::new();
+        let mut before: Option<u64> = None;
+        loop {
+            let mut path = format!("channels/{channel}/messages?limit={PAGE}");
+            if let Some(b) = before {
+                path.push_str(&format!("&before={b}"));
+            }
+            let v = match self.budgeted("GET", &path, None, budget) {
+                Ok(v) => v,
+                Err(CallError::Refused { code, .. }) if code == UNKNOWN_CHANNEL => {
+                    return Ok(None);
+                }
+                Err(e) => return Err(e),
+            };
+            let Some(page) = v.as_array() else {
+                return Err(CallError::Unreadable(format!(
+                    "GET /channels/{channel}/messages: the answer is not an array"
+                )));
+            };
+            let oldest = page.iter().filter_map(|m| snowflake(&m["id"])).min();
+            items.extend(page.iter().cloned());
+            match oldest {
+                Some(o) if page.len() >= PAGE && items.len() < limit as usize => {
+                    before = Some(o);
+                }
+                _ => return Ok(Some(items)),
+            }
+        }
+    }
+
+    /// A thread's or channel's messages for `query`: the newest ones for a
+    /// first read, else every one after its bound.
+    fn read(
+        &self,
+        channel: &str,
+        query: &HistoryQuery,
+        budget: &mut Budget,
+    ) -> Result<Option<Vec<Value>>, CallError> {
+        match query {
+            HistoryQuery::After { id: None, limit } => self.read_newest(channel, *limit, budget),
+            _ => self.read_channel(channel, after_of(query), budget),
+        }
+    }
+
     fn thread_history(&self, chat: &str, thread: &str, query: &HistoryQuery) -> HistoryObservation {
         let mut budget = Budget::new(self.call_timeout, MAX_CALLS_PER_OPERATION);
         // The message the thread started from, in its parent channel.
@@ -296,7 +348,7 @@ impl DiscordGateway {
             Err(CallError::Refused { code, .. }) if code == UNKNOWN_MESSAGE => None,
             Err(e) => return e.history(),
         };
-        let replies = match self.read_channel(thread, after_of(query), &mut budget) {
+        let replies = match self.read(thread, query, &mut budget) {
             Ok(items) => items.unwrap_or_default(),
             Err(e) => return e.history(),
         };
@@ -331,7 +383,7 @@ impl DiscordGateway {
 
     fn channel_history(&self, chat: &str, query: &HistoryQuery) -> HistoryObservation {
         let mut budget = Budget::new(self.call_timeout, MAX_CALLS_PER_OPERATION);
-        let items = match self.read_channel(chat, after_of(query), &mut budget) {
+        let items = match self.read(chat, query, &mut budget) {
             Ok(Some(items)) => items,
             Ok(None) => {
                 return HistoryObservation::unknown(
@@ -822,12 +874,13 @@ fn collect(all: Vec<Message>, query: &HistoryQuery) -> (Vec<Message>, u64) {
 
 /// What an envelope carries, read without any call. The payload is
 /// `{dispatch, parentId}`: the raw Gateway dispatch, and the parent channel
-/// the listener adds for a message in a thread. `MESSAGE_CREATE`,
+/// the listener adds for a message in a thread, `null` in a channel. `MESSAGE_CREATE`,
 /// `MESSAGE_UPDATE` and `MESSAGE_DELETE` are read; other dispatches, other
 /// guilds, direct messages, private threads, system message types and an
 /// update without new text are ignored. A payload without its dispatch,
-/// a message without its `id` or `channel_id`, or a public thread's message
-/// without `parentId` is Unknown.
+/// a message without its `id` or `channel_id`, an envelope without its
+/// `parentId` key, or a public thread's message with a `null` one is
+/// Unknown.
 pub fn read_event(account: &AccountConfig, envelope: &Envelope) -> Observation<Option<Delivery>> {
     let Some(outer) = envelope.payload.as_object() else {
         return Observation::unknown("the payload is not an object");
@@ -858,13 +911,24 @@ pub fn read_event(account: &AccountConfig, envelope: &Envelope) -> Observation<O
     if channel_type == Some(PRIVATE_THREAD) {
         return Observation::Known(None);
     }
-    let parent = outer
-        .get("parentId")
-        .and_then(Value::as_str)
-        .filter(|p| !p.is_empty());
+    // The listener names the thread's parent on every event, and `null`
+    // for a message in a channel: an edit or a removal carries no channel
+    // type, so a missing key cannot be told from a top-level message.
+    let parent = match outer.get("parentId") {
+        Some(Value::Null) => None,
+        Some(Value::String(p)) if is_snowflake(p) => Some(p.as_str()),
+        Some(other) => {
+            return Observation::unknown(format!("parentId {other} is not a snowflake"));
+        }
+        None => {
+            return Observation::unknown(format!(
+                "the envelope has no parentId for message {id}; a listener sends null for a message in a channel"
+            ));
+        }
+    };
     if channel_type.is_some_and(is_public_thread) && parent.is_none() {
         return Observation::unknown(format!(
-            "message {id} is in thread {channel}, and the envelope has no parentId"
+            "message {id} is in thread {channel}, and the envelope's parentId is null"
         ));
     }
     // In a thread: the thread's conversation. In a channel: the thread the
@@ -993,9 +1057,13 @@ impl CallError {
         }
     }
 
-    /// Discord said no, or curl never ran: the write was certainly not made.
+    /// Discord said no, asked Fleet to slow down, or curl never ran: the
+    /// write was certainly not made.
     fn certain_failure(&self) -> bool {
-        matches!(self, CallError::Refused { .. } | CallError::Unavailable(_))
+        matches!(
+            self,
+            CallError::Refused { .. } | CallError::Throttled { .. } | CallError::Unavailable(_)
+        )
     }
 
     fn history(&self) -> HistoryObservation {
@@ -1123,6 +1191,8 @@ mod tests {
     const EDIT: &str = include_str!("../fixtures/discord/message-update.json");
     const EMBED_UPDATE: &str = include_str!("../fixtures/discord/message-update-embed.json");
     const DELETE: &str = include_str!("../fixtures/discord/message-delete.json");
+    const DELETE_NO_PARENT: &str =
+        include_str!("../fixtures/discord/message-delete-no-parent.json");
     const READY: &str = include_str!("../fixtures/discord/ready.json");
 
     #[test]
@@ -1161,6 +1231,10 @@ mod tests {
             read(NO_PARENT).is_unknown(),
             "a thread message without parentId cannot be placed"
         );
+        assert!(
+            read(DELETE_NO_PARENT).is_unknown(),
+            "a removal carries no channel type: without parentId it cannot be placed"
+        );
     }
 
     #[test]
@@ -1177,6 +1251,10 @@ mod tests {
         }
         assert!(read("[]").is_unknown());
         assert!(read(r#"{"parentId": null}"#).is_unknown());
+        let mut throttled = CallError::Throttled { retry_after: None };
+        assert!(throttled.certain_failure(), "a 429 performed nothing");
+        throttled = CallError::Timeout("slow".into());
+        assert!(!throttled.certain_failure());
     }
 
     #[test]

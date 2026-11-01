@@ -820,6 +820,28 @@ impl Pass<'_, '_> {
         }
     }
 
+    /// The window a resent nonce is honoured for, where the platform
+    /// recognises posts by nonce.
+    fn nonce_window(&self) -> Option<Millis> {
+        match &self.input.observations.capabilities {
+            Some(Observation::Known(Capabilities {
+                marker: Marker::Nonce { window_ms },
+                ..
+            })) => Some(*window_ms),
+            _ => None,
+        }
+    }
+
+    /// A post on a nonce platform is looked at again on the next pass, not
+    /// at the next poll: an Unknown receipt can only be resent while the
+    /// window is open.
+    fn wake_for_receipt(&mut self) {
+        if self.nonce_window().is_some() {
+            let now = self.now();
+            self.wake_at(now);
+        }
+    }
+
     /// Send a post with an unknown outcome again under its key, keeping its
     /// intent, so a nonce derived from the key is the same and the window
     /// still counts from the first send.
@@ -839,6 +861,7 @@ impl Pass<'_, '_> {
                 text,
             },
         });
+        self.wake_for_receipt();
     }
 
     /// Ask the manager to post `text` under `key`, intent first.
@@ -855,6 +878,7 @@ impl Pass<'_, '_> {
                 text,
             },
         });
+        self.wake_for_receipt();
     }
 
     /// The next Task number: past every one the tie or the effect records
@@ -1109,15 +1133,7 @@ impl Pass<'_, '_> {
             Some(Observation::Known(caps)) => Some(caps.history && caps.marker == Marker::Metadata),
             _ => None,
         };
-        // The window a resent nonce is honoured for, where the platform
-        // recognises posts by nonce.
-        let nonce_window = match &self.input.observations.capabilities {
-            Some(Observation::Known(Capabilities {
-                marker: Marker::Nonce { window_ms },
-                ..
-            })) => Some(*window_ms),
-            _ => None,
-        };
+        let nonce_window = self.nonce_window();
         let mut any_unconfirmed = false;
         for key in keys {
             if self.effects.iter().any(|e| e.key == key) {

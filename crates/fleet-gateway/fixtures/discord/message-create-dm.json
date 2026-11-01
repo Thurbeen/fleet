@@ -33,5 +33,6 @@
       "flags": 0,
       "channel_type": 1
     }
-  }
+  },
+  "parentId": null
 }

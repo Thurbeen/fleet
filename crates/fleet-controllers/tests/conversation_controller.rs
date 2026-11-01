@@ -1590,6 +1590,11 @@ fn a_post_whose_outcome_is_unknown_is_resent_under_its_nonce_inside_the_window()
     assert_eq!(plan.effects[0].key, key);
     let record = &st.effects[&key];
     assert_eq!((record.attempts, record.intent.at), (2, NOW - 10_000));
+    assert!(
+        st.not_before.is_some_and(|t| t <= NOW),
+        "the receipt is looked at on the next pass, not the next poll: {:?}",
+        st.not_before
+    );
     assert!(record.receipt.is_none());
     assert!(st.conditions.iter().all(|c| c.reason != "PostUnconfirmed"));
     // Past the window, or out of attempts: a person decides.
