@@ -224,7 +224,7 @@ A Discord answer maps onto the port as follows:
 | Answer | Port |
 | --- | --- |
 | 2xx | Known. |
-| 429 | Nothing was done. A read is Unknown (`Throttled`), and `retryAfter` is the body's `retry_after` in seconds, else the `Retry-After` header ([rate limits](https://docs.discord.com/developers/topics/rate-limits)). A write is a Known failure, which the controller retries after its delay. |
+| 429 | Nothing was done. A read is Unknown (`Throttled`), and `retryAfter` is the body's `retry_after` in seconds, else the `Retry-After` header ([rate limits](https://docs.discord.com/developers/topics/rate-limits)). A write is a Known failure, which the controller retries after its delay inside the nonce window (see [Recovering a post](#recovering-a-post)). |
 | Another 4xx | Refused: a Known failure for a write. The write was not made. |
 | 5xx, or an unreadable body | Unknown. |
 
@@ -242,9 +242,17 @@ ConversationController settles an Unknown post as follows:
 3. Otherwise it raises `NeedsAttention/PostUnconfirmed` and waits for a person.
 
 A resend keeps the first intent, so the window counts from the first send.
-On a nonce platform, the controller looks at a post's receipt on the next
-pass, not at the next poll. Reason: the window is shorter than the poll
-interval.
+A refused post (a 4xx or a 429) is retried after the controller's delay
+under the same rule: inside the first send's window, under the first intent.
+Past the window, it raises `NeedsAttention/PostFailed`. Reason: an earlier
+send under the key may have landed, and only the nonce window makes a resend
+safe.
+
+The controller looks at a post's receipt on the next pass, not at the next
+poll. Reason: the window is shorter than the poll interval. One exception
+applies: a busy notice planned while the thread waits for its workspace
+keeps the waiting interval. A busy notice whose answer is lost therefore
+raises `PostUnconfirmed`.
 Fleet never reads history to find a nonce. Reason: a read without
 `READ_MESSAGE_HISTORY` is an empty list, so an empty read proves nothing.
 

@@ -1612,6 +1612,62 @@ fn a_post_whose_outcome_is_unknown_is_resent_under_its_nonce_inside_the_window()
         assert!(plan.effects.is_empty(), "{plan:?}");
         assert_eq!(cond(&st, "NeedsAttention").reason, "PostUnconfirmed");
     }
+    // A refused send on a nonce platform: an earlier send under the key
+    // may have landed, so the retry stays inside the first send's window,
+    // under the first intent, and outside it a person decides.
+    let refused_since = |intent_at: u64, receipt_at: u64| {
+        let mut st = judged(vec![stored(
+            person("U0999ZZZZ", T0 + 300_000, "<@B0FLEET001> hi"),
+            1,
+        )]);
+        st.refusals = vec!["U0999ZZZZ".into()];
+        st.effects.insert(
+            key.clone(),
+            EffectRecord {
+                intent: Intent {
+                    action: "post".into(),
+                    at: intent_at,
+                    generation: 1,
+                },
+                receipt: Some(Receipt {
+                    action: "post".into(),
+                    at: receipt_at,
+                    outcome: Observation::Known(EffectOutcome::Failed { why: "429".into() }),
+                }),
+                attempts: 1,
+                recovery: 0,
+            },
+        );
+        object(Some(&st))
+    };
+    let delay = fleet_controllers::RETRY_DELAY_MS;
+    let inside = refused_since(NOW - delay - 1_000, NOW - delay);
+    assert_eq!(
+        probes(&inside, ConversationObservations::default()),
+        vec![Probe::Capabilities {
+            account: ACCOUNT.into()
+        }],
+        "a retry asks whether a nonce window binds it"
+    );
+    let (plan, st) = run(
+        &inside,
+        ConversationObservations {
+            capabilities: nonce(60_000),
+            ..ConversationObservations::default()
+        },
+    );
+    assert_eq!(plan.effects.len(), 1, "{plan:?}");
+    assert_eq!(st.effects[&key].intent.at, NOW - delay - 1_000);
+    let outside = refused_since(NOW - 60_000, NOW - delay);
+    let (plan, st) = run(
+        &outside,
+        ConversationObservations {
+            capabilities: nonce(60_000),
+            ..ConversationObservations::default()
+        },
+    );
+    assert!(plan.effects.is_empty(), "{plan:?}");
+    assert_eq!(cond(&st, "NeedsAttention").reason, "PostFailed");
 }
 
 /// A pending tie whose create has `receipt`, with its trigger numbered.

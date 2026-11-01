@@ -163,6 +163,12 @@ impl ConversationController {
             return Ok(probes);
         };
         let query = history_due(&spec, &st, input).or_else(|| recovery_due(&st, obs));
+        if query.is_none() && obs.capabilities.is_none() && has_refused_post(&st) {
+            // Whether a retry must stay inside a nonce window.
+            probes.push(Probe::Capabilities {
+                account: spec.account.clone(),
+            });
+        }
         if let Some(query) = query {
             match &obs.capabilities {
                 None => probes.push(Probe::Capabilities {
@@ -196,6 +202,7 @@ impl ConversationController {
             attention: Attention::carried(&before),
             retry_after: None,
             wake: None,
+            post_wake: false,
             delete: false,
             creates: Vec::new(),
             effects: Vec::new(),
@@ -290,6 +297,17 @@ fn unconfirmed_posts(st: &ConversationStatus) -> Vec<(&String, &EffectRecord)> {
                 && find_post(st, key).is_none()
         })
         .collect()
+}
+
+/// Some post's last send was refused, so a retry may be due.
+fn has_refused_post(st: &ConversationStatus) -> bool {
+    st.effects.iter().any(|(key, record)| {
+        is_post_key(key)
+            && matches!(
+                &record.receipt,
+                Some(r) if matches!(r.outcome, Observation::Known(EffectOutcome::Failed { .. }))
+            )
+    })
 }
 
 fn is_post_key(key: &str) -> bool {
@@ -400,6 +418,8 @@ struct Pass<'a, 'b> {
     retry_after: Option<Millis>,
     /// The earliest moment a retry or a recovery wants another pass.
     wake: Option<Millis>,
+    /// A post was planned: look at its receipt on the next pass.
+    post_wake: bool,
     delete: bool,
     creates: Vec<Create>,
     effects: Vec<Effect>,
@@ -832,13 +852,17 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// A post on a nonce platform is looked at again on the next pass, not
-    /// at the next poll: an Unknown receipt can only be resent while the
-    /// window is open.
+    /// A planned post is looked at again on the next pass, not at the next
+    /// poll, unless this pass knows the platform's marker is not a nonce: on
+    /// a nonce platform an Unknown receipt can only be resent while the
+    /// window is open, and the window is shorter than a poll.
     fn wake_for_receipt(&mut self) {
-        if self.nonce_window().is_some() {
-            let now = self.now();
-            self.wake_at(now);
+        let other_marker = matches!(
+            &self.input.observations.capabilities,
+            Some(Observation::Known(caps)) if !matches!(caps.marker, Marker::Nonce { .. })
+        );
+        if !other_marker {
+            self.post_wake = true;
         }
     }
 
@@ -1153,9 +1177,27 @@ impl Pass<'_, '_> {
                         continue;
                     }
                     let retry_at = at.saturating_add(RETRY_DELAY_MS);
+                    // On a nonce platform an earlier send under the key may
+                    // have landed: every send stays inside the window of
+                    // the first one, under the first intent.
+                    if let Some(window) = nonce_window
+                        && retry_at >= record.intent.at.saturating_add(window)
+                    {
+                        self.attention.raise(
+                            POST_FAILED,
+                            format!(
+                                "{key} was refused and its nonce window closed before a retry: {why}"
+                            ),
+                        );
+                        continue;
+                    }
                     if self.now() >= retry_at {
                         if let Some(text) = self.post_text(&key) {
-                            self.plan_post(&key, text, true);
+                            if nonce_window.is_some() {
+                                self.resend_post(&key, text);
+                            } else {
+                                self.plan_post(&key, text, true);
+                            }
                         }
                     } else {
                         self.wake_at(retry_at);
@@ -1518,13 +1560,20 @@ impl Pass<'_, '_> {
             .as_ref()
             .is_some_and(|t| matches!(t.state, TieState::Busy | TieState::Pending));
         let wake = self.wake;
-        let at_latest = |t: Millis| wake.map_or(t, |w| w.min(t));
         if waiting {
             // A pending or busy create: when its retry or recovery asks,
             // else one interval.
             self.st.not_before = Some(wake.unwrap_or(next_read));
             return;
         }
+        // A post's receipt on the next pass. Not for a waiting tie above,
+        // whose `notBefore` is also its create's retry interval.
+        let wake = if self.post_wake {
+            Some(wake.map_or(now, |w| w.min(now)))
+        } else {
+            wake
+        };
+        let at_latest = |t: Millis| wake.map_or(t, |w| w.min(t));
         if self.st.phase == Phase::Tied {
             self.st.not_before = Some(at_latest(next_read));
             return;
