@@ -11,6 +11,15 @@ mod support;
 
 use std::fs;
 use std::path::PathBuf;
+use std::time::Duration;
+
+use fleet_api::Observation;
+use fleet_api::gateway::{
+    AccountConfig, ConversationRef, Gateway, HistoryObservation, HistoryQuery, Inbound, Marker,
+    Uncertainty,
+};
+use fleet_api::plan::EffectOutcome;
+use fleet_gateway::DiscordGateway;
 
 use serde_json::{Value, json};
 use support::{Env, GATEWAY_BRIEF, assert_condition, conversation_name, stub_exe};
@@ -322,4 +331,116 @@ fn a_discord_mention_reaches_a_conversation_and_the_reply_starts_its_thread() {
         "IdentityMatches",
     );
     env.assert_no_temp();
+}
+
+/// The adapter as the manager builds it, driven in-process against the
+/// stub `curl` that `discord_env` placed.
+fn adapter(env: &Env, curl_config: &std::path::Path) -> DiscordGateway {
+    let exe = if cfg!(windows) { ".exe" } else { "" };
+    DiscordGateway::new(
+        ACCOUNT,
+        &AccountConfig {
+            platform: "discord".into(),
+            team: Some(GUILD.into()),
+            bot: BOT.into(),
+            inbound: Inbound::DiscordGateway,
+            message_content: Some(true),
+            cli: Some(
+                env.root
+                    .join(format!("discord-bin/curl{exe}"))
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            curl_config: Some(curl_config.to_path_buf()),
+            dir: None,
+        },
+        Duration::from_secs(3),
+    )
+    .expect("a discord adapter")
+}
+
+#[test]
+fn the_discord_adapter_opens_reads_and_answers_unknown_where_discord_leaves_doubt() {
+    let (env, curl_config) = discord_env("discord-adapter");
+    seed(&env, &[]);
+    let g = adapter(&env, &curl_config);
+    let channel = ConversationRef {
+        platform: "discord".into(),
+        chat: CHANNEL.into(),
+        thread: None,
+    };
+    // Capabilities: the nonce window, and unmentioned only with the
+    // application's message content flag.
+    let caps = g
+        .capabilities(ACCOUNT)
+        .known()
+        .copied()
+        .expect("capabilities");
+    assert_eq!(caps.marker, Marker::Nonce { window_ms: 60_000 });
+    assert!(!caps.unmentioned, "the application lacks the intent");
+    env.edit_stub(|s| s["discord"]["appFlags"] = json!(1u64 << 19));
+    assert!(g.capabilities(ACCOUNT).known().unwrap().unmentioned);
+    // Open: a post in the channel, then a thread from it, named after the
+    // first line; a long text's later chunks go into the thread.
+    let long = format!("Question: which export?\n{}", "word ".repeat(500));
+    let opened = g.open(ACCOUNT, &channel, &long, "gateway/u1/open/q1");
+    let Observation::Known(EffectOutcome::Opened {
+        conversation,
+        message,
+        ..
+    }) = opened
+    else {
+        panic!("{opened:?}");
+    };
+    assert_eq!(
+        conversation.address(),
+        format!("discord:{CHANNEL}:{message}")
+    );
+    let d = discord(&env);
+    assert_eq!(d["threads"][0]["name"], "Question: which export?");
+    let posts = d["posts"].as_array().unwrap();
+    assert_eq!(posts.len(), 3, "the first line, then the long line in two: {d:#}");
+    assert_eq!(posts[0]["channel"], CHANNEL);
+    assert_eq!(posts[1]["channel"], message.as_str());
+    assert_eq!(posts[2]["channel"], message.as_str());
+    assert_ne!(posts[0]["body"]["nonce"], posts[1]["body"]["nonce"]);
+    // History: the starter and the thread, oldest first; a thread Discord
+    // does not know yet is its starter alone.
+    let h = g.history(
+        ACCOUNT,
+        &conversation,
+        &HistoryQuery::After {
+            id: None,
+            limit: 200,
+        },
+    );
+    let known = h.known().unwrap_or_else(|| panic!("{h:?}"));
+    assert_eq!(known.messages.len(), 3);
+    assert_eq!(known.messages[0].id, message);
+    assert_eq!(
+        known.starter.as_ref().unwrap().id.as_deref(),
+        Some(message.as_str())
+    );
+    // A throttled read carries Discord's retry_after.
+    env.stub_fault("curl", "rate-limit", 1);
+    match g.history(ACCOUNT, &conversation, &HistoryQuery::Since { at: 0 }) {
+        HistoryObservation::Unknown {
+            kind: Uncertainty::Throttled,
+            retry_after: Some(1500),
+            ..
+        } => {}
+        other => panic!("{other:?}"),
+    }
+    // The opening post lands and the thread start is refused: something
+    // landed, so the outcome is Unknown, never a clean refusal.
+    env.stub_fault_after("curl", "auth", 1, 1);
+    let half = g.open(ACCOUNT, &channel, "Another question", "gateway/u1/open/q2");
+    assert!(matches!(half, Observation::Unknown { .. }), "{half:?}");
+    // Nothing landed and Discord said no: a Known refusal.
+    env.stub_fault("curl", "auth", 1);
+    let refused = g.open(ACCOUNT, &channel, "A third", "gateway/u1/open/q3");
+    assert!(
+        matches!(refused, Observation::Known(EffectOutcome::Failed { .. })),
+        "{refused:?}"
+    );
 }

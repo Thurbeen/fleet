@@ -446,13 +446,16 @@ impl DiscordGateway {
                         .and_then(|()| self.send(t, chunk, &chunk_key, &mut budget)),
                     other => other,
                 },
-                (None, None) => {
-                    self.send(chat, chunk, &chunk_key, &mut budget)
-                        .and_then(|(id, at)| {
-                            self.start_thread(chat, &id, &name, &mut budget)
-                                .map(|()| (id, at))
-                        })
-                }
+                (None, None) => match self.send(chat, chunk, &chunk_key, &mut budget) {
+                    Ok((id, at)) => {
+                        // The opening post landed: whatever the thread start
+                        // answers, the outcome is no longer a clean refusal.
+                        first = Some((id.clone(), at));
+                        self.start_thread(chat, &id, &name, &mut budget)
+                            .map(|()| (id, at))
+                    }
+                    Err(e) => Err(e),
+                },
                 (None, Some((opened, _))) => self.send(opened, chunk, &chunk_key, &mut budget),
             };
             match landed {
@@ -460,10 +463,9 @@ impl DiscordGateway {
                     first.get_or_insert(l);
                 }
                 Err(e) => {
-                    return if i > 0 || (thread.is_none() && first.is_some()) {
+                    return if first.is_some() {
                         Observation::unknown(format!(
-                            "{i} of {} posts landed under {key}, then: {}",
-                            chunks.len(),
+                            "posts under {key} landed in part, then: {}",
                             e.why()
                         ))
                     } else if e.certain_failure() {
