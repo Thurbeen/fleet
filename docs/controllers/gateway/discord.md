@@ -13,7 +13,7 @@ This page is a design. Nothing on it is implemented. Code references are `path:f
 
 **Why**
 
-The request: design a Discord gateway adapter for Fleet, mapped onto the existing gateway port, citing Discord's own developer documentation. This is a design only. Nothing is built or published.
+The [adapters page](adapters.md) maps Discord on paper only. This page maps each gateway port verb onto Discord and cites Discord's own developer documentation. It is a design. Nothing on it is built.
 
 **Sources.** Each Discord claim links to Discord's developer documentation. The docs were read on 2026-11-01 from the `discord/discord-api-docs` repository at commit `9d2128b` (2026-10-30), which is the source of `docs.discord.com/developers`. A claim that those pages do not state is marked **unverified**. The design argues from Fleet commit `ab35108` (origin/main on 2026-11-01).
 
