@@ -20,8 +20,9 @@ The harness is the coding agent that a Task's session runs, such as `claude`
 or `codex`. `fleet init` writes one harness into the workspace's `task.json`:
 
 - `fleet init --harness NAME` writes `NAME`.
-- With no flag and no installed `task.json`, `init` asks at a terminal. An
-  empty answer, or no terminal, keeps the bundled default, `codex`.
+- With no flag, `init` asks at a terminal if it never installed a
+  `task.json` in this workspace. An empty answer, or no terminal, keeps the
+  bundled default, `codex`.
 - With no flag and an installed `task.json`, `init` keeps its harness.
 
 VEGA's brief tells VEGA to give each worker Task the same harness as

@@ -296,6 +296,7 @@ pub fn init(
     let installed_task = bytes(&workspace.join("task.json"))?;
     let harness = match harness {
         Some(h) => Some(h.to_string()),
+        // The prompt runs under init's locks: a concurrent init waits for it.
         None if installed_task.is_none() && !state.files.contains_key("task.json") => {
             ask(&default_harness()?)?
         }
@@ -304,7 +305,12 @@ pub fn init(
     let chosen = match &harness {
         Some(h) => {
             check_harness(h)?;
-            refuse_after_creation(&store_dir, h)?;
+            // `fleet up` uses the config's store, whatever --data-dir says.
+            let live = match existing.as_ref().and_then(|c| c.data.dir.clone()) {
+                Some(dir) => dir,
+                None => store_dir.clone(),
+            };
+            refuse_after_creation(&live, h)?;
             h.clone()
         }
         None => match installed_task.as_deref().and_then(harness_of) {

@@ -1155,6 +1155,18 @@ fn init_refuses_a_new_harness_once_mission_control_exists() {
         .code(1)
         .stderr_has("immutable");
     assert_eq!(fs::read(&path).unwrap(), before);
+    // `fleet up` keeps the config's store, so another --data-dir changes nothing.
+    let other = env.root.join("other-store");
+    env.fleet(&[
+        "--data-dir",
+        other.to_str().unwrap(),
+        "init",
+        "--harness",
+        "claude",
+    ])
+    .code(1)
+    .stderr_has("immutable");
+    assert_eq!(fs::read(&path).unwrap(), before);
     env.fleet(&["init", "--harness", "codex"]).ok();
 }
 
