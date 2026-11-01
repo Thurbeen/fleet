@@ -30,8 +30,8 @@ use std::time::Duration;
 
 use fleet_api::gateway::{
     AccountConfig, Author, AuthorKind, Capabilities, ConversationRef, Delivery, Envelope, Event,
-    History, HistoryObservation, HistoryQuery, Identity, Inbound, Marker, Message, Starter,
-    Uncertainty,
+    Gateway, History, HistoryObservation, HistoryQuery, Identity, Inbound, Marker, Message,
+    Starter, Uncertainty,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
@@ -39,7 +39,7 @@ use fleet_exec::{Outcome, Spec, run};
 use serde_json::{Map, Value, json};
 
 pub use crate::curl::Reply;
-use crate::curl::{Budget, CurlPlatform};
+use crate::curl::{Budget, landed, send_failure};
 use crate::text::split;
 
 pub const KIND: &str = "slack";
@@ -367,90 +367,22 @@ impl SlackGateway {
                     first.get_or_insert(landed);
                 }
                 Err(e) => {
-                    return if i > 0 {
-                        // Something landed: the outcome is for a recovery
-                        // read to settle, whatever Slack said last.
-                        Observation::unknown(format!(
-                            "{i} of {} posts landed under {key}, then: {}",
-                            chunks.len(),
-                            e.why()
-                        ))
-                    } else if e.certain_failure() {
-                        // Nothing landed and Slack said no: a Known refusal.
-                        Observation::Known(EffectOutcome::Failed { why: e.why() })
-                    } else {
-                        Observation::unknown(e.why())
-                    };
+                    // Something landed: the outcome is for a recovery read
+                    // to settle, whatever Slack said last.
+                    let partly = (i > 0)
+                        .then(|| format!("{i} of {} posts landed under {key}", chunks.len()));
+                    return send_failure(partly, e.why(), e.certain_failure());
                 }
             }
         }
         let (message, at) = first.expect("at least one chunk");
-        Observation::Known(match thread {
-            Some(_) => EffectOutcome::Posted { message, at },
-            None => EffectOutcome::Opened {
-                conversation: ConversationRef {
-                    platform: KIND.into(),
-                    chat: chat.into(),
-                    thread: Some(message.clone()),
-                },
-                message,
-                at,
-            },
-        })
+        Observation::Known(landed(KIND, chat, thread, message, at))
     }
 }
 
-crate::curl::curl_gateway!(SlackGateway);
+crate::curl::curl_gateway!(SlackGateway, "Slack");
 
-impl CurlPlatform for SlackGateway {
-    const NAME: &'static str = "Slack";
-
-    fn account(&self) -> &str {
-        &self.account
-    }
-
-    fn call_timeout(&self) -> Duration {
-        self.call_timeout
-    }
-
-    fn max_calls(&self) -> u32 {
-        MAX_CALLS_PER_OPERATION
-    }
-
-    fn check_ref(&self, r: &ConversationRef) -> Result<(), String> {
-        check_ref(r)
-    }
-
-    fn parse_address(&self, address: &str) -> Result<ConversationRef, String> {
-        parse_address(address)
-    }
-
-    fn read_event(
-        &self,
-        account: &AccountConfig,
-        envelope: &Envelope,
-    ) -> Observation<Option<Delivery>> {
-        read_event(account, envelope)
-    }
-
-    fn thread_history(&self, chat: &str, thread: &str, query: &HistoryQuery) -> HistoryObservation {
-        SlackGateway::thread_history(self, chat, thread, query)
-    }
-
-    fn channel_history(&self, chat: &str, query: &HistoryQuery) -> HistoryObservation {
-        SlackGateway::channel_history(self, chat, query)
-    }
-
-    fn post_chunks(
-        &self,
-        chat: &str,
-        thread: Option<&str>,
-        text: &str,
-        key: &str,
-    ) -> Observation<EffectOutcome> {
-        SlackGateway::post_chunks(self, chat, thread, text, key)
-    }
-
+impl SlackGateway {
     fn identity(&self) -> Observation<Identity> {
         let v = match self.call("auth.test", &json!({}), self.call_timeout) {
             Ok(v) => v,

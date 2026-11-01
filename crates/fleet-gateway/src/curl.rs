@@ -1,14 +1,11 @@
 //! What every curl-backed platform adapter shares: one HTTP answer as
-//! `curl --include` prints it, and the budget of calls and time one
-//! operation may spend. What an answer means is each platform's own.
+//! `curl --include` prints it, the budget of calls and time one operation
+//! may spend, how a split text's sends end, and the `Gateway` impl around
+//! the platform's own calls. What an answer means is each platform's own.
 
 use std::time::{Duration, Instant};
 
 use fleet_api::Observation;
-use fleet_api::gateway::{
-    AccountConfig, Capabilities, ConversationRef, Delivery, Envelope, HistoryObservation,
-    HistoryQuery, Identity,
-};
 use fleet_api::plan::EffectOutcome;
 
 /// One HTTP answer as `curl --include` prints it: the status line and
@@ -112,198 +109,167 @@ impl Budget {
     }
 }
 
-/// What a curl-backed chat platform supplies; [`Gateway`] is then the same
-/// for every such platform: the account check, the address check, and the
-/// thread or channel dispatch around each call.
-pub(crate) trait CurlPlatform {
-    /// The platform's name in messages: `Slack`, `Discord`.
-    const NAME: &'static str;
-    /// The account this adapter serves.
-    fn account(&self) -> &str;
-    /// The bound of one call.
-    fn call_timeout(&self) -> Duration;
-    /// The most calls one operation makes.
-    fn max_calls(&self) -> u32;
-    /// The parts of a reference are this platform's ids.
-    fn check_ref(&self, r: &ConversationRef) -> Result<(), String>;
-    fn parse_address(&self, address: &str) -> Result<ConversationRef, String>;
-    fn read_event(
-        &self,
-        account: &AccountConfig,
-        envelope: &Envelope,
-    ) -> Observation<Option<Delivery>>;
-    fn identity(&self) -> Observation<Identity>;
-    fn offers(&self) -> Observation<Capabilities>;
-    fn thread_history(&self, chat: &str, thread: &str, query: &HistoryQuery) -> HistoryObservation;
-    fn channel_history(&self, chat: &str, query: &HistoryQuery) -> HistoryObservation;
-    /// Post `text` in `thread`, or open a thread in `chat` with it.
-    fn post_chunks(
-        &self,
-        chat: &str,
-        thread: Option<&str>,
-        text: &str,
-        key: &str,
-    ) -> Observation<EffectOutcome>;
-
-    fn other_account(&self, account: &str) -> Option<String> {
-        (account != self.account()).then(|| {
-            format!(
-                "account {account} is not this {} gateway, which serves {}",
-                Self::NAME,
-                self.account()
-            )
-        })
+/// How a send that did not land ends: Unknown when an earlier part of the
+/// text landed (`partly` says what), a Known refusal when the platform
+/// certainly did nothing, and Unknown otherwise.
+pub fn send_failure(
+    partly: Option<String>,
+    why: String,
+    certain: bool,
+) -> Observation<EffectOutcome> {
+    match partly {
+        Some(landed) => Observation::unknown(format!("{landed}, then: {why}")),
+        None if certain => Observation::Known(EffectOutcome::Failed { why }),
+        None => Observation::unknown(why),
     }
 }
 
-/// The [`Gateway`] of a [`CurlPlatform`]: invoked once per adapter, since the
-/// port is another crate's trait.
+/// What a text that landed answers: `Posted` in a thread, or `Opened` with
+/// the thread its first post started in `chat`.
+pub fn landed(
+    platform: &str,
+    chat: &str,
+    thread: Option<&str>,
+    message: String,
+    at: fleet_api::Millis,
+) -> EffectOutcome {
+    match thread {
+        Some(_) => EffectOutcome::Posted { message, at },
+        None => EffectOutcome::Opened {
+            conversation: fleet_api::gateway::ConversationRef {
+                platform: platform.into(),
+                chat: chat.into(),
+                thread: Some(message.clone()),
+            },
+            message,
+            at,
+        },
+    }
+}
+
+/// The [`Gateway`] of a curl-backed platform: the account check, the address
+/// check and the thread or channel dispatch around each call are the same
+/// for every one. It is invoked in the adapter's module, which supplies the
+/// fields `account` and `call_timeout`, the constant
+/// `MAX_CALLS_PER_OPERATION`, the functions `check_ref`, `parse_address` and
+/// `read_event`, and the methods `identity`, `offers`, `thread_history`,
+/// `channel_history` and `post_chunks`. A macro, since the port is another
+/// crate's trait.
 ///
 /// [`Gateway`]: fleet_api::gateway::Gateway
 macro_rules! curl_gateway {
-    ($t:ty) => {
-        impl ::fleet_api::gateway::Gateway for $t {
-            fn operation_bound(&self) -> ::fleet_api::Millis {
-                let one = fleet_exec::worst_case($crate::curl::CurlPlatform::call_timeout(self))
-                    * $crate::curl::CurlPlatform::max_calls(self);
+    ($t:ty, $name:literal) => {
+        impl $t {
+            fn other_account(&self, account: &str) -> Option<String> {
+                (account != self.account).then(|| {
+                    format!(
+                        "account {account} is not this {} gateway, which serves {}",
+                        $name, self.account
+                    )
+                })
+            }
+        }
+
+        impl Gateway for $t {
+            fn operation_bound(&self) -> Millis {
+                let one = fleet_exec::worst_case(self.call_timeout) * MAX_CALLS_PER_OPERATION;
                 u64::try_from(one.as_millis()).unwrap_or(u64::MAX)
             }
 
-            fn parse(
-                &self,
-                account: &str,
-                address: &str,
-            ) -> ::fleet_api::Observation<::fleet_api::gateway::ConversationRef> {
-                if let Some(why) = $crate::curl::CurlPlatform::other_account(self, account) {
-                    return ::fleet_api::Observation::unknown(why);
+            fn parse(&self, account: &str, address: &str) -> Observation<ConversationRef> {
+                if let Some(why) = self.other_account(account) {
+                    return Observation::unknown(why);
                 }
-                match $crate::curl::CurlPlatform::parse_address(self, address) {
-                    Ok(r) => ::fleet_api::Observation::Known(r),
-                    Err(why) => ::fleet_api::Observation::unknown(why),
+                match parse_address(address) {
+                    Ok(r) => Observation::Known(r),
+                    Err(why) => Observation::unknown(why),
                 }
             }
 
             fn event(
                 &self,
-                account: &::fleet_api::gateway::AccountConfig,
-                envelope: &::fleet_api::gateway::Envelope,
-            ) -> ::fleet_api::Observation<Option<::fleet_api::gateway::Delivery>> {
-                $crate::curl::CurlPlatform::read_event(self, account, envelope)
+                account: &AccountConfig,
+                envelope: &Envelope,
+            ) -> Observation<Option<Delivery>> {
+                read_event(account, envelope)
             }
 
-            fn whoami(
-                &self,
-                account: &str,
-            ) -> ::fleet_api::Observation<::fleet_api::gateway::Identity> {
-                match $crate::curl::CurlPlatform::other_account(self, account) {
-                    Some(why) => ::fleet_api::Observation::unknown(why),
-                    None => $crate::curl::CurlPlatform::identity(self),
+            fn whoami(&self, account: &str) -> Observation<Identity> {
+                match self.other_account(account) {
+                    Some(why) => Observation::unknown(why),
+                    None => self.identity(),
                 }
             }
 
-            fn capabilities(
-                &self,
-                account: &str,
-            ) -> ::fleet_api::Observation<::fleet_api::gateway::Capabilities> {
-                match $crate::curl::CurlPlatform::other_account(self, account) {
-                    Some(why) => ::fleet_api::Observation::unknown(why),
-                    None => $crate::curl::CurlPlatform::offers(self),
+            fn capabilities(&self, account: &str) -> Observation<Capabilities> {
+                match self.other_account(account) {
+                    Some(why) => Observation::unknown(why),
+                    None => self.offers(),
                 }
             }
 
             fn history(
                 &self,
                 account: &str,
-                conversation: &::fleet_api::gateway::ConversationRef,
-                query: &::fleet_api::gateway::HistoryQuery,
-            ) -> ::fleet_api::gateway::HistoryObservation {
-                if let Some(why) = $crate::curl::CurlPlatform::other_account(self, account) {
-                    return ::fleet_api::gateway::HistoryObservation::unknown(
-                        ::fleet_api::gateway::Uncertainty::Unavailable,
-                        why,
-                    );
+                conversation: &ConversationRef,
+                query: &HistoryQuery,
+            ) -> HistoryObservation {
+                if let Some(why) = self.other_account(account) {
+                    return HistoryObservation::unknown(Uncertainty::Unavailable, why);
                 }
-                if let Err(why) = $crate::curl::CurlPlatform::check_ref(self, conversation) {
-                    return ::fleet_api::gateway::HistoryObservation::unknown(
-                        ::fleet_api::gateway::Uncertainty::Unreadable,
-                        why,
-                    );
+                if let Err(why) = check_ref(conversation) {
+                    return HistoryObservation::unknown(Uncertainty::Unreadable, why);
                 }
                 match &conversation.thread {
-                    Some(thread) => $crate::curl::CurlPlatform::thread_history(
-                        self,
-                        &conversation.chat,
-                        thread,
-                        query,
-                    ),
-                    None => {
-                        $crate::curl::CurlPlatform::channel_history(self, &conversation.chat, query)
-                    }
+                    Some(thread) => self.thread_history(&conversation.chat, thread, query),
+                    None => self.channel_history(&conversation.chat, query),
                 }
             }
 
             fn open(
                 &self,
                 account: &str,
-                channel: &::fleet_api::gateway::ConversationRef,
+                channel: &ConversationRef,
                 text: &str,
                 intent_key: &str,
-            ) -> ::fleet_api::Observation<::fleet_api::plan::EffectOutcome> {
-                if let Some(why) = $crate::curl::CurlPlatform::other_account(self, account) {
-                    return ::fleet_api::Observation::Known(
-                        ::fleet_api::plan::EffectOutcome::Failed { why },
-                    );
+            ) -> Observation<EffectOutcome> {
+                if let Some(why) = self.other_account(account) {
+                    return Observation::Known(EffectOutcome::Failed { why });
                 }
-                if let Err(why) = $crate::curl::CurlPlatform::check_ref(self, channel) {
-                    return ::fleet_api::Observation::Known(
-                        ::fleet_api::plan::EffectOutcome::Failed { why },
-                    );
+                if let Err(why) = check_ref(channel) {
+                    return Observation::Known(EffectOutcome::Failed { why });
                 }
                 if channel.thread.is_some() {
-                    return ::fleet_api::Observation::Known(
-                        ::fleet_api::plan::EffectOutcome::Failed {
-                            why: format!("{} is a thread, not a channel", channel.address()),
-                        },
-                    );
+                    return Observation::Known(EffectOutcome::Failed {
+                        why: format!("{} is a thread, not a channel", channel.address()),
+                    });
                 }
-                $crate::curl::CurlPlatform::post_chunks(self, &channel.chat, None, text, intent_key)
+                self.post_chunks(&channel.chat, None, text, intent_key)
             }
 
             fn post(
                 &self,
                 account: &str,
-                conversation: &::fleet_api::gateway::ConversationRef,
+                conversation: &ConversationRef,
                 text: &str,
                 intent_key: &str,
-            ) -> ::fleet_api::Observation<::fleet_api::plan::EffectOutcome> {
-                if let Some(why) = $crate::curl::CurlPlatform::other_account(self, account) {
-                    return ::fleet_api::Observation::Known(
-                        ::fleet_api::plan::EffectOutcome::Failed { why },
-                    );
+            ) -> Observation<EffectOutcome> {
+                if let Some(why) = self.other_account(account) {
+                    return Observation::Known(EffectOutcome::Failed { why });
                 }
-                if let Err(why) = $crate::curl::CurlPlatform::check_ref(self, conversation) {
-                    return ::fleet_api::Observation::Known(
-                        ::fleet_api::plan::EffectOutcome::Failed { why },
-                    );
+                if let Err(why) = check_ref(conversation) {
+                    return Observation::Known(EffectOutcome::Failed { why });
                 }
                 let Some(thread) = &conversation.thread else {
-                    return ::fleet_api::Observation::Known(
-                        ::fleet_api::plan::EffectOutcome::Failed {
-                            why: format!(
-                                "{} is a channel, not a thread; a {} conversation is a thread",
-                                conversation.address(),
-                                <$t as $crate::curl::CurlPlatform>::NAME
-                            ),
-                        },
-                    );
+                    return Observation::Known(EffectOutcome::Failed {
+                        why: format!(
+                            "{} is a channel, not a thread; a {} conversation is a thread",
+                            conversation.address(),
+                            $name
+                        ),
+                    });
                 };
-                $crate::curl::CurlPlatform::post_chunks(
-                    self,
-                    &conversation.chat,
-                    Some(thread),
-                    text,
-                    intent_key,
-                )
+                self.post_chunks(&conversation.chat, Some(thread), text, intent_key)
             }
         }
     };

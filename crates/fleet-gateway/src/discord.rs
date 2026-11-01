@@ -36,8 +36,8 @@ use std::time::Duration;
 
 use fleet_api::gateway::{
     AccountConfig, Author, AuthorKind, Capabilities, ConversationRef, Delivery, Envelope, Event,
-    History, HistoryObservation, HistoryQuery, Identity, Inbound, Marker, Message, Starter,
-    Uncertainty,
+    Gateway, History, HistoryObservation, HistoryQuery, Identity, Inbound, Marker, Message,
+    Starter, Uncertainty,
 };
 use fleet_api::plan::EffectOutcome;
 use fleet_api::{Millis, Observation};
@@ -45,7 +45,7 @@ use fleet_exec::{Outcome, Spec, run};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::curl::{Budget, CurlPlatform, Reply};
+use crate::curl::{Budget, Reply, landed, send_failure};
 use crate::text::split;
 
 pub const KIND: &str = "discord";
@@ -506,86 +506,21 @@ impl DiscordGateway {
                     first.get_or_insert(l);
                 }
                 Err(e) => {
-                    return if first.is_some() {
-                        Observation::unknown(format!(
-                            "posts under {key} landed in part, then: {}",
-                            e.why()
-                        ))
-                    } else if e.certain_failure() {
-                        Observation::Known(EffectOutcome::Failed { why: e.why() })
-                    } else {
-                        Observation::unknown(e.why())
-                    };
+                    let partly = first
+                        .is_some()
+                        .then(|| format!("posts under {key} landed in part"));
+                    return send_failure(partly, e.why(), e.certain_failure());
                 }
             }
         }
         let (message, at) = first.expect("at least one chunk");
-        Observation::Known(match thread {
-            Some(_) => EffectOutcome::Posted { message, at },
-            None => EffectOutcome::Opened {
-                conversation: ConversationRef {
-                    platform: KIND.into(),
-                    chat: chat.into(),
-                    thread: Some(message.clone()),
-                },
-                message,
-                at,
-            },
-        })
+        Observation::Known(landed(KIND, chat, thread, message, at))
     }
 }
 
-crate::curl::curl_gateway!(DiscordGateway);
+crate::curl::curl_gateway!(DiscordGateway, "Discord");
 
-impl CurlPlatform for DiscordGateway {
-    const NAME: &'static str = "Discord";
-
-    fn account(&self) -> &str {
-        &self.account
-    }
-
-    fn call_timeout(&self) -> Duration {
-        self.call_timeout
-    }
-
-    fn max_calls(&self) -> u32 {
-        MAX_CALLS_PER_OPERATION
-    }
-
-    fn check_ref(&self, r: &ConversationRef) -> Result<(), String> {
-        check_ref(r)
-    }
-
-    fn parse_address(&self, address: &str) -> Result<ConversationRef, String> {
-        parse_address(address)
-    }
-
-    fn read_event(
-        &self,
-        account: &AccountConfig,
-        envelope: &Envelope,
-    ) -> Observation<Option<Delivery>> {
-        read_event(account, envelope)
-    }
-
-    fn thread_history(&self, chat: &str, thread: &str, query: &HistoryQuery) -> HistoryObservation {
-        DiscordGateway::thread_history(self, chat, thread, query)
-    }
-
-    fn channel_history(&self, chat: &str, query: &HistoryQuery) -> HistoryObservation {
-        DiscordGateway::channel_history(self, chat, query)
-    }
-
-    fn post_chunks(
-        &self,
-        chat: &str,
-        thread: Option<&str>,
-        text: &str,
-        key: &str,
-    ) -> Observation<EffectOutcome> {
-        DiscordGateway::post_chunks(self, chat, thread, text, key)
-    }
-
+impl DiscordGateway {
     fn identity(&self) -> Observation<Identity> {
         let me = match self.call("GET", "users/@me", None, self.call_timeout) {
             Ok(v) => v,
