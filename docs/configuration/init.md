@@ -73,8 +73,17 @@ source provenance; preserve it with the workspace. Malformed metadata and
 managed symlinks are refused. Initializers serialize with OS locks; a crash
 releases the locks and a repeat init completes missing files conservatively.
 
+VEGA's skills have one canonical copy under `vega/.agents/skills`, where
+Codex finds them. Claude Code finds project skills only under
+`.claude/skills`. `init` and `init --update` therefore create the relative
+symlink `vega/.claude/skills` to `../.agents/skills`. This link is the only
+symlink that init manages. Init never replaces an existing `.claude/skills`
+that is not this link; it reports that path instead. On Windows, a symlink
+requires Developer Mode or the symlink privilege. Without one, init reports
+the failure, and Claude Code sessions do not find VEGA's skills.
+
 The bundled content is MIT licensed at exact source commit
-`27148af18577f954b5c3b17667f2510c5940198e`. The build verifies every allowlisted
+`3c4798dbdb33672576958cf8f1849c16e519d95d`. The build verifies every allowlisted
 asset against [the provenance hashes](../../crates/fleet-cli/bundle/vega/provenance.json)
 and embeds the assets, source manifest and license in the executable. Runtime
 init/update never fetches a branch or downloads content.
