@@ -1,22 +1,38 @@
 # Discord gateway adapter
 
-This page is a design. Nothing on it is implemented. Code references are `path:from-to` at Fleet commit `ab35108`.
+This page is a design. Nothing on it is implemented. Code references are
+`path:from-to` at Fleet commit `ab35108`.
 
+## Summary
 
-**Summary**
+- Add a `discord` platform to `fleet-gateway`, next to the Slack adapter: REST
+  calls through a bounded `curl`, and pure reading of Gateway dispatches.
+- A Discord conversation is a thread. Its address is `discord:<parent
+  channel>:<thread>`. The thread id equals the id of the message it started
+  from.
+- A listener outside Fleet holds the Gateway WebSocket and the bot token. It
+  adds the thread's parent channel to each envelope, because Discord's message
+  event does not carry it.
+- Fleet recognises its posts by author id. It recovers an Unknown post by
+  resending the same `nonce` with `enforce_nonce` inside a short window. Today
+  the controllers recover only with a `metadata` marker, so this needs one
+  controller change.
+- Without the privileged `MESSAGE_CONTENT` intent, only mentions reach Fleet.
+  The adapter then reports `unmentioned = false`, and the Conversation shows
+  `NeedsAttention/MentionsOnly`.
 
-- Add a `discord` platform to `fleet-gateway`, next to the Slack adapter: REST calls through a bounded `curl`, and pure reading of Gateway dispatches.
-- A Discord conversation is a thread. Its address is `discord:<parent channel>:<thread>`. The thread id equals the id of the message it started from.
-- A listener outside Fleet holds the Gateway WebSocket and the bot token. It adds the thread's parent channel to each envelope, because Discord's message event does not carry it.
-- Fleet recognises its posts by author id. It recovers an Unknown post by resending the same `nonce` with `enforce_nonce` inside a short window. Today the controllers recover only with a `metadata` marker, so this needs one controller change.
-- Without the privileged `MESSAGE_CONTENT` intent, only mentions reach Fleet. The adapter then reports `unmentioned = false`, and the Conversation shows `NeedsAttention/MentionsOnly`.
+## Why
 
-**Why**
+The [adapters page](adapters.md) maps Discord on paper only. This page maps each
+gateway port verb onto Discord and cites Discord's own developer documentation.
+It is a design. Nothing on it is built.
 
-The [adapters page](adapters.md) maps Discord on paper only. This page maps each gateway port verb onto Discord and cites Discord's own developer documentation. It is a design. Nothing on it is built.
-
-**Sources.** Each Discord claim links to Discord's developer documentation. The docs were read on 2026-11-01 from the `discord/discord-api-docs` repository at commit `9d2128b` (2026-10-30), which is the source of `docs.discord.com/developers`. A claim that those pages do not state is marked **unverified**. The design argues from Fleet commit `ab35108` (origin/main on 2026-11-01).
-
+**Sources.** Each Discord claim links to Discord's developer documentation. The
+docs were read on 2026-11-01 from the `discord/discord-api-docs` repository at
+commit `9d2128b` (2026-10-30), which is the source of
+`docs.discord.com/developers`. A claim that those pages do not state is marked
+**unverified**. The design argues from Fleet commit `ab35108` (origin/main on
+2026-11-01).
 
 ## Proposed interface changes
 
@@ -32,31 +48,65 @@ The [adapters page](adapters.md) maps Discord on paper only. This page maps each
 
 ## How the gateway works today
 
-The port is one trait, and each platform is one adapter behind it. The platforms this build has (`crates/fleet-gateway/src/lib.rs:37-62`) are `fake` and `slack`. `GatewayAccounts::new` (`crates/fleet-gateway/src/lib.rs:85-127`) builds one adapter per account and runs the platform's own checks.
+The port is one trait, and each platform is one adapter behind it. The platforms
+this build has (`crates/fleet-gateway/src/lib.rs:37-62`) are `fake` and `slack`.
+`GatewayAccounts::new` (`crates/fleet-gateway/src/lib.rs:85-127`) builds one
+adapter per account and runs the platform's own checks.
 
 The Slack adapter is the reference:
 
-- Each call is one bounded `curl` with the operator's config file (`crates/fleet-gateway/src/slack.rs:125-180`). Fleet passes `--config` and never reads the file. Fleet never constructs an Authorization header.
-- Event reading is pure (`crates/fleet-gateway/src/slack.rs:754-800`). The receive verb runs it without the lease.
-- Long text is split under derived keys (`crates/fleet-gateway/src/slack.rs:340-406`), `<key>/1`, `<key>/2`. A split that landed partly is Unknown.
-- Slack reports fixed capabilities (`crates/fleet-gateway/src/slack.rs:62-71`): history, a `metadata` marker, unmentioned delivery, threads.
+- Each call is one bounded `curl` with the operator's config file
+  (`crates/fleet-gateway/src/slack.rs:125-180`). Fleet passes `--config` and
+  never reads the file. Fleet never constructs an Authorization header.
+- Event reading is pure (`crates/fleet-gateway/src/slack.rs:754-800`). The
+  receive verb runs it without the lease.
+- Long text is split under derived keys
+  (`crates/fleet-gateway/src/slack.rs:340-406`), `<key>/1`, `<key>/2`. A split
+  that landed partly is Unknown.
+- Slack reports fixed capabilities (`crates/fleet-gateway/src/slack.rs:62-71`):
+  history, a `metadata` marker, unmentioned delivery, threads.
 
-The port already names three marker kinds (`crates/fleet-api/src/gateway.rs:236-260`): `metadata`, `nonce { windowMs }` and `none`. The interface page states the nonce rule: a retry inside the window resends the same nonce, and the platform returns the existing post. The fake already models a nonce window (`crates/fleet-gateway/src/fake.rs:405-417`), and it reads a key back only for a metadata marker (`crates/fleet-gateway/src/fake.rs:375-389`).
+The port already names three marker kinds
+(`crates/fleet-api/src/gateway.rs:236-260`): `metadata`, `nonce { windowMs }`
+and `none`. The interface page states the nonce rule: a retry inside the window
+resends the same nonce, and the platform returns the existing post. The fake
+already models a nonce window (`crates/fleet-gateway/src/fake.rs:405-417`), and
+it reads a key back only for a metadata marker
+(`crates/fleet-gateway/src/fake.rs:375-389`).
 
 The controllers do not use the nonce rule yet:
 
-> **Recovery reads only where the marker is metadata**: `crates/fleet-controllers/src/conversation.rs:262-280` at `ab35108`.
+> **Recovery reads only where the marker is metadata**:
+> `crates/fleet-controllers/src/conversation.rs:262-280` at `ab35108`.
 
-`settle_posts` (`crates/fleet-controllers/src/conversation.rs:1072-1095`) uses the same test. So with a `nonce` marker, every Unknown post raises `PostUnconfirmed` and waits for a person. That rule is safe. But on Discord, every lost answer would then need a person.
+`settle_posts` (`crates/fleet-controllers/src/conversation.rs:1072-1095`) uses
+the same test. So with a `nonce` marker, every Unknown post raises
+`PostUnconfirmed` and waits for a person. That rule is safe. But on Discord,
+every lost answer would then need a person.
 
 Two more facts constrain the design:
 
-- A Fleet-opened thread is tied by its starter's key (`crates/fleet-controllers/src/conversation.rs:1268-1293`). On Discord, that key never comes back from the platform. The manager's `Receive` action records Fleet's opening post with its full key, so the tie still works. The first `startsThread` message becomes the starter (`crates/fleet-controllers/src/conversation.rs:657-661`), so the `Receive` action must run before the listener delivers that message. See D5.
-- An address is platform, chat and an optional thread (`crates/fleet-api/src/gateway.rs:38-94`). The documented Discord example is `discord:<thread>` (addresses (`docs/controllers/gateway/interface.md:17-30`)). That form has no parent channel, so route matching and lazy thread creation cannot work. This design changes it. The on-paper Discord column (`docs/controllers/gateway/adapters.md:42-55`) is the starting point.
+- A Fleet-opened thread is tied by its starter's key
+  (`crates/fleet-controllers/src/conversation.rs:1268-1293`). On Discord, that
+  key never comes back from the platform. The manager's `Receive` action records
+  Fleet's opening post with its full key, so the tie still works. The first
+  `startsThread` message becomes the starter
+  (`crates/fleet-controllers/src/conversation.rs:657-661`), so the `Receive`
+  action must run before the listener delivers that message. See D5.
+- An address is platform, chat and an optional thread
+  (`crates/fleet-api/src/gateway.rs:38-94`). The documented Discord example is
+  `discord:<thread>` (addresses
+  (`docs/controllers/gateway/interface.md:17-30`)). That form has no parent
+  channel, so route matching and lazy thread creation cannot work. This design
+  changes it. The on-paper Discord column
+  (`docs/controllers/gateway/adapters.md:42-55`) is the starting point.
 
 ## Port mapping
 
-Every row cites Discord's developer documentation. Base URL: `https://discord.com/api/v10`. v10 is listed as available ([API versioning](https://docs.discord.com/developers/reference#api-versioning)). The docs do not name a current version (**unverified**).
+Every row cites Discord's developer documentation. Base URL:
+`https://discord.com/api/v10`. v10 is listed as available ([API
+versioning](https://docs.discord.com/developers/reference#api-versioning)). The
+docs do not name a current version (**unverified**).
 
 | Port item | Discord |
 | --- | --- |
@@ -95,13 +145,19 @@ thread name = first line of the opening text, trimmed to 100 characters, else "F
 | `unmentioned` | `messageContent` in the config **and** the application holds the intent | `GET /applications/@me` returns `flags` ([get current application](https://docs.discord.com/developers/resources/application#get-current-application)). `GATEWAY_MESSAGE_CONTENT` is `1 << 18`, and `GATEWAY_MESSAGE_CONTENT_LIMITED` (under 100 servers) is `1 << 19` ([application flags](https://docs.discord.com/developers/resources/application#application-object-application-flags)). |
 | `threads` | `true` | Every conversation is a thread. |
 
-When `unmentioned` is false, the existing rule (`crates/fleet-controllers/src/conversation.rs:528-539`) raises `NeedsAttention/MentionsOnly`. Nothing new is needed in the controller.
+When `unmentioned` is false, the existing rule
+(`crates/fleet-controllers/src/conversation.rs:528-539`) raises
+`NeedsAttention/MentionsOnly`. Nothing new is needed in the controller.
 
-A history read without `READ_MESSAGE_HISTORY` gives an empty list, not an error ([get channel messages](https://docs.discord.com/developers/resources/message#get-channel-messages)). So an empty answer is not proof of absence. That is one reason the nonce recovery below never treats an empty read as "not posted".
+A history read without `READ_MESSAGE_HISTORY` gives an empty list, not an error
+([get channel
+messages](https://docs.discord.com/developers/resources/message#get-channel-messages)).
+So an empty answer is not proof of absence. That is one reason the nonce
+recovery below never treats an empty read as "not posted".
 
 ## Inbound: the listener
 
-**A mention in a route's channel starts a Task**
+### A mention in a route's channel starts a Task
 
 1. person → discord: @Fleet in channel C (message M)
 2. discord → listener: dispatch op 0, t MESSAGE_CREATE, s 42
@@ -110,12 +166,23 @@ A history read without `READ_MESSAGE_HISTORY` gives an empty list, not an error 
 5. receive → cc: Conversation created; admission; Task created
 6. gc → adapter: post the reply to discord:C:M
 
-The listener is a small program outside the workspace, like Slack's. It is transport only:
+The listener is a small program outside the workspace, like Slack's. It is
+transport only:
 
-1. It reads its account from `fleet gateway account NAME --json`, including the `intents` value Fleet computes.
-2. It connects to the Gateway and Identifies with the bot token and those intents. `GUILDS` (`1 << 0`) gives thread events and the active threads in `GUILD_CREATE`. `GUILD_MESSAGES` (`1 << 9`) gives message events. `MESSAGE_CONTENT` (`1 << 15`) is added only when `messageContent = true` ([list of intents](https://docs.discord.com/developers/events/gateway#list-of-intents)).
-3. It keeps a map from thread id to parent channel id. It fills the map from `GUILD_CREATE` `threads`, `THREAD_CREATE`, `THREAD_UPDATE` and `THREAD_LIST_SYNC`. For a thread it does not know, it calls `GET /channels/{id}` itself.
-4. For each `MESSAGE_*` dispatch, it runs `fleet gateway receive --account NAME` with one envelope. The payload is the raw dispatch and the parent.
+1. It reads its account from `fleet gateway account NAME --json`, including the
+   `intents` value Fleet computes.
+2. It connects to the Gateway and Identifies with the bot token and those
+   intents. `GUILDS` (`1 << 0`) gives thread events and the active threads in
+   `GUILD_CREATE`. `GUILD_MESSAGES` (`1 << 9`) gives message events.
+   `MESSAGE_CONTENT` (`1 << 15`) is added only when `messageContent = true`
+   ([list of
+   intents](https://docs.discord.com/developers/events/gateway#list-of-intents)).
+3. It keeps a map from thread id to parent channel id. It fills the map from
+   `GUILD_CREATE` `threads`, `THREAD_CREATE`, `THREAD_UPDATE` and
+   `THREAD_LIST_SYNC`. For a thread it does not know, it calls `GET
+   /channels/{id}` itself.
+4. For each `MESSAGE_*` dispatch, it runs `fleet gateway receive --account NAME`
+   with one envelope. The payload is the raw dispatch and the parent.
 5. It beats with `--beat`, as today.
 
 ```json
@@ -123,17 +190,40 @@ The listener is a small program outside the workspace, like Slack's. It is trans
  "payload": {"dispatch": {"op": 0, "t": "MESSAGE_CREATE", "s": 42, "d": {"…": "…"}}, "parentId": "1300000000000000000"}}
 ```
 
-**Resume and lost events.** The Discord Gateway has no per-event acknowledgement. On a successful resume, "the Gateway will send the missed events in order, finishing with a Resumed event" ([resuming](https://docs.discord.com/developers/events/gateway#resuming)). Op 9 Invalid Session with `d = false` means the session cannot resume. The app disconnects and Identifies again, and the events in the gap are lost ([invalid session](https://docs.discord.com/developers/events/gateway-events#invalid-session)). So the listener gets at-least-once delivery as follows:
+**Resume and lost events.** The Discord Gateway has no per-event
+acknowledgement. On a successful resume, "the Gateway will send the missed
+events in order, finishing with a Resumed event"
+([resuming](https://docs.discord.com/developers/events/gateway#resuming)). Op 9
+Invalid Session with `d = false` means the session cannot resume. The app
+disconnects and Identifies again, and the events in the gap are lost ([invalid
+session](https://docs.discord.com/developers/events/gateway-events#invalid-session)).
+So the listener gets at-least-once delivery as follows:
 
-- It persists `session_id`, `resume_gateway_url` and the sequence number of the last event that the receive verb accepted (exit 0). It does not persist the last event it saw.
-- After a crash or a reconnect, it resumes from that sequence number. Discord then replays every event the verb did not accept.
-- On exit 1, 4 or 5, it retries the same envelope with backoff, and holds later events.
-- When resume fails, it Identifies again. The gap is lost. In a tied, active thread, the history backstop recovers it. A mention in an untied thread is lost, and the person mentions again. This is the Slack rule.
+- It persists `session_id`, `resume_gateway_url` and the sequence number of the
+  last event that the receive verb accepted (exit 0). It does not persist the
+  last event it saw.
+- After a crash or a reconnect, it resumes from that sequence number. Discord
+  then replays every event the verb did not accept.
+- On exit 1, 4 or 5, it retries the same envelope with backoff, and holds later
+  events.
+- When resume fails, it Identifies again. The gap is lost. In a tied, active
+  thread, the history backstop recovers it. A mention in an untied thread is
+  lost, and the person mentions again. This is the Slack rule.
 - How long a session stays resumable is **unverified**.
 
-Close codes: 4004 is a wrong token. 4014 is "a disallowed intent", sent when the application lacks an intent it asked for. Neither may reconnect ([close codes](https://docs.discord.com/developers/topics/opcodes-and-status-codes#gateway-gateway-close-event-codes)). The listener beats `closing` and stops, so the Listener shows `InboundReady=False`.
+Close codes: 4004 is a wrong token. 4014 is "a disallowed intent", sent when the
+application lacks an intent it asked for. Neither may reconnect ([close
+codes](https://docs.discord.com/developers/topics/opcodes-and-status-codes#gateway-gateway-close-event-codes)).
+The listener beats `closing` and stops, so the Listener shows
+`InboundReady=False`.
 
-Identify is limited to 1,000 calls in 24 hours. Sharding is required from 2,500 guilds ([sharding](https://docs.discord.com/developers/events/gateway#sharding)). One guild per account is far below both limits. Several sessions for the same bot are allowed ([sharding](https://docs.discord.com/developers/events/gateway#sharding)). Two listener instances only cause duplicates, and the delivery ids remove those.
+Identify is limited to 1,000 calls in 24 hours. Sharding is required from 2,500
+guilds
+([sharding](https://docs.discord.com/developers/events/gateway#sharding)). One
+guild per account is far below both limits. Several sessions for the same bot
+are allowed
+([sharding](https://docs.discord.com/developers/events/gateway#sharding)). Two
+listener instances only cause duplicates, and the delivery ids remove those.
 
 **What the adapter ignores.** The adapter returns `None` for these payloads:
 
@@ -142,34 +232,60 @@ Identify is limited to 1,000 calls in 24 hours. Sharding is required from 2,500 
 - type 21 starter references, and system message types,
 - a `MESSAGE_UPDATE` with empty `content` when `messageContent` is false.
 
-It answers Unknown for a dispatch without `d.id` or `d.channel_id`, and for a thread message without `parentId`.
+It answers Unknown for a dispatch without `d.id` or `d.channel_id`, and for a
+thread message without `parentId`.
 
 ## Recovering a post: the nonce rule
 
-**An Unknown post on Discord**
+### An Unknown post on Discord
 
 1. gc → adapter: Post under key K: curl timed out
 2. gc → gc: receipt Unknown; now - intent.at < windowMs
 3. gc → adapter: Post again under K (same nonce)
 4. adapter → gc: existing or new message: Posted
 
-The rule, for a post or an open whose outcome is Unknown on an account with `marker = nonce { windowMs }`:
+The rule, for a post or an open whose outcome is Unknown on an account with
+`marker = nonce { windowMs }`:
 
-1. While `now - intent.at < windowMs`, the controller plans the same effect again, under the same key, at once. The adapter resends the same nonce. Discord returns the existing message or creates it. Either answer is Known.
-2. The window counts from the intent, which is written before the first send. So the rule is conservative.
-3. Past the window, nothing is resent. The effect raises `NeedsAttention/PostUnconfirmed`, as for `marker = none` today.
-4. A split post resends every chunk under its own derived key. The chunks that landed come back as they are.
+1. While `now - intent.at < windowMs`, the controller plans the same effect
+   again, under the same key, at once. The adapter resends the same nonce.
+   Discord returns the existing message or creates it. Either answer is Known.
+2. The window counts from the intent, which is written before the first send. So
+   the rule is conservative.
+3. Past the window, nothing is resent. The effect raises
+   `NeedsAttention/PostUnconfirmed`, as for `marker = none` today.
+4. A split post resends every chunk under its own derived key. The chunks that
+   landed come back as they are.
 
-This changes `recovery_due` (`crates/fleet-controllers/src/conversation.rs:262-280`) and `settle_posts` (`crates/fleet-controllers/src/conversation.rs:1072-1095`) in ConversationController. GatewayController's posting is not built yet. It takes the same rule when it is built (step 4 of the gateway plan).
+This changes `recovery_due`
+(`crates/fleet-controllers/src/conversation.rs:262-280`) and `settle_posts`
+(`crates/fleet-controllers/src/conversation.rs:1072-1095`) in
+ConversationController. GatewayController's posting is not built yet. It takes
+the same rule when it is built (step 4 of the gateway plan).
 
-The nonce check is "by the same author". So the rule holds only while no other program posts as the bot with Fleet-like nonces. The operator gives Fleet its own application.
+The nonce check is "by the same author". So the rule holds only while no other
+program posts as the bot with Fleet-like nonces. The operator gives Fleet its
+own application.
 
 ## Credentials
 
-- **REST.** The bot token lives in a curl config file that the operator owns, for example `header = "Authorization: Bot <token>"`. The header form is `Authorization: TOKEN_TYPE TOKEN` ([authentication](https://docs.discord.com/developers/reference#authentication)). Fleet names the file with `--config` from `curlConfig` and never reads it. This is the Slack rule (`crates/fleet-gateway/src/slack.rs:125-180`).
-- **User-Agent.** Fleet sets `User-Agent: DiscordBot (https://github.com/Thurbeen/fleet, <fleet version>)`, the documented form ([user agent](https://docs.discord.com/developers/reference#user-agent)). This value is not a secret.
-- **WebSocket.** Discord uses the same bot token for the Gateway. Slack uses a separate app-level token for its socket. The listener holds its own copy of the token in its own secret store, for example a service-manager credential. Fleet never passes the token to the listener, and the listener never reads Fleet's curl config.
-- No token appears in `fleet.toml`, in an envelope, in a heartbeat, in a record or in a log.
+- **REST.** The bot token lives in a curl config file that the operator owns,
+  for example `header = "Authorization: Bot <token>"`. The header form is
+  `Authorization: TOKEN_TYPE TOKEN`
+  ([authentication](https://docs.discord.com/developers/reference#authentication)).
+  Fleet names the file with `--config` from `curlConfig` and never reads it.
+  This is the Slack rule (`crates/fleet-gateway/src/slack.rs:125-180`).
+- **User-Agent.** Fleet sets `User-Agent: DiscordBot
+  (https://github.com/Thurbeen/fleet, <fleet version>)`, the documented form
+  ([user agent](https://docs.discord.com/developers/reference#user-agent)). This
+  value is not a secret.
+- **WebSocket.** Discord uses the same bot token for the Gateway. Slack uses a
+  separate app-level token for its socket. The listener holds its own copy of
+  the token in its own secret store, for example a service-manager credential.
+  Fleet never passes the token to the listener, and the listener never reads
+  Fleet's curl config.
+- No token appears in `fleet.toml`, in an envelope, in a heartbeat, in a record
+  or in a log.
 
 ## fleet.toml
 
@@ -196,21 +312,40 @@ brief = "/etc/fleet/briefs/conversation.md"
 workspace = { dir = "/work/discord-conversations" }
 ```
 
-The account rules, beside today's account fields (`crates/fleet-api/src/gateway.rs:491-513`) and the documented Slack account (`docs/configuration/fleet-toml.md:276-314`):
+The account rules, beside today's account fields
+(`crates/fleet-api/src/gateway.rs:491-513`) and the documented Slack account
+(`docs/configuration/fleet-toml.md:276-314`):
 
-- `platform = "discord"` requires `team`, `curlConfig` and `inbound = "discord-gateway"` (a new inbound value (`crates/fleet-api/src/gateway.rs:460-489`), verified as `connection`).
+- `platform = "discord"` requires `team`, `curlConfig` and `inbound =
+  "discord-gateway"` (a new inbound value
+  (`crates/fleet-api/src/gateway.rs:460-489`), verified as `connection`).
 - `messageContent` defaults to `false`. Only a Discord account accepts the key.
-- `fleet gateway account NAME --json` adds `intents`, the integer the listener Identifies with. The digest (`crates/fleet-gateway/src/lib.rs:247-297`) covers `intents`, so a changed `messageContent` makes a running listener `ListenerConfigOld`.
-- A route's `channels` are parent text channels. A thread belongs to the route of its parent.
+- `fleet gateway account NAME --json` adds `intents`, the integer the listener
+  Identifies with. The digest (`crates/fleet-gateway/src/lib.rs:247-297`) covers
+  `intents`, so a changed `messageContent` makes a running listener
+  `ListenerConfigOld`.
+- A route's `channels` are parent text channels. A thread belongs to the route
+  of its parent.
 - Forum channels, private threads and DMs are out of scope (D3).
 
 ## Setup on the Discord side
 
-1. Create an application in the Developer Portal. Add a bot user. Copy the bot token into the curl config file and into the listener's secret store, and nowhere else.
-2. Under Privileged Gateway Intents, enable Message Content only when every message in a thread should be a turn. At 100 guilds or more, the intent needs verification ([message content intent](https://docs.discord.com/developers/events/gateway#message-content-intent)). One guild needs none.
-3. Set the bot to private, so only the operator can add it to a guild. The setting's exact name in the portal is **unverified**.
-4. Invite it to the one guild with the `bot` scope, as a guild install (`integration_type=0`), with the permissions below ([bot authorization flow](https://docs.discord.com/developers/topics/oauth2#bot-authorization-flow), [permissions](https://docs.discord.com/developers/topics/permissions#permissions-bitwise-permission-flags)).
-5. Write the guild id, the bot user id and the channel ids into `fleet.toml`. Enable Developer Mode in the Discord client to copy the ids.
+1. Create an application in the Developer Portal. Add a bot user. Copy the bot
+   token into the curl config file and into the listener's secret store, and
+   nowhere else.
+2. Under Privileged Gateway Intents, enable Message Content only when every
+   message in a thread should be a turn. At 100 guilds or more, the intent needs
+   verification ([message content
+   intent](https://docs.discord.com/developers/events/gateway#message-content-intent)).
+   One guild needs none.
+3. Set the bot to private, so only the operator can add it to a guild. The
+   setting's exact name in the portal is **unverified**.
+4. Invite it to the one guild with the `bot` scope, as a guild install
+   (`integration_type=0`), with the permissions below ([bot authorization
+   flow](https://docs.discord.com/developers/topics/oauth2#bot-authorization-flow),
+   [permissions](https://docs.discord.com/developers/topics/permissions#permissions-bitwise-permission-flags)).
+5. Write the guild id, the bot user id and the channel ids into `fleet.toml`.
+   Enable Developer Mode in the Discord client to copy the ids.
 
 | Permission | Bit | Why |
 | --- | --- | --- |
@@ -220,11 +355,13 @@ The account rules, beside today's account fields (`crates/fleet-api/src/gateway.
 | `CREATE_PUBLIC_THREADS` | `1 << 35` | Start a thread from a message. |
 | `READ_MESSAGE_HISTORY` | `1 << 16` | History reads. Without it, reads come back empty. |
 
-`MANAGE_THREADS` is not needed. Grant the permissions on the route's channels only, where the guild allows that.
+`MANAGE_THREADS` is not needed. Grant the permissions on the route's channels
+only, where the guild allows that.
 
 ## Test plan
 
-Each layer uses the same fixtures: recorded Discord dispatches and REST answers, with fake snowflakes and no token.
+Each layer uses the same fixtures: recorded Discord dispatches and REST answers,
+with fake snowflakes and no token.
 
 | Layer | What it proves | Where |
 | --- | --- | --- |
@@ -237,36 +374,76 @@ Each layer uses the same fixtures: recorded Discord dispatches and REST answers,
 
 ## Implementation plan
 
-Each step is its own change. Each starts with a failing end-to-end test, as `AGENTS.md` asks, and keeps `cargo xtask check` green.
+Each step is its own change. Each starts with a failing end-to-end test, as
+`AGENTS.md` asks, and keeps `cargo xtask check` green.
 
-1. **Nonce recovery in the controllers.** Change `recovery_due` and `settle_posts` to follow the nonce rule. Drive it with the fake set to `marker = nonce`. This step is useful alone and touches no platform.
-2. **Config and port values.** Add `Inbound::DiscordGateway` (`discord-gateway`, verified `connection`), the `messageContent` key, `intents` in `listener_account`, and the address form in the docs.
-3. **Pure reading.** Add `discord.rs` with `KIND`, `parse_address`, `read_event`, the delivery ids, the text conversion, the splitting and `nonce(key)`. It has unit tests only and makes no call.
-4. **REST calls.** Add `whoami` (`GET /users/@me`, plus a guild check), `capabilities` (`GET /applications/@me`), `history`, `post` with the lazy thread start, and the two-step `open`. Add `Platform::Discord` and the account checks in `GatewayAccounts::new`. Test with the stub `curl`.
-5. **End to end and docs.** Add the `e2e_gateway` cases for a Discord account. Move Discord from "on paper" to an implemented adapter in `adapters.md` and `fleet-toml.md`. Add the setup steps.
-6. **The listener.** A separate program outside the workspace, as for Slack, with its own repository and review.
+1. **Nonce recovery in the controllers.** Change `recovery_due` and
+   `settle_posts` to follow the nonce rule. Drive it with the fake set to
+   `marker = nonce`. This step is useful alone and touches no platform.
+2. **Config and port values.** Add `Inbound::DiscordGateway` (`discord-gateway`,
+   verified `connection`), the `messageContent` key, `intents` in
+   `listener_account`, and the address form in the docs.
+3. **Pure reading.** Add `discord.rs` with `KIND`, `parse_address`,
+   `read_event`, the delivery ids, the text conversion, the splitting and
+   `nonce(key)`. It has unit tests only and makes no call.
+4. **REST calls.** Add `whoami` (`GET /users/@me`, plus a guild check),
+   `capabilities` (`GET /applications/@me`), `history`, `post` with the lazy
+   thread start, and the two-step `open`. Add `Platform::Discord` and the
+   account checks in `GatewayAccounts::new`. Test with the stub `curl`.
+5. **End to end and docs.** Add the `e2e_gateway` cases for a Discord account.
+   Move Discord from "on paper" to an implemented adapter in `adapters.md` and
+   `fleet-toml.md`. Add the setup steps.
+6. **The listener.** A separate program outside the workspace, as for Slack,
+   with its own repository and review.
 
-No new crate and no new dependency. `discord.rs` uses what `slack.rs` uses (see fleet-gateway's dependencies (`crates/architecture.toml:1-18`)).
+No new crate and no new dependency. `discord.rs` uses what `slack.rs` uses (see
+fleet-gateway's dependencies (`crates/architecture.toml:1-18`)).
 
 ## What it costs
 
-- **One controller change, shared by all platforms.** `recovery_due` and `settle_posts` gain a third branch. It is pure and tested with the fake. Search: `git grep -n 'Marker::Metadata' ab35108 -- crates/fleet-controllers/src` finds the two sites.
-- **The documented address changes** from `discord:<thread>` to `discord:<channel>:<thread>`. No code reads the old form. Search: `git grep -n 'discord:' ab35108 -- crates` finds no code.
-- **The listener does more than Slack's.** It keeps a thread-to-parent map and persists a resume point. It is still transport only: it parses no message for Fleet.
-- **Posts past the nonce window need a person.** A call that landed but whose answer was lost, if noticed after the window, raises `PostUnconfirmed`.
-- **Without `MESSAGE_CONTENT`, only mentions reach Fleet.** In a tied thread, a person must mention the bot on each turn. The Conversation says so with `MentionsOnly`.
+- **One controller change, shared by all platforms.** `recovery_due` and
+  `settle_posts` gain a third branch. It is pure and tested with the fake.
+  Search: `git grep -n 'Marker::Metadata' ab35108 --
+  crates/fleet-controllers/src` finds the two sites.
+- **The documented address changes** from `discord:<thread>` to
+  `discord:<channel>:<thread>`. No code reads the old form. Search: `git grep -n
+  'discord:' ab35108 -- crates` finds no code.
+- **The listener does more than Slack's.** It keeps a thread-to-parent map and
+  persists a resume point. It is still transport only: it parses no message for
+  Fleet.
+- **Posts past the nonce window need a person.** A call that landed but whose
+  answer was lost, if noticed after the window, raises `PostUnconfirmed`.
+- **Without `MESSAGE_CONTENT`, only mentions reach Fleet.** In a tied thread, a
+  person must mention the bot on each turn. The Conversation says so with
+  `MentionsOnly`.
 
 ## Considered and dropped
 
-- **The adapter looks up the parent itself, inside `event`.** `event` is pure, so the receive verb runs it without the lease (envelope (`crates/fleet-api/src/gateway.rs:212-234`)). A REST call there would break that rule. The listener already sees every thread event, so it holds the map.
-- **A store table from thread to parent, written by the receive verb from `THREAD_*` events.** It adds a new record kind and a new writer for something the listener can hold. A missed `THREAD_CREATE` would still need a fallback.
-- **Keep `discord:<thread>` as the address.** The receive verb could not match a thread to its route, and `post` could not start a thread from a top-level mention.
-- **A visible marker in the text, an embed footer or a component `custom_id`.** People would see it, and it would cost characters. The nonce is invisible and documented.
-- **Proving absence past the window from history.** A read without `READ_MESSAGE_HISTORY` is an empty list, so an empty read proves nothing. Fleet never takes Unknown as absent.
-- **Fleet holds the WebSocket in `fleet up`.** The gateway design rejected this for every platform: the manager would gain a network service.
-- **Forum channels.** `POST /channels/{id}/threads` creates a post and its thread in one call. But its message parameters list no `nonce` or `enforce_nonce` ([start thread in forum](https://docs.discord.com/developers/resources/channel#start-thread-in-forum-or-media-channel)). So an Unknown forum open could never be recovered. Left out for now (D3).
+- **The adapter looks up the parent itself, inside `event`.** `event` is pure,
+  so the receive verb runs it without the lease (envelope
+  (`crates/fleet-api/src/gateway.rs:212-234`)). A REST call there would break
+  that rule. The listener already sees every thread event, so it holds the map.
+- **A store table from thread to parent, written by the receive verb from
+  `THREAD_*` events.** It adds a new record kind and a new writer for something
+  the listener can hold. A missed `THREAD_CREATE` would still need a fallback.
+- **Keep `discord:<thread>` as the address.** The receive verb could not match a
+  thread to its route, and `post` could not start a thread from a top-level
+  mention.
+- **A visible marker in the text, an embed footer or a component `custom_id`.**
+  People would see it, and it would cost characters. The nonce is invisible and
+  documented.
+- **Proving absence past the window from history.** A read without
+  `READ_MESSAGE_HISTORY` is an empty list, so an empty read proves nothing.
+  Fleet never takes Unknown as absent.
+- **Fleet holds the WebSocket in `fleet up`.** The gateway design rejected this
+  for every platform: the manager would gain a network service.
+- **Forum channels.** `POST /channels/{id}/threads` creates a post and its
+  thread in one call. But its message parameters list no `nonce` or
+  `enforce_nonce` ([start thread in
+  forum](https://docs.discord.com/developers/resources/channel#start-thread-in-forum-or-media-channel)).
+  So an Unknown forum open could never be recovered. Left out for now (D3).
 
-## Open questions and decisions for the user
+## Open questions and decisions
 
 | # | Question | Recommendation |
 | --- | --- | --- |
