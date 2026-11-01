@@ -272,6 +272,13 @@ fn installed_workspace_exposes_each_skill_to_codex_and_claude_code() {
         .ok()
         .stdout_has("could not link");
     assert!(workspace.join(".fleet/provenance.json").is_file());
+    // Nor does a `.claude` init cannot read.
+    fs::set_permissions(workspace.join(".claude"), fs::Permissions::from_mode(0o000)).unwrap();
+    fs::remove_file(workspace.join(".fleet/provenance.json")).unwrap();
+    wait(installed(&env, &["init", "--update"]).spawn().unwrap())
+        .ok()
+        .stdout_has("could not inspect");
+    assert!(workspace.join(".fleet/provenance.json").is_file());
     fs::set_permissions(workspace.join(".claude"), fs::Permissions::from_mode(0o755)).unwrap();
 }
 
