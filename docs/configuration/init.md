@@ -69,18 +69,20 @@ workspace files advance; edits, deletions and private files survive. Config is
 user-owned after creation and is never replaced by an update. Review proposed
 conflicts under `vega/.fleet/conflicts/<content-hash>/`; merge them manually.
 The `.fleet` directory holds instance identity, baseline hashes, manifest and
-source provenance; preserve it with the workspace. Malformed metadata and
-managed symlinks are refused. Initializers serialize with OS locks; a crash
-releases the locks and a repeat init completes missing files conservatively.
+source provenance; preserve it with the workspace. Malformed metadata is
+refused. A symlink at or above the path of a managed file is refused. The
+`.claude/skills` link below is not a managed file. Initializers serialize
+with OS locks; a crash releases the locks and a repeat init completes missing
+files conservatively.
 
 VEGA's skills have one canonical copy under `vega/.agents/skills`, where
 Codex finds them. Claude Code finds project skills only under
 `.claude/skills`. `init` and `init --update` therefore create the relative
 symlink `vega/.claude/skills` to `../.agents/skills`. This link is the only
 symlink that init manages. Init never replaces an existing `.claude/skills`
-that is not this link; it reports that path instead. On Windows, a symlink
-requires Developer Mode or the symlink privilege. Without one, init reports
-the failure, and Claude Code sessions do not find VEGA's skills.
+that is not this link; it reports that path instead. When the link cannot
+be created, init reports the failure and completes. Claude Code sessions then
+do not find VEGA's skills.
 
 The bundled content is MIT licensed at exact source commit
 `3c4798dbdb33672576958cf8f1849c16e519d95d`. The build verifies every allowlisted

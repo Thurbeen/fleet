@@ -261,6 +261,18 @@ fn installed_workspace_exposes_each_skill_to_codex_and_claude_code() {
         .ok()
         .stdout_has("preserved");
     assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
+
+    // A link that cannot be made is reported; init still completes.
+    use std::os::unix::fs::PermissionsExt;
+    fs::remove_file(workspace.join(".claude")).unwrap();
+    fs::create_dir(workspace.join(".claude")).unwrap();
+    fs::set_permissions(workspace.join(".claude"), fs::Permissions::from_mode(0o555)).unwrap();
+    fs::remove_file(workspace.join(".fleet/provenance.json")).unwrap();
+    wait(installed(&env, &["init", "--update"]).spawn().unwrap())
+        .ok()
+        .stdout_has("could not link");
+    assert!(workspace.join(".fleet/provenance.json").is_file());
+    fs::set_permissions(workspace.join(".claude"), fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 #[test]
