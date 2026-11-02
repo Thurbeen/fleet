@@ -708,7 +708,8 @@ Each adapter reports its longest single operation (`operation_bound`), and
   initial prompt under the welcome screen. Missing or different evidence
   remains Unknown. This input-only proof never authorizes release; `at_rest`
   still requires idle, done or stopped. `e2e_runtime` covers initial delivery,
-  reconnect, busy/dialog/cursor guards and unchanged deletion safety.
+  reconnect, dialog/cursor guards, delivery to a working session and
+  unchanged deletion safety.
   thurbox keeps a session's row across a reboot. `lost` is `session get`
   reporting `hook_corroboration: "missing"`, and `revive` is `session
   restart --if-missing`, which resumes the conversation in the same row and
