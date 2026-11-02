@@ -177,6 +177,7 @@ fn effect_outcome(outcome: &Observation<EffectOutcome>) -> &'static str {
             EffectOutcome::Delivered { already: true, .. }
             | EffectOutcome::MarkedReady { already: true } => "already",
             EffectOutcome::Delivered { .. } => "delivered",
+            EffectOutcome::Queued { .. } => "queued",
             EffectOutcome::Released => "released",
             EffectOutcome::Revived => "revived",
             EffectOutcome::MarkedReady { .. } => "markedReady",

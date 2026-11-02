@@ -911,6 +911,7 @@ fn receipt(key: &str) -> DeliveryReceipt {
         at: 2,
         recovered: false,
         delivered_via: None,
+        may_hold: false,
     }
 }
 

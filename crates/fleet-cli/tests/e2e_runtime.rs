@@ -138,7 +138,18 @@ fn a_host_that_cannot_be_read_is_unknown_for_its_own_tasks_only() {
     env.edit_stub(|s| s["hosts"] = json!({"remote": "up"}));
     env.apply(on_remote).ok();
     env.reconcile().ok();
-    assert_eq!(env.status("far")["phase"], "Briefed");
+    // thurbox 2.81 reaches no remote agent's inbox: it keeps the brief in its
+    // mailbox. That is no delivery, and the brief is never sent again.
+    let far = env.status("far");
+    assert_eq!(far["phase"], "Spawned", "{far:#}");
+    assert_condition(&far, "Briefed", "False", "BriefUndelivered");
+    assert_condition(&far, "NeedsAttention", "True", "BriefUndelivered");
+    for _ in 0..3 {
+        env.expire_wait("far");
+        env.reconcile().ok();
+    }
+    assert_eq!(argv_of(&env, "message send").len(), 1, "never sent again");
+    assert_eq!(env.stub_sessions()[0]["sent"], json!([]), "nothing typed");
     let create = &argv_of(&env, "create")[0];
     let at = create.iter().position(|a| a == "--host").expect("--host");
     assert_eq!(create[at + 1], "remote");
@@ -150,7 +161,7 @@ fn a_host_that_cannot_be_read_is_unknown_for_its_own_tasks_only() {
     let report = env.reconcile().ok().json();
     assert_eq!(env.status("near")["phase"], "Briefed");
     let far = env.status("far");
-    assert_eq!(far["phase"], "Briefed", "{far:#}");
+    assert_eq!(far["phase"], "Spawned", "{far:#}");
     assert!(
         far["conditions"]
             .as_array()
@@ -969,30 +980,68 @@ fn a_message_reaches_a_working_claude_session_through_its_native_inbox() {
 }
 
 #[test]
-fn a_message_the_agent_may_hold_behind_a_dialog_asks_for_attention() {
-    // Claude Code may hold a cross-session message behind an approval
-    // dialog unless its settings accept them; thurbox says so as may_hold.
+fn a_route_that_may_hold_the_text_is_recorded_on_the_receipt_only() {
+    // thurbox says may_hold for every Claude Code socket delivery: a fact
+    // about the route, which no person can clear, so it raises nothing.
     let env = setup("thurbox-inbox-may-hold", vec![task("t1", true)]);
     env.reconcile().ok();
-    env.edit_stub(|s| s["mayHold"] = json!(true));
     env.fleet(&["send", "t1", "are you there?"]).ok();
     env.expire_wait("t1");
     env.reconcile().ok();
-    env.reconcile().ok();
-    let st = env.status("t1");
-    assert_condition(&st, "NeedsAttention", "True", "DeliveryMayHold");
-
-    // A later delivery the agent cannot hold settles it.
-    env.edit_stub(|s| s["mayHold"] = json!(false));
-    env.fleet(&["send", "t1", "next"]).ok();
-    env.expire_wait("t1");
-    env.reconcile().ok();
-    env.reconcile().ok();
-    let st = env.status("t1");
-    let held = st["conditions"]
+    let full = full_status(&env, "t1");
+    let receipt = &full["deliveries"]["receipts"][0];
+    assert_eq!(receipt["mayHold"], true, "{full:#}");
+    assert_eq!(receipt["deliveredVia"], "claude-socket", "{full:#}");
+    let held = env.status("t1")["conditions"]
         .as_array()
         .unwrap()
         .iter()
         .any(|c| c["type"] == "NeedsAttention" && c["status"] == "True");
-    assert!(!held, "{st:#}");
+    assert!(!held, "{full:#}");
+}
+
+#[test]
+fn a_message_thurbox_only_queues_is_given_up_and_never_sent_again() {
+    // thurbox falls back to its mailbox when it cannot reach the agent, and
+    // still exits 0. The agent never reads it there.
+    let env = setup("thurbox-inbox-queued", vec![task("t1", true)]);
+    env.reconcile().ok();
+    env.edit_stub(|s| s["mailboxNote"] = json!("claude inbox socket refused"));
+    env.fleet(&["send", "t1", "first"]).ok();
+    for _ in 0..4 {
+        env.expire_wait("t1");
+        env.reconcile().ok();
+    }
+    let st = env.status("t1");
+    assert_condition(&st, "NeedsAttention", "True", "DeliveryQueued");
+    let attention = st["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["type"] == "NeedsAttention")
+        .unwrap()["message"]
+        .to_string();
+    assert!(
+        attention.contains("claude inbox socket refused"),
+        "{attention}"
+    );
+    let firsts = argv_of(&env, "message send")
+        .iter()
+        .filter(|a| a.contains(&"--body=first".to_string()))
+        .count();
+    assert_eq!(firsts, 1, "never sent again");
+    let full = full_status(&env, "t1");
+    assert_eq!(full["inbox"].as_array().unwrap().len(), 1, "{full:#}");
+    assert!(full["deliveries"]["receipts"].is_null(), "{full:#}");
+
+    // A later entry goes past it once thurbox reaches the agent again.
+    env.edit_stub(|s| s["mailboxNote"] = Value::Null);
+    env.fleet(&["send", "t1", "second"]).ok();
+    env.expire_wait("t1");
+    env.reconcile().ok();
+    let sent = &env.stub_sessions()[0]["sent"];
+    assert!(
+        sent.as_array().unwrap().iter().any(|t| t == "second"),
+        "{sent:#}"
+    );
 }

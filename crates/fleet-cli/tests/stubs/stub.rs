@@ -1421,22 +1421,45 @@ fn answer(
                     "message send: session '{name}' has no window of its own here"
                 ));
             }
-            let via = match state["sessions"][i]["agent"].as_str() {
-                Some("claude-code") => "claude-socket",
-                Some("codex") => "codex-queue",
-                _ => "mailbox",
+            // Every route it cannot take falls back to the mailbox, exit 0:
+            // a remote session, or a route the test breaks (`mailboxNote`).
+            let remote = state["sessions"][i]["host"]
+                .as_str()
+                .is_some_and(|h| h != "local");
+            let (via, note) = match state["sessions"][i]["agent"].as_str() {
+                _ if remote => (
+                    "mailbox",
+                    Some("the session runs on a remote host, whose agent inbox is not reachable from here".to_string()),
+                ),
+                _ if state["mailboxNote"].is_string() => {
+                    ("mailbox", state["mailboxNote"].as_str().map(str::to_string))
+                }
+                // thurbox detects a live Claude socket or a bound Codex
+                // thread; the stub takes the agent's name for that proof.
+                Some(a) if a.contains("claude") => ("claude-socket", None),
+                Some(a) if a.contains("codex") => ("codex-queue", None),
+                _ => (
+                    "mailbox",
+                    Some("no agent-native inbox is known for this session".to_string()),
+                ),
             };
-            let may_hold = via == "claude-socket" && state["mayHold"] == true;
             let s = &mut state["sessions"][i];
-            s["sent"].as_array_mut().expect("sent").push(json!(body));
-            if via != "mailbox" {
+            if via == "mailbox" {
+                if s["mailbox"].is_null() {
+                    s["mailbox"] = json!([]);
+                }
+                s["mailbox"].as_array_mut().unwrap().push(json!(body));
+            } else {
+                s["sent"].as_array_mut().expect("sent").push(json!(body));
                 s["state"] = json!("working");
             }
             let s = s.clone();
             event(state, "state", &s);
+            // As thurbox: may_hold is a fact about the Claude Code route.
             ok(
                 json!({"id": 1, "to_session_id": id, "kind": opt(args, "--kind"),
-                      "delivered_via": via, "may_hold": may_hold}),
+                      "delivered_via": via, "delivery_note": note,
+                      "may_hold": via == "claude-socket"}),
             )
         }
         "meta-get" | "meta-set" => {

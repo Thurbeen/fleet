@@ -49,6 +49,12 @@ pub const MAX_BRIEF: usize = 16_000;
 /// The `message send --kind` of everything Fleet gives a session.
 const MESSAGE_KIND: &str = "fleet";
 
+/// The `delivered_via` of a message thurbox only queued.
+const MAILBOX: &str = "mailbox";
+
+/// The journal mark of a text thurbox only queued: never sent again.
+const QUEUED: &str = "queued";
+
 /// The most thurbox-cli calls one operation makes: a brief (meta get, meta
 /// set, send, meta set).
 pub const MAX_CALLS_PER_OPERATION: u32 = 4;
@@ -1008,6 +1014,11 @@ impl Runtime for ThurboxRuntime {
                     may_hold: false,
                 });
             }
+            Some(QUEUED) => {
+                return Observation::Known(EffectOutcome::Queued {
+                    why: "thurbox kept it in the mailbox, which the agent does not read".into(),
+                });
+            }
             Some(_) => {
                 return Observation::unknown("prompt delivery is pending and cannot be repeated");
             }
@@ -1058,15 +1069,29 @@ impl Runtime for ThurboxRuntime {
         };
         let row: Value = serde_json::from_str(answer.trim()).unwrap_or(Value::Null);
         let via = row["delivered_via"].as_str().map(str::to_string);
-        let may_hold = row["may_hold"] == true;
-        journal.insert(intent_key.to_string(), "delivered".into());
-        let delivered = serde_json::to_string(&journal).expect("string map");
-        match self.set_meta(session, BRIEF_META, &delivered) {
-            Answer::Ok(_) => Observation::Known(EffectOutcome::Delivered {
+        // thurbox falls back to its mailbox when it cannot reach the agent:
+        // a remote session, an unbound Codex, a failed socket, any other
+        // harness. Nothing reads it there, so it is not a delivery.
+        let (mark, outcome) = if via.as_deref() == Some(MAILBOX) {
+            let note = row["delivery_note"]
+                .as_str()
+                .unwrap_or("thurbox gave no reason");
+            let why =
+                format!("thurbox kept it in the mailbox, which the agent does not read: {note}");
+            (QUEUED, EffectOutcome::Queued { why })
+        } else {
+            let may_hold = row["may_hold"] == true;
+            let outcome = EffectOutcome::Delivered {
                 already: false,
                 via,
                 may_hold,
-            }),
+            };
+            ("delivered", outcome)
+        };
+        journal.insert(intent_key.to_string(), mark.into());
+        let marked = serde_json::to_string(&journal).expect("string map");
+        match self.set_meta(session, BRIEF_META, &marked) {
+            Answer::Ok(_) => Observation::Known(outcome),
             Answer::No(why) | Answer::Unknown(why) => {
                 Observation::unknown(format!("sent, but the receipt was not recorded: {why}"))
             }
@@ -1077,6 +1102,9 @@ impl Runtime for ThurboxRuntime {
         match self.delivery_journal(session) {
             Ok(journal) => match journal.get(intent_key).map(String::as_str) {
                 Some("delivered") => Observation::Known(true),
+                Some(QUEUED) => Observation::unknown(
+                    "thurbox kept it in the mailbox, which the agent does not read",
+                ),
                 Some(_) => Observation::unknown(
                     "the prompt was being sent and its delivery was never confirmed",
                 ),

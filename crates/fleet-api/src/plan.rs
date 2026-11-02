@@ -189,7 +189,7 @@ pub enum EffectOutcome {
     },
     /// The brief is on the session; `already` when the session refused a
     /// second send of the same key. `via` names the runtime's route when it
-    /// said; `may_hold` when the agent may hold the text behind a dialog.
+    /// said; `may_hold` when that route can hold the text behind a dialog.
     Delivered {
         already: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -200,6 +200,11 @@ pub enum EffectOutcome {
             skip_serializing_if = "std::ops::Not::not"
         )]
         may_hold: bool,
+    },
+    /// The runtime kept the text in a queue that its agent does not read:
+    /// not a delivery. The text is there already, so it is never sent again.
+    Queued {
+        why: String,
     },
     Released,
     /// The runtime started the session's agent again, or found it running.

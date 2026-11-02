@@ -700,6 +700,8 @@ Each adapter reports its longest single operation (`operation_bound`), and
   note and inbox entry goes to the agent's own inbox through `message send`,
   never into the terminal composer, so a working turn takes it. Thurbox
   picks the route and reports it; the receipt records it as `deliveredVia`.
+  A `mailbox` answer is no delivery: the controller raises `BriefUndelivered`
+  or `DeliveryQueued` and never sends that text again.
   `spec.model` reaches the harness as the variable `runtime.modelEnv` names
   for it. Before Codex's first
   lifecycle report, readiness additionally accepts its initial empty composer:

@@ -462,8 +462,12 @@ fn a_harness_without_a_known_trust_interface_starts_nothing_until_configured() {
     std::fs::write(&env.config, cfg).expect("config");
     env.expire_wait("a1");
     env.reconcile().ok();
-    assert_eq!(env.status("a1")["phase"], "Briefed");
-    assert_condition(&env.status("a1"), "NeedsAttention", "False", "Resolved");
+    // Trusted now, the brief goes out once. thurbox knows no agent inbox
+    // for this harness and keeps it in its mailbox: not a delivery.
+    let st = env.status("a1");
+    assert_condition(&st, "WorkspaceTrusted", "True", "Trusted");
+    assert_condition(&st, "Briefed", "False", "BriefUndelivered");
+    assert_eq!(argv_of(&env, "message send").len(), 1, "{st:#}");
 
     let bad = Env::thurbox("trust-bad-config");
     let cfg = std::fs::read_to_string(&bad.config).expect("config");
