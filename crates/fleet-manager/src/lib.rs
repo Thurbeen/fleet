@@ -304,8 +304,17 @@ impl Manager<'_> {
             if let Some(why) = conversations.why() {
                 report.unknowns.push(format!("list Conversation: {why}"));
             }
-            // What a tied Task's change news is judged against.
-            let change_requests: BTreeMap<String, Object> =
+            // What a tied Task's change news is judged against, listed only
+            // when some tied Task follows a change.
+            let follows = tasks.iter().any(|t| {
+                t.status["gateway"]["conversation"]["state"] == "tied"
+                    && t.status["forge"]["changes"]
+                        .as_object()
+                        .is_some_and(|c| !c.is_empty())
+            });
+            let change_requests: BTreeMap<String, Object> = if !follows {
+                BTreeMap::new()
+            } else {
                 match self.store.list(change_request::KIND) {
                     Observation::Known(list) => list
                         .into_iter()
@@ -315,7 +324,8 @@ impl Manager<'_> {
                         report.unknowns.push(format!("list ChangeRequest: {why}"));
                         BTreeMap::new()
                     }
-                };
+                }
+            };
             let mut children_of: BTreeMap<&str, Vec<&Object>> = BTreeMap::new();
             for t in &tasks {
                 if let (Some(parent), Some(_)) = (
