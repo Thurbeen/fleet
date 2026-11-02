@@ -1396,7 +1396,19 @@ fn answer(
             // queue, a working turn included; any other agent's message
             // waits in the mailbox. `mayHold` is the Claude Code dialog.
             let id = opt(args, "--to").unwrap_or_default();
-            let body = opt(args, "--body").unwrap_or_default();
+            // As clap parses it: `--body -x` is a flag, `--body=-x` text.
+            let body = match args.iter().find_map(|a| a.strip_prefix("--body=")) {
+                Some(b) => b.to_string(),
+                None => match opt(args, "--body") {
+                    Some(b) if b.starts_with('-') => {
+                        return (
+                            ExitCode::from(2),
+                            Some(format!("error: unexpected argument '{b}' found")),
+                        );
+                    }
+                    b => b.unwrap_or_default(),
+                },
+            };
             let Some(i) = find_index(state, &id) else {
                 return err(format!("Session not found: {id}"));
             };

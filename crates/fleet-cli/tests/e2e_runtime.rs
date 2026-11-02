@@ -296,7 +296,7 @@ fn an_inbox_entry_too_long_for_tmux_is_refused_and_never_blocks_the_inbox() {
     assert!(
         !argv_of(&env, "message send")
             .iter()
-            .any(|a| a.contains(&long)),
+            .any(|a| a.iter().any(|x| x.contains(&long))),
         "the long text never reached thurbox-cli"
     );
     let st = env.status("t1");
@@ -331,7 +331,10 @@ fn an_unconfirmed_inbox_entry_is_given_up_and_later_entries_go_past_it() {
     }
     let sends = argv_of(&env, "message send");
     assert_eq!(
-        sends.iter().filter(|a| a.contains(&"first".into())).count(),
+        sends
+            .iter()
+            .filter(|a| a.contains(&"--body=first".into()))
+            .count(),
         1,
         "never typed twice: {sends:?}"
     );
@@ -960,7 +963,7 @@ fn a_message_reaches_a_working_claude_session_through_its_native_inbox() {
     assert!(
         messages
             .iter()
-            .any(|a| a.contains(&"steer: prefer the smaller fix".to_string())),
+            .any(|a| a.contains(&"--body=steer: prefer the smaller fix".to_string())),
         "{messages:?}"
     );
 }

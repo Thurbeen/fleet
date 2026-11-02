@@ -194,7 +194,11 @@ pub enum EffectOutcome {
         already: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         via: Option<String>,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[serde(
+            default,
+            rename = "mayHold",
+            skip_serializing_if = "std::ops::Not::not"
+        )]
         may_hold: bool,
     },
     Released,

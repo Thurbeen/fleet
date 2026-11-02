@@ -1039,8 +1039,8 @@ impl Runtime for ThurboxRuntime {
             &session.id,
             "--kind",
             MESSAGE_KIND,
-            "--body",
-            text,
+            // `--body=`: a text that starts with `-` is text, never a flag.
+            &format!("--body={text}"),
             "--json",
         ]);
         spec.env_remove
