@@ -174,7 +174,7 @@ fn effect_outcome(outcome: &Observation<EffectOutcome>) -> &'static str {
         Observation::Known(o) => match o {
             EffectOutcome::Spawned { adopted: true, .. } => "adopted",
             EffectOutcome::Spawned { .. } => "spawned",
-            EffectOutcome::Delivered { already: true }
+            EffectOutcome::Delivered { already: true, .. }
             | EffectOutcome::MarkedReady { already: true } => "already",
             EffectOutcome::Delivered { .. } => "delivered",
             EffectOutcome::Released => "released",

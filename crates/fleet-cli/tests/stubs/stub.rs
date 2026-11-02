@@ -238,7 +238,7 @@ fn main() -> ExitCode {
         ("glab", Some("api")) => forge::glab(&args),
         ("az", Some("devops" | "repos")) => forge::az(&args),
         ("curl", Some("--include")) => forge::curl(&args),
-        (_, Some("session") | Some("doctor")) => thurbox(&args),
+        (_, Some("session") | Some("message") | Some("doctor")) => thurbox(&args),
         _ => fail("stub: unknown role"),
     }
 }
@@ -1133,6 +1133,7 @@ fn thurbox(args: &[String]) -> ExitCode {
             format!("meta-{}", args.get(2).cloned().unwrap_or_default())
         }
         (Some("session"), Some(sub)) => sub.to_string(),
+        (Some("message"), Some(sub)) => format!("message-{sub}"),
         (Some(top), _) => top.to_string(),
         _ => return fail("stub: no command"),
     };
@@ -1388,6 +1389,43 @@ fn answer(
             let s = s.clone();
             event(state, "state", &s);
             ok(json!({"submitted": true}))
+        }
+        "message-send" => {
+            // As thurbox 2.81 routes it: the agent's own inbox, never the
+            // pane. Claude Code takes it on its socket and Codex on its
+            // queue, a working turn included; any other agent's message
+            // waits in the mailbox. `mayHold` is the Claude Code dialog.
+            let id = opt(args, "--to").unwrap_or_default();
+            let body = opt(args, "--body").unwrap_or_default();
+            let Some(i) = find_index(state, &id) else {
+                return err(format!("Session not found: {id}"));
+            };
+            if window_gone(&state["sessions"][i]) {
+                let name = state["sessions"][i]["name"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                return err(format!(
+                    "message send: session '{name}' has no window of its own here"
+                ));
+            }
+            let via = match state["sessions"][i]["agent"].as_str() {
+                Some("claude-code") => "claude-socket",
+                Some("codex") => "codex-queue",
+                _ => "mailbox",
+            };
+            let may_hold = via == "claude-socket" && state["mayHold"] == true;
+            let s = &mut state["sessions"][i];
+            s["sent"].as_array_mut().expect("sent").push(json!(body));
+            if via != "mailbox" {
+                s["state"] = json!("working");
+            }
+            let s = s.clone();
+            event(state, "state", &s);
+            ok(
+                json!({"id": 1, "to_session_id": id, "kind": opt(args, "--kind"),
+                      "delivered_via": via, "may_hold": may_hold}),
+            )
         }
         "meta-get" | "meta-set" => {
             let id = args.get(3).cloned().unwrap_or_default();

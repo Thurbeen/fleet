@@ -910,6 +910,7 @@ fn receipt(key: &str) -> DeliveryReceipt {
         from: String::new(),
         at: 2,
         recovered: false,
+        delivered_via: None,
     }
 }
 

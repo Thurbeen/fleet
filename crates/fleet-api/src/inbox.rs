@@ -94,6 +94,9 @@ pub struct DeliveryReceipt {
     /// rather than returned by the send.
     #[serde(default)]
     pub recovered: bool,
+    /// The runtime's route to the agent, when the send named one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivered_via: Option<String>,
 }
 
 /// `status.deliveries`: TaskController's record of what the session was
@@ -237,6 +240,7 @@ mod tests {
             from: String::new(),
             at,
             recovered: false,
+            delivered_via: None,
         }
     }
 

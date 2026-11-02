@@ -696,8 +696,12 @@ Each adapter reports its longest single operation (`operation_bound`), and
 - **thurbox:** every call is one bounded `thurbox-cli … --json`. A session's
   thurbox key is `<keyPrefix>.<uid>`, and `--on-existing adopt` makes a
   repeated create return the session holding the key. The brief's delivery
-  is journaled in the session's own metadata. `spec.model` reaches the
-  harness as the variable `runtime.modelEnv` names for it. Before Codex's first
+  is journaled in the session's own metadata. Every brief, amendment, resume
+  note and inbox entry goes to the agent's own inbox through `message send`,
+  never into the terminal composer, so a working turn takes it. Thurbox
+  picks the route and reports it; the receipt records it as `deliveredVia`.
+  `spec.model` reaches the harness as the variable `runtime.modelEnv` names
+  for it. Before Codex's first
   lifecycle report, readiness additionally accepts its initial empty composer:
   a matching owned session, corroborated live Codex process, no reported or
   contradicted hook, and a visible-pane capture placing the cursor at the

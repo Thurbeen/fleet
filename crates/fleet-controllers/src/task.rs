@@ -82,8 +82,12 @@ const REVIVE_FAILED: &str = "ReviveFailed";
 
 /// What one keyed send came to on this pass.
 enum Sent {
-    /// On the session; `true` when the journal recovered it.
-    Delivered(bool),
+    /// On the session: `recovered` when the journal recovered it, `via` the
+    /// runtime's route when the send named one.
+    Delivered {
+        recovered: bool,
+        via: Option<String>,
+    },
     /// Sent, waiting, or not sendable yet.
     Pending,
     /// Its sends ran out.
@@ -259,6 +263,23 @@ impl Pass<'_, '_> {
 
     fn needs_attention(&mut self, reason: &str, message: impl Into<String>) {
         self.cond(NEEDS_ATTENTION, ConditionStatus::True, reason, message);
+    }
+
+    /// The runtime said the agent may hold what it was given behind an
+    /// approval dialog: a person may have to answer it. The next delivery
+    /// that cannot be held settles it.
+    fn may_hold(&mut self, may_hold: bool, what: &str, via: Option<&str>) {
+        if may_hold {
+            let via = via.unwrap_or("the runtime's route");
+            self.needs_attention(
+                "DeliveryMayHold",
+                format!(
+                    "{what} reached the agent through {via}, which may hold it behind an approval dialog"
+                ),
+            );
+        } else {
+            self.settle_attention("DeliveryMayHold");
+        }
     }
 
     /// Clear NeedsAttention when the cause `reason` named has gone.
@@ -500,7 +521,8 @@ impl Pass<'_, '_> {
     fn brief_step(&mut self, session: SessionRef) {
         let key = brief_key(self.input.task);
         match self.st.receipts.get(&key).map(|r| r.outcome.clone()) {
-            Some(Observation::Known(EffectOutcome::Delivered { .. })) => {
+            Some(Observation::Known(EffectOutcome::Delivered { via, may_hold, .. })) => {
+                self.may_hold(may_hold, "the brief", via.as_deref());
                 return self.briefed_now(key, false);
             }
             Some(Observation::Known(EffectOutcome::Failed { why })) => {
@@ -524,7 +546,11 @@ impl Pass<'_, '_> {
                     let receipt = Receipt {
                         action: BRIEF.into(),
                         at: self.now(),
-                        outcome: Observation::Known(EffectOutcome::Delivered { already: true }),
+                        outcome: Observation::Known(EffectOutcome::Delivered {
+                            already: true,
+                            via: None,
+                            may_hold: false,
+                        }),
                     };
                     self.st.receipts.insert(key.clone(), receipt);
                     self.briefed_now(key, true);
@@ -726,10 +752,10 @@ impl Pass<'_, '_> {
         };
         let what = format!("inbox entry {} from {}", entry.key, entry.from);
         let Some(generation) = entry.amends else {
-            if let Sent::Delivered(recovered) =
+            if let Sent::Delivered { recovered, via } =
                 self.keyed_send(session, &entry.key, entry.text.clone(), &what)
             {
-                self.record_delivery(&entry, recovered);
+                self.record_delivery(&entry, recovered, via);
             }
             return;
         };
@@ -747,14 +773,16 @@ impl Pass<'_, '_> {
                     .is_some_and(|a| a.failed)
         });
         if generation <= given || (newer && !self.st.intents.contains_key(&entry.key)) {
-            self.record_delivery(&entry, false);
+            self.record_delivery(&entry, false, None);
             return;
         }
         let text = self
             .spec
             .amendment_message(&self.input.task.metadata.name, given, generation);
-        if let Sent::Delivered(recovered) = self.keyed_send(session, &entry.key, text, &what) {
-            self.record_delivery(&entry, recovered);
+        if let Sent::Delivered { recovered, via } =
+            self.keyed_send(session, &entry.key, text, &what)
+        {
+            self.record_delivery(&entry, recovered, via);
             self.amended(entry.key, generation, recovered);
         }
     }
@@ -785,8 +813,12 @@ impl Pass<'_, '_> {
     /// [`MAX_ATTEMPTS`] times. `what` names it in attention messages.
     fn keyed_send(&mut self, session: SessionRef, key: &str, text: String, what: &str) -> Sent {
         match self.st.receipts.get(key).map(|r| r.outcome.clone()) {
-            Some(Observation::Known(EffectOutcome::Delivered { .. })) => {
-                return Sent::Delivered(false);
+            Some(Observation::Known(EffectOutcome::Delivered { via, may_hold, .. })) => {
+                self.may_hold(may_hold, what, via.as_deref());
+                return Sent::Delivered {
+                    recovered: false,
+                    via,
+                };
             }
             Some(Observation::Known(EffectOutcome::Failed { .. })) => {
                 let attempt = self
@@ -812,7 +844,12 @@ impl Pass<'_, '_> {
             // Sent, but no Known receipt: the session's journal decides,
             // exactly as for the brief. Unknown is read again after a wait.
             match self.input.observations.brief_delivered.clone() {
-                Some(Observation::Known(true)) => return Sent::Delivered(true),
+                Some(Observation::Known(true)) => {
+                    return Sent::Delivered {
+                        recovered: true,
+                        via: None,
+                    };
+                }
                 Some(Observation::Known(false)) => {
                     return self.send_keyed(session, key, text, what);
                 }
@@ -890,7 +927,12 @@ impl Pass<'_, '_> {
 
     /// The entry is on the session: its receipt goes to `status.deliveries`
     /// and the entry leaves the inbox, in one write the manager performs.
-    fn record_delivery(&mut self, entry: &InboxEntry, recovered: bool) {
+    fn record_delivery(
+        &mut self,
+        entry: &InboxEntry,
+        recovered: bool,
+        delivered_via: Option<String>,
+    ) {
         let key = entry.key.clone();
         self.st.delivery_attempts.remove(&key);
         self.st.intents.remove(&key);
@@ -905,6 +947,7 @@ impl Pass<'_, '_> {
             from: entry.from.clone(),
             at: self.now(),
             recovered,
+            delivered_via,
         });
     }
 
@@ -1043,7 +1086,7 @@ impl Pass<'_, '_> {
         let what = format!("resume note {key}");
         match self.keyed_send(session, &key, self.resume_text(), &what) {
             Sent::Pending => true,
-            Sent::Delivered(_) | Sent::GivenUp => {
+            Sent::Delivered { .. } | Sent::GivenUp => {
                 self.st.resume = None;
                 self.st.intents.remove(&key);
                 self.st.receipts.remove(&key);
