@@ -22,8 +22,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use fleet_api::condition::{ConditionStatus, condition, set_condition, settle_transitions};
 use fleet_api::conversation::{
     self, CONVERSATION_LABEL, CONVERSATION_UID_LABEL, ConversationSpec, ConversationStatus,
-    EFFECTS_CAP, EffectRecord, MESSAGE_CAP, Phase, REFUSALS_CAP, ROUTE_LABEL, SEEN_EVENTS_CAP,
-    Retiring, StoredMessage, Tie, TieState, Via, busy_key, busy_notice, refusal_key,
+    EFFECTS_CAP, EffectRecord, MESSAGE_CAP, Phase, REFUSALS_CAP, ROUTE_LABEL, Retiring,
+    SEEN_EVENTS_CAP, StoredMessage, Tie, TieState, Via, busy_key, busy_notice, refusal_key,
     retire_dir_key, retire_task_key, task_key, task_name, thread_dir,
 };
 use fleet_api::gateway::{
@@ -513,7 +513,62 @@ impl Pass<'_, '_> {
         self.admit();
         self.trim_effects();
         self.phase();
+        self.retirement();
         self.conditions();
+    }
+
+    /// Whether the tied Task is observed being deleted.
+    fn tied_task_deleting(&self) -> bool {
+        let Some(tie) = &self.st.task else {
+            return false;
+        };
+        tie.state == TieState::Created
+            && matches!(
+                &self.input.observations.task,
+                Some(Observation::Known(Some(t))) if t.metadata.uid == tie.uid && t.is_deleting()
+            )
+    }
+
+    /// When the thread's retention runs out: `gateway.retainMs` after the
+    /// later of its last message, its orphaning and its creation.
+    fn retained_until(&self) -> Millis {
+        let now = self.now();
+        let orphaned_at = (self.st.phase == Phase::Orphaned).then(|| {
+            match condition(&self.st.conditions, TIED) {
+                // Orphaned on this pass: the condition moves below.
+                Some(c) if c.status == ConditionStatus::True => now,
+                Some(c) => c.last_transition_time,
+                None => now,
+            }
+        });
+        let since = [
+            self.st.last_message_at,
+            orphaned_at,
+            self.input.object.metadata.creation_timestamp,
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+        .unwrap_or(now);
+        since.saturating_add(self.input.defaults.retain_ms)
+    }
+
+    /// The thread's end of life, decided before the conditions are, so a
+    /// condition it raises is written: never while a create is pending or
+    /// waits for the thread's directory.
+    fn retirement(&mut self) {
+        let waiting = self
+            .st
+            .task
+            .as_ref()
+            .is_some_and(|t| matches!(t.state, TieState::Busy | TieState::Pending));
+        if waiting {
+            return;
+        }
+        let idle = self.retained_until() <= self.now();
+        if self.st.retiring.is_some() || idle {
+            self.retire(idle);
+        }
     }
 
     /// The tie, as the Task's observation leaves it: a readably absent
@@ -1464,6 +1519,13 @@ impl Pass<'_, '_> {
             // never guess whose it is.
             return;
         }
+        if self.tied_task_deleting() {
+            // The thread orphans once the Task is gone, and an Orphaned
+            // thread starts a Task on any admitted message: judge then, so
+            // a message written meanwhile is not judged in a Tied thread
+            // and lost.
+            return;
+        }
         self.tie_by_marker();
         let people = self.input.defaults.people.clone();
         let starter = self.st.starter.clone();
@@ -1606,24 +1668,14 @@ impl Pass<'_, '_> {
         };
         let at_latest = |t: Millis| wake.map_or(t, |w| w.min(t));
         if self.st.phase == Phase::Tied {
-            let since = [
-                self.st.last_message_at,
-                self.input.object.metadata.creation_timestamp,
-            ]
-            .into_iter()
-            .flatten()
-            .max()
-            .unwrap_or(now);
-            let until = since.saturating_add(self.input.defaults.retain_ms);
-            if self.st.retiring.is_some() || until <= now {
-                self.retire(until <= now);
-                if self.st.retiring.is_some() {
-                    let next = if self.post_wake { now } else { now.saturating_add(poll) };
-                    self.st.not_before = Some(at_latest(next.min(next_read)));
-                    return;
-                }
-            }
-            self.st.not_before = Some(at_latest(next_read.min(until.max(now))));
+            // A retirement's next step, else the next read; an idle thread
+            // whose Task runs is looked at again then, never sooner.
+            let next = if self.st.retiring.is_some() && self.post_wake {
+                now
+            } else {
+                next_read
+            };
+            self.st.not_before = Some(at_latest(next));
             return;
         }
         let orphaned_at = (self.st.phase == Phase::Orphaned)
@@ -1640,8 +1692,12 @@ impl Pass<'_, '_> {
         .unwrap_or(now);
         let until = since.saturating_add(self.input.defaults.retain_ms);
         if self.st.retiring.is_some() || until <= now {
-            self.retire(until <= now);
-            let next = if self.post_wake { now } else { now.saturating_add(poll) };
+            // The retirement's next step, decided in `retirement`.
+            let next = if self.post_wake {
+                now
+            } else {
+                now.saturating_add(poll)
+            };
             self.st.not_before = Some(at_latest(next));
         } else if unknown_read {
             self.st.not_before = Some(at_latest(until.min(next_read)));
@@ -1668,6 +1724,19 @@ impl Pass<'_, '_> {
     /// An Unknown read waits; it never counts as absence.
     fn retire(&mut self, idle: bool) {
         let now = self.now();
+        if let Some(r) = self.st.retiring {
+            let key = retire_dir_key(self.uid(), r.at);
+            let removed = self.st.effects.get(&key).is_some_and(|rec| {
+                matches!(
+                    rec.receipt.as_ref().map(|rc| &rc.outcome),
+                    Some(Observation::Known(EffectOutcome::Deleted))
+                )
+            });
+            if removed {
+                // Gone, whatever happens next: the record goes with it.
+                self.st.dir = None;
+            }
+        }
         if self
             .st
             .retiring
@@ -1679,15 +1748,20 @@ impl Pass<'_, '_> {
         }
         let concluded = |t: &Object| t.status["phase"].as_str() == Some("Concluded");
         let tied = self.st.phase == Phase::Tied;
-        let tie_uid = self.st.task.as_ref().map(|t| t.uid.clone()).unwrap_or_default();
+        let tie_uid = self
+            .st
+            .task
+            .as_ref()
+            .map(|t| t.uid.clone())
+            .unwrap_or_default();
         let task = match &self.input.observations.task {
             Some(Observation::Known(Some(t))) if t.metadata.uid == tie_uid => Some(Some(t.clone())),
             Some(Observation::Known(_)) => Some(None),
             _ => None,
         };
         if self.st.retiring.is_none() {
-            let eligible = !tied
-                || matches!(&task, Some(Some(t)) if concluded(t) && !t.is_deleting());
+            let eligible =
+                !tied || matches!(&task, Some(Some(t)) if concluded(t) && !t.is_deleting());
             if !idle || !eligible {
                 return;
             }
@@ -1760,11 +1834,16 @@ impl Pass<'_, '_> {
                 self.attention.clear(WORKSPACE_BUSY);
                 return;
             }
-            Some((Observation::Known(EffectOutcome::WorkspaceBusy { task }), _)) => {
+            Some((Observation::Known(EffectOutcome::WorkspaceBusy { task }), at)) => {
                 self.attention.raise(
                     WORKSPACE_BUSY,
                     format!("Task/{task} names the thread's directory; it is removed once free"),
                 );
+                let poll = self.spec.poll_ms(self.input.defaults.poll_ms);
+                if self.now() < at.saturating_add(poll) {
+                    self.wake_at(at.saturating_add(poll));
+                    return;
+                }
                 false
             }
             Some((Observation::Known(other), at)) => {
@@ -1786,8 +1865,17 @@ impl Pass<'_, '_> {
                 }
                 true
             }
-            // Not performed yet, or its outcome is not known: (again).
-            Some((Observation::Unknown { .. }, _)) | None => true,
+            // Its outcome is not known: again, one interval later.
+            Some((Observation::Unknown { .. }, at)) => {
+                let poll = self.spec.poll_ms(self.input.defaults.poll_ms);
+                if self.now() < at.saturating_add(poll) {
+                    self.wake_at(at.saturating_add(poll));
+                    return;
+                }
+                true
+            }
+            // Not performed yet.
+            None => true,
         };
         self.renew_intent(key, name, counted);
         self.effects.push(Effect {

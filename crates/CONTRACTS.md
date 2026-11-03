@@ -489,15 +489,18 @@ the effect blindly. Guarantees, each with its test in
      finalizer then releases the session, and the thread orphans.
   2. `RemoveDir` (`…/dir`): only when `status.dir` records the directory
      the manager made; the manager lists the Tasks first and answers
-     `WorkspaceBusy`, uncounted, while one names it, then removes it
-     through the runtime's `remove_dir`.
+     `WorkspaceBusy`, uncounted and tried again one `pollMs` later, while
+     one names it, then removes it through the runtime's `remove_dir`.
+     Its `Deleted` receipt clears `status.dir`.
   3. `delete`, by `uid` and `resourceVersion` under the lease.
 
   A refused step is tried again after `RETRY_DELAY_MS`, three times, then
   `NeedsAttention/RetireFailed` holds the thread; an Unknown one is
-  performed again, which is harmless. An Unknown Task read waits. A thread
-  whose Task waits for its directory never retires. A running Task's
-  thread never retires.
+  performed again one `pollMs` later, which is harmless. An Unknown Task
+  read waits. A thread whose Task waits for its directory never retires,
+  nor does one whose Task runs; it is looked at again every `pollMs`.
+  While the tied Task is being deleted, new messages wait to be judged
+  until the thread is Orphaned, so none is lost in a Tied thread.
 - **One write.** The status lands through `record_received`, which checks
   the controller's fields as `update_status` does and lets `received`,
   which nobody owns, only lose entries, never gain or alter one.
@@ -531,12 +534,15 @@ the effect blindly. Guarantees, each with its test in
   naming the Task whose `spec.workspace.dir` normalises to the thread's,
   creating nothing. Otherwise it makes the directory, with its missing
   parents, through the runtime's `create_dir` on the Task's host (its
-  `host`, else its TaskConfig's, else `local`), then creates the Task: a
-  directory the runtime refuses is a `Failed` create, and one it cannot tell
-  about is Unknown, so no Task names a missing directory. When `create_dir`
-  answers that it made the directory, the manager records it as `status.dir`
-  (`path`, `host`) in the same write as the create's receipt, whatever the
-  create answered; a directory that was there already is not recorded. On
+  `host`, else its TaskConfig's, else `local`; an absent TaskConfig is a
+  `Failed` create), then creates the Task: a directory the runtime refuses
+  is a `Failed` create, and one it cannot tell about is Unknown, so no Task
+  names a missing directory. When `create_dir` answers that it made the
+  directory, the manager records it as `status.dir` (`path`, `host`) in the
+  same write as the create's receipt, whatever the create answered; a
+  directory that was there already is not recorded. A crash after the
+  runtime made the directory and before that write leaves it unrecorded, so
+  Fleet keeps it: the failure keeps a directory, never removes one. On
   `WorkspaceBusy` the tie turns `busy`, `NeedsAttention/WorkspaceBusy` is
   raised, one notice is posted under `conversation/<uid>/busy/<n>`,
   retention is held, and the create is planned again under the same key

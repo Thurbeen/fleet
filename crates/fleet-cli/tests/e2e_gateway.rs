@@ -1987,7 +1987,9 @@ fn a_thread_directory_whose_creation_is_unknown_is_recovered_by_a_lookup_and_a_r
     let report = env.reconcile().ok().json();
     assert_eq!(report["errors"], json!([]), "{report:#}");
     assert!(
-        report["unknowns"].to_string().contains("the thread's directory"),
+        report["unknowns"]
+            .to_string()
+            .contains("the thread's directory"),
         "{report:#}"
     );
     // A later pass of the same run looked for the Task, found none, and
@@ -2075,7 +2077,10 @@ fn a_concluded_thread_idle_past_its_retention_is_retired_as_a_whole() {
     // but its directory was there before Fleet made it.
     let a = start_thread(&env, "fake:C0123ABCD:1730000100000", "Ev01", T0 + 100_000);
     let b = start_thread(&env, "fake:C0123ABCD:1730000200000", "Ev02", T0 + 200_000);
-    let c_dir = thread_dir(&env, &conversation_name(GATEWAY_ACCOUNT, "fake:C0123ABCD:1730000300000"));
+    let c_dir = thread_dir(
+        &env,
+        &conversation_name(GATEWAY_ACCOUNT, "fake:C0123ABCD:1730000300000"),
+    );
     fs::create_dir_all(&c_dir).unwrap();
     fs::write(Path::new(&c_dir).join("notes.md"), "kept by the operator").unwrap();
     let c = start_thread(&env, "fake:C0123ABCD:1730000300000", "Ev03", T0 + 300_000);
@@ -2116,7 +2121,10 @@ fn a_concluded_thread_idle_past_its_retention_is_retired_as_a_whole() {
     // A: its Task, its session, its Conversation and its directory are gone.
     env.get_absent(&a_task);
     env.fleet(&["get", "conversation", &a]).code(3);
-    assert!(!Path::new(&a_dir).exists(), "the thread's directory is removed");
+    assert!(
+        !Path::new(&a_dir).exists(),
+        "the thread's directory is removed"
+    );
     assert!(
         env.host().session(&a_key).unwrap().unwrap().released,
         "the session was released"
@@ -2364,4 +2372,3 @@ fn a_same_named_task_created_for_another_thread_is_never_adopted() {
     assert_eq!(uid_of(&env, "task", &task_name), other_uid);
     env.assert_no_temp();
 }
-

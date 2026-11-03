@@ -2177,6 +2177,11 @@ fn an_idle_thread_whose_task_is_concluded_retires_its_task_then_its_directory_th
     );
     assert!(plan.effects.is_empty() && !plan.delete, "{plan:#?}");
     assert_eq!(after.retiring, None);
+    assert_eq!(
+        after.not_before,
+        Some(idle + 1_000),
+        "looked at again one interval later, never at once"
+    );
     // An Unknown Task decides nothing.
     let (plan, after) = run_with(
         &obj,
@@ -2239,7 +2244,11 @@ fn an_idle_thread_whose_task_is_concluded_retires_its_task_then_its_directory_th
         idle + 2,
     );
     assert_eq!(after.phase, Phase::Orphaned);
-    assert_eq!(after.retiring, Some(retiring), "the same retirement goes on");
+    assert_eq!(
+        after.retiring,
+        Some(retiring),
+        "the same retirement goes on"
+    );
     let dir_key = retire_dir_key(UID, idle);
     assert_eq!(plan.effects.len(), 1, "{plan:#?}");
     assert_eq!(plan.effects[0].key, dir_key);
@@ -2250,7 +2259,10 @@ fn an_idle_thread_whose_task_is_concluded_retires_its_task_then_its_directory_th
             path: format!("/work/conversations/{NAME}"),
         }
     );
-    assert!(!plan.delete, "the record goes with the Conversation, so it waits");
+    assert!(
+        !plan.delete,
+        "the record goes with the Conversation, so it waits"
+    );
     // Still named by a Task: it waits, and the attempt is not counted.
     let mut busy = after.clone();
     busy.effects.get_mut(&dir_key).unwrap().receipt = Some(Receipt {
@@ -2260,7 +2272,21 @@ fn an_idle_thread_whose_task_is_concluded_retires_its_task_then_its_directory_th
             task: "by-hand".into(),
         }),
     });
-    let (plan, after) = run_with(&object(Some(&busy)), ConversationObservations::default(), defaults(), idle + 3);
+    let (plan, after) = run_with(
+        &object(Some(&busy)),
+        ConversationObservations::default(),
+        defaults(),
+        idle + 3,
+    );
+    assert!(plan.effects.is_empty(), "one interval first: {plan:#?}");
+    assert_eq!(after.not_before, Some(idle + 2 + 1_000));
+    assert_eq!(cond(&after, "NeedsAttention").reason, "WorkspaceBusy");
+    let (plan, after) = run_with(
+        &object(Some(&busy)),
+        ConversationObservations::default(),
+        defaults(),
+        idle + 2 + 1_000,
+    );
     assert_eq!(plan.effects.len(), 1);
     assert_eq!(after.effects[&dir_key].attempts, 1);
     assert!(!plan.delete);
@@ -2271,7 +2297,12 @@ fn an_idle_thread_whose_task_is_concluded_retires_its_task_then_its_directory_th
         at: idle + 3,
         outcome: Observation::Known(EffectOutcome::Deleted),
     });
-    let (plan, _) = run_with(&object(Some(&removed)), ConversationObservations::default(), defaults(), idle + 4);
+    let (plan, _) = run_with(
+        &object(Some(&removed)),
+        ConversationObservations::default(),
+        defaults(),
+        idle + 2 + 1_001,
+    );
     assert!(plan.effects.is_empty(), "{plan:#?}");
     assert!(plan.delete);
 }
@@ -2290,7 +2321,12 @@ fn a_thread_without_a_recorded_directory_retires_without_removing_one() {
         1,
         NOW - 3_000,
     );
-    let (plan, _) = run_with(&object(Some(&st)), ConversationObservations::default(), defaults(), NOW + 10_000);
+    let (plan, _) = run_with(
+        &object(Some(&st)),
+        ConversationObservations::default(),
+        defaults(),
+        NOW + 10_000,
+    );
     assert!(plan.effects.is_empty(), "{plan:#?}");
     assert!(plan.delete);
 }
@@ -2313,4 +2349,67 @@ fn a_message_numbered_during_a_retirement_ends_it() {
     assert!(plan.effects.is_empty(), "the directory stays: {plan:#?}");
     assert!(!plan.delete);
     assert_eq!(after.dir, Some(thread_dir_record()));
+}
+
+#[test]
+fn three_refused_steps_hold_the_retirement_with_a_written_condition() {
+    let mut st = tied();
+    st.phase = Phase::Orphaned;
+    st.task.as_mut().unwrap().state = TieState::Gone;
+    st.dir = Some(thread_dir_record());
+    st.retiring = Some(Retiring {
+        at: NOW - 100_000,
+        revision: 1,
+    });
+    fleet_api::condition::set_condition(
+        &mut st.conditions,
+        "Tied",
+        ConditionStatus::False,
+        "TaskGone",
+        "",
+        1,
+        NOW - 100_000,
+    );
+    let key = retire_dir_key(UID, NOW - 100_000);
+    st.effects.insert(
+        key.clone(),
+        serde_json::from_value(json!({
+            "intent": {"action": "removeDir", "at": NOW - 90_000, "generation": 1},
+            "receipt": {"action": "removeDir", "at": NOW - 90_000,
+                        "outcome": {"known": {"type": "failed", "why": "permission denied"}}},
+            "attempts": 3
+        }))
+        .unwrap(),
+    );
+    let (plan, after) = run(&object(Some(&st)), ConversationObservations::default());
+    assert!(plan.effects.is_empty() && !plan.delete, "{plan:#?}");
+    let c = cond(&after, "NeedsAttention");
+    assert_eq!(c.reason, "RetireFailed", "{after:#?}");
+    assert!(c.message.contains("permission denied"), "{c:#?}");
+    assert_eq!(
+        after.dir,
+        Some(thread_dir_record()),
+        "the directory is kept"
+    );
+}
+
+#[test]
+fn a_message_written_while_the_tied_task_is_deleted_waits_to_be_judged() {
+    let mut st = tied();
+    st.messages = vec![stored(person(ALEX, T0 + 300_000, "still broken"), 2)];
+    st.revision = 2;
+    st.judged = 1;
+    let mut deleting = concluded_task("t1", "Concluded");
+    deleting.metadata.deletion_timestamp = Some(NOW - 10);
+    let (_, after) = run(
+        &object(Some(&st)),
+        ConversationObservations {
+            task: Some(Observation::Known(Some(deleting))),
+            ..ConversationObservations::default()
+        },
+    );
+    assert_eq!(
+        after.judged, 1,
+        "judged once the thread is Orphaned: {after:#?}"
+    );
 }

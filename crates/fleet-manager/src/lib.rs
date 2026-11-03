@@ -854,7 +854,10 @@ impl Manager<'_> {
         let mut made = None;
         if let Some(dir) = obj.spec["workspace"]["dir"].as_str() {
             let host = match self.task_host(obj) {
-                Observation::Known(h) => h,
+                Observation::Known(Ok(h)) => h,
+                Observation::Known(Err(why)) => {
+                    return (Observation::Known(EffectOutcome::Failed { why }), None);
+                }
                 Observation::Unknown { why } => return (Observation::unknown(why), None),
             };
             match self.runtime.create_dir(&host, dir) {
@@ -924,24 +927,25 @@ impl Manager<'_> {
     }
 
     /// The host a Task about to be created runs on: its own `host`, else
-    /// its TaskConfig's, else the local host. An absent TaskConfig names no
-    /// host, so the local one applies and the Task waits for its config as
-    /// any Task does; a TaskConfig that cannot be read is Unknown.
-    fn task_host(&self, obj: &Object) -> Observation<String> {
+    /// its TaskConfig's, else the local host. An absent TaskConfig is a
+    /// refusal: the directory's host is not known, and a directory made on
+    /// a guessed host would leave the Task naming a missing one. A
+    /// TaskConfig that cannot be read is Unknown.
+    fn task_host(&self, obj: &Object) -> Observation<Result<String, String>> {
         if let Some(h) = obj.spec["host"].as_str() {
-            return Observation::Known(h.to_string());
+            return Observation::Known(Ok(h.to_string()));
         }
         let Some(name) = obj.spec["configRef"]["name"].as_str() else {
-            return Observation::Known(task::LOCAL_HOST.to_string());
+            return Observation::Known(Ok(task::LOCAL_HOST.to_string()));
         };
         match self.store.get(fleet_api::config::TASK_CONFIG, name) {
-            Observation::Known(Some(cfg)) if !cfg.is_deleting() => Observation::Known(
-                cfg.spec["host"]
-                    .as_str()
-                    .unwrap_or(task::LOCAL_HOST)
-                    .to_string(),
-            ),
-            Observation::Known(_) => Observation::Known(task::LOCAL_HOST.to_string()),
+            Observation::Known(Some(cfg)) if !cfg.is_deleting() => {
+                let host = cfg.spec["host"].as_str().unwrap_or(task::LOCAL_HOST);
+                Observation::Known(Ok(host.to_string()))
+            }
+            Observation::Known(_) => Observation::Known(Err(format!(
+                "TaskConfig/{name} is absent or deleting, so the host for the thread's directory is not known"
+            ))),
             Observation::Unknown { why } => {
                 Observation::unknown(format!("get TaskConfig/{name}: {why}"))
             }
@@ -977,7 +981,12 @@ impl Manager<'_> {
     /// only the directory the Conversation records the manager making, and
     /// only while no Task names it. A Task that does is `WorkspaceBusy`,
     /// and the store's doubt is Unknown, never absence.
-    fn remove_thread_dir(&self, conv: &Object, host: &str, path: &str) -> Observation<EffectOutcome> {
+    fn remove_thread_dir(
+        &self,
+        conv: &Object,
+        host: &str,
+        path: &str,
+    ) -> Observation<EffectOutcome> {
         let recorded = conv.status["dir"]["path"].as_str() == Some(path)
             && conv.status["dir"]["host"].as_str() == Some(host);
         if !recorded {
@@ -988,7 +997,9 @@ impl Manager<'_> {
         let wanted = fleet_api::task::normalise_dir(path);
         let tasks = match self.store.list(task::KIND) {
             Observation::Known(t) => t,
-            Observation::Unknown { why } => return Observation::unknown(format!("list Task: {why}")),
+            Observation::Unknown { why } => {
+                return Observation::unknown(format!("list Task: {why}"));
+            }
         };
         if let Some(holder) = tasks.iter().find(|t| {
             t.spec["workspace"]["dir"]

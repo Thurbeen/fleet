@@ -274,7 +274,8 @@ its own directory below it: `<dir>/<conversation name>`, for example
   follow the create receipts in [effect and recovery
   keys](#effect-and-recovery-keys). No Task names a missing directory.
 - The directory is created on the Task's host: the Task's `host`, else
-  its TaskConfig's `host`, else `local`. The thurbox
+  its TaskConfig's `host`, else `local`. A TaskConfig that is absent makes
+  the create fail, because the directory's host is not known. The thurbox
   runtime creates directories on the local host only. On another host,
   the create fails and says why.
 
@@ -580,11 +581,14 @@ A retirement step follows these rules:
 - A refused step is tried again under the same key after the delay, at
   most three times. Then `NeedsAttention/RetireFailed` holds the thread
   for a person.
-- A step with an unknown outcome is performed again under the same key.
-  A deleted Task and a removed directory stay so, so the repeat is
-  harmless.
-- A `RemoveDir` that finds another Task naming the directory waits. The
-  wait does not count as an attempt.
+- A step with an unknown outcome is performed again under the same key,
+  one `pollMs` later. A deleted Task and a removed directory stay so, so
+  the repeat is harmless.
+- A `RemoveDir` that finds another Task naming the directory waits one
+  `pollMs` and raises `NeedsAttention/WorkspaceBusy`. The wait does not
+  count as an attempt.
+- A crash after the manager created a directory and before it recorded
+  it leaves the directory unrecorded. Fleet then keeps that directory.
 
 A log post follows the same rules. Its recovery read is a `since` read of
 the log channel's address on the `gateway.logs` account. A log post that

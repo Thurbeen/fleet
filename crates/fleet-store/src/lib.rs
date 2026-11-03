@@ -1172,7 +1172,7 @@ impl Store for FileStore {
         by: FieldManager,
         lease: &LeaseToken,
     ) -> Result<DeleteOutcome, StoreError> {
-        if by != FieldManager::ConversationController {
+        if !kinds::may_retire_conversation_task(&by) {
             return Err(StoreError::Forbidden(format!(
                 "{} does not retire conversation Tasks",
                 by.name()
@@ -1190,7 +1190,11 @@ impl Store for FileStore {
                 actual: obj.metadata.resource_version,
             });
         }
-        if obj.metadata.labels.get(conversation::CONVERSATION_UID_LABEL).map(String::as_str)
+        if obj
+            .metadata
+            .labels
+            .get(conversation::CONVERSATION_UID_LABEL)
+            .map(String::as_str)
             != Some(conversation_uid)
         {
             return Err(StoreError::Forbidden(format!(

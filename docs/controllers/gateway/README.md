@@ -121,6 +121,8 @@ Rules:
 - A thread whose Task is not Concluded never retires.
 - A message that arrives during the retirement stops it. The thread keeps
   its directory, and the next admitted message starts a new Task there.
+  While the thread's Task is being deleted, Fleet judges no new message.
+  It judges them once the thread is Orphaned, so no message is lost.
 - Each step is a keyed effect. After a crash, the retirement continues at
   the first step that has no settled receipt.
 - An Unknown read never counts as absence. The retirement waits.

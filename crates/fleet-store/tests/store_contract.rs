@@ -3193,9 +3193,15 @@ fn only_a_concluded_conversation_task_is_retired_and_only_by_its_conversation() 
     ));
     // Concluded and this thread's: marked, its finalizer releasing it; a
     // second call is the same answer.
-    assert_eq!(retire(&uid, "c7", by.clone()).unwrap(), DeleteOutcome::Marked);
+    assert_eq!(
+        retire(&uid, "c7", by.clone()).unwrap(),
+        DeleteOutcome::Marked
+    );
     assert!(known(store.get("Task", "conv-1")).unwrap().is_deleting());
-    assert_eq!(retire(&uid, "c7", by.clone()).unwrap(), DeleteOutcome::Marked);
+    assert_eq!(
+        retire(&uid, "c7", by.clone()).unwrap(),
+        DeleteOutcome::Marked
+    );
     assert!(matches!(
         store.retire_conversation_task("absent", &uid, "c7", by, &lease),
         Err(StoreError::NotFound(_))
