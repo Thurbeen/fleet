@@ -768,7 +768,7 @@ impl Default for GatewayDefaults {
             call_timeout_ms: 15_000,
             poll_ms: 300_000,
             active_ms: 86_400_000,
-            retain_ms: 2_592_000_000,
+            retain_ms: 604_800_000,
             beat_ms: 60_000,
             route: None,
             brief: None,
@@ -1263,7 +1263,7 @@ mod tests {
         assert_eq!(cfg.validate(), Ok(()));
         let d = cfg.defaults();
         assert_eq!(d.poll_ms, 1000);
-        assert_eq!(d.retain_ms, 2_592_000_000);
+        assert_eq!(d.retain_ms, 604_800_000);
         assert_eq!(d.beat_ms, 60_000);
         assert_eq!(cfg.routes["eng"].mention, Mention::Required);
         assert_eq!(cfg.routes["eng"].refusal(), DEFAULT_REFUSAL);

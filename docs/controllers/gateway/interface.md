@@ -197,10 +197,11 @@ pub fn reconcile(&self, input: &ConversationInput<'_>) -> Result<Plan, StoreErro
     events it numbered.
   - `creates`: at most one Task, from the route, with its intent in the same
     status.
-  - `effects`: at most one refusal `Post` per author, and one busy notice
-    per tie number.
-  - `delete: true`: retires the object after retention, fenced on `uid` and
-    `resourceVersion`.
+  - `effects`: at most one refusal `Post` per author, one busy notice
+    per tie number, and the retirement's one `DeleteTask` or `RemoveDir`
+    step.
+  - `delete: true`: deletes the object as the last step of its
+    retirement, fenced on `uid` and `resourceVersion`.
 
 It works over each [Conversation](../../resources/conversation.md):
 
@@ -214,7 +215,8 @@ It works over each [Conversation](../../resources/conversation.md):
   Task now holds that name,
 - sends one polite refusal per author who is not on the allowlist and
   mentions Fleet,
-- deletes the Conversation after its retention.
+- retires the thread after its retention: its Concluded Task, the
+  directory the manager made for it, then the Conversation.
 
 A thread that Fleet opened belongs to the Question's Task. While that Task
 exists, a mention there starts no other Task. If the opening post's marker
@@ -271,7 +273,8 @@ its own directory below it: `<dir>/<conversation name>`, for example
   directory creation with an unknown outcome is an Unknown create. Both
   follow the create receipts in [effect and recovery
   keys](#effect-and-recovery-keys). No Task names a missing directory.
-- The Task's host is the TaskConfig's `host`, else `local`. The thurbox
+- The directory is created on the Task's host: the Task's `host`, else
+  its TaskConfig's `host`, else `local`. The thurbox
   runtime creates directories on the local host only. On another host,
   the create fails and says why.
 
@@ -290,9 +293,19 @@ A route with a `repositories` workspace has no shared directory. Its create
 carries no `exclusive` precondition, and each Task gets the workspace the
 runtime makes for it.
 
-Fleet never deletes a thread's directory. This rule holds when a Task is
-deleted, and also when retention deletes the Conversation. The operator
-cleans the base directory.
+The manager records the thread's directory on the Conversation, as
+`status.dir`, when it created the directory. A directory that existed
+before is not recorded. Fleet removes a thread's directory only when the
+thread retires, and only a recorded one:
+
+- The thread retires after `gateway.retainMs` with no message, once it is
+  Untied, Orphaned, or tied to a Concluded Task.
+- The manager removes the directory only while no Task names it.
+- Fleet never removes a directory that existed before, a route's base
+  directory, or a `repositories` workspace.
+
+The [state machine](state-machine.md#conversation-phases) gives the order
+of the retirement's steps.
 
 The config is refused when one route's base directory equals, contains or
 lies inside another's. The check does not stop a Task applied or created by
@@ -431,9 +444,18 @@ architecture rule:
   ConversationController's.
 - A create may carry an `exclusive: {workspace}` precondition. See
   [workspaces](#workspaces).
-- A new runtime call, `Runtime::create_dir(host, dir)`. The manager calls
-  it before a conversation Task's create, after the precondition. See
+- New runtime calls, `Runtime::create_dir(host, dir)`, which says whether
+  it made the directory, and `Runtime::remove_dir(host, dir)`. The manager
+  calls the first before a conversation Task's create, after the
+  precondition, and the second as a thread retires. See
   [workspaces](#workspaces).
+- New actions, `DeleteTask { name, uid }` and `RemoveDir { host, path }`.
+  Only ConversationController plans them, as steps of a thread's
+  retirement. The manager performs `DeleteTask` through the store's
+  `retire_conversation_task`, which refuses a Task that is not Concluded
+  or not this thread's. It performs `RemoveDir` through the runtime, after
+  it checks that `path` is the directory `status.dir` records and that no
+  Task names it.
 - New probes: `Probe::List { kind, labels }`, answered by the store;
   `Probe::History`, `Probe::Capabilities` and
   `Probe::GatewayWhoami { account }`, answered by the Gateway port. The
@@ -540,6 +562,8 @@ under the same key, so with the same nonce, inside the window. The
 | Refusal | `conversation/<conv uid>/refuse/<author id>` |
 | Task creation | `conversation/<conv uid>/task/<n>` |
 | Busy notice | `conversation/<conv uid>/busy/<n>` |
+| Retirement: the Task's delete | `conversation/<conv uid>/retire/<at>/task` |
+| Retirement: the directory's removal | `conversation/<conv uid>/retire/<at>/dir` |
 
 A failed post is retried under the same key at most three times, then raises
 `NeedsAttention/PostFailed`. A post whose outcome stays unknown, on a
@@ -550,6 +574,17 @@ repeated where markers read back: it raises `NeedsAttention/PostUnconfirmed`.
 Where the platform honours a nonce, a resend inside the window finishes it.
 Three recovery reads that cannot complete raise
 `NeedsAttention/RecoveryIncomplete`, until one does.
+
+A retirement step follows these rules:
+
+- A refused step is tried again under the same key after the delay, at
+  most three times. Then `NeedsAttention/RetireFailed` holds the thread
+  for a person.
+- A step with an unknown outcome is performed again under the same key.
+  A deleted Task and a removed directory stay so, so the repeat is
+  harmless.
+- A `RemoveDir` that finds another Task naming the directory waits. The
+  wait does not count as an attempt.
 
 A log post follows the same rules. Its recovery read is a `since` read of
 the log channel's address on the `gateway.logs` account. A log post that

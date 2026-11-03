@@ -9,11 +9,11 @@
 //! Plan whose `status` is the whole Conversation status with the spool
 //! drained of what was numbered and the intent of every effect it asks
 //! for, whose `creates` is the Task a thread starts in the thread's own
-//! directory under the `exclusive: {workspace}` precondition, whose `effects` are the refusal
-//! and busy-notice posts, and whose `delete` retires the object. The
-//! manager performs the plan through `record_received`, the fenced create,
-//! the Gateway port and the fenced delete, and writes each receipt back
-//! under its key. A key that has a receipt is never performed again; a
+//! directory under the `exclusive: {workspace}` precondition, whose
+//! `effects` are the refusal and busy-notice posts, and whose `delete`
+//! retires the object. The manager performs the plan through
+//! `record_received`, the fenced create, the Gateway port and the fenced
+//! delete, and writes each receipt back under its key. A key that has a receipt is never performed again; a
 //! missing or Unknown receipt is answered by looking for the Task, or for
 //! the post in the mirror, never by repeating the effect blindly.
 
@@ -23,8 +23,8 @@ use fleet_api::condition::{ConditionStatus, condition, set_condition, settle_tra
 use fleet_api::conversation::{
     self, CONVERSATION_LABEL, CONVERSATION_UID_LABEL, ConversationSpec, ConversationStatus,
     EFFECTS_CAP, EffectRecord, MESSAGE_CAP, Phase, REFUSALS_CAP, ROUTE_LABEL, SEEN_EVENTS_CAP,
-    StoredMessage, Tie, TieState, Via, busy_key, busy_notice, refusal_key, task_key, task_name,
-    thread_dir,
+    Retiring, StoredMessage, Tie, TieState, Via, busy_key, busy_notice, refusal_key,
+    retire_dir_key, retire_task_key, task_key, task_name, thread_dir,
 };
 use fleet_api::gateway::{
     Admission, AuthorKind, Capabilities, ConversationRef, Delivery, Event, GatewayDefaults,
@@ -84,7 +84,7 @@ pub mod conditions {
     /// A live Task is tied.
     pub const TIED: &str = "Tied";
     /// `TaskCreateFailed`, `WorkspaceBusy`, `RouteUnknown`, `MentionsOnly`,
-    /// `PostFailed`, `PostUnconfirmed`.
+    /// `PostFailed`, `PostUnconfirmed`, `RetireFailed`.
     pub const NEEDS_ATTENTION: &str = "NeedsAttention";
 }
 use conditions::*;
@@ -99,6 +99,8 @@ const TASK_CREATE_FAILED: &str = "TaskCreateFailed";
 const WORKSPACE_BUSY: &str = "WorkspaceBusy";
 /// Three attempts at one post were refused.
 const POST_FAILED: &str = "PostFailed";
+/// Three attempts at one step of the thread's retirement were refused.
+const RETIRE_FAILED: &str = "RetireFailed";
 /// A post's outcome stays unknown on a platform where Fleet cannot find it
 /// again; it waits for a person.
 const POST_UNCONFIRMED: &str = "PostUnconfirmed";
@@ -1604,7 +1606,24 @@ impl Pass<'_, '_> {
         };
         let at_latest = |t: Millis| wake.map_or(t, |w| w.min(t));
         if self.st.phase == Phase::Tied {
-            self.st.not_before = Some(at_latest(next_read));
+            let since = [
+                self.st.last_message_at,
+                self.input.object.metadata.creation_timestamp,
+            ]
+            .into_iter()
+            .flatten()
+            .max()
+            .unwrap_or(now);
+            let until = since.saturating_add(self.input.defaults.retain_ms);
+            if self.st.retiring.is_some() || until <= now {
+                self.retire(until <= now);
+                if self.st.retiring.is_some() {
+                    let next = if self.post_wake { now } else { now.saturating_add(poll) };
+                    self.st.not_before = Some(at_latest(next.min(next_read)));
+                    return;
+                }
+            }
+            self.st.not_before = Some(at_latest(next_read.min(until.max(now))));
             return;
         }
         let orphaned_at = (self.st.phase == Phase::Orphaned)
@@ -1620,14 +1639,162 @@ impl Pass<'_, '_> {
         .max()
         .unwrap_or(now);
         let until = since.saturating_add(self.input.defaults.retain_ms);
-        if until <= now {
-            self.delete = self.creates.is_empty() && self.effects.is_empty();
-            self.st.not_before = Some(at_latest(until));
+        if self.st.retiring.is_some() || until <= now {
+            self.retire(until <= now);
+            let next = if self.post_wake { now } else { now.saturating_add(poll) };
+            self.st.not_before = Some(at_latest(next));
         } else if unknown_read {
             self.st.not_before = Some(at_latest(until.min(next_read)));
         } else {
             self.st.not_before = Some(at_latest(until));
         }
+    }
+}
+
+impl Pass<'_, '_> {
+    /// A thread's one end of life, once it had no message for its
+    /// retention. Started only for an Untied or Orphaned thread, or one
+    /// whose Task is Concluded; a message numbered since ends it, and so
+    /// does a Task that is no longer Concluded. Each step is a keyed effect
+    /// under the retirement's start, so a crash between two steps resumes
+    /// at the first one without a settled receipt:
+    ///
+    /// 1. the Task the thread created is deleted, fenced on its uid; the
+    ///    thread then orphans as it does for any Task readably gone;
+    /// 2. the directory the manager recorded making is removed, while no
+    ///    Task names it;
+    /// 3. the Conversation is deleted, fenced, as retention always did.
+    ///
+    /// An Unknown read waits; it never counts as absence.
+    fn retire(&mut self, idle: bool) {
+        let now = self.now();
+        if self
+            .st
+            .retiring
+            .is_some_and(|r| r.revision != self.st.revision)
+        {
+            // A message since: the thread is in use again.
+            self.st.retiring = None;
+            self.attention.clear(RETIRE_FAILED);
+        }
+        let concluded = |t: &Object| t.status["phase"].as_str() == Some("Concluded");
+        let tied = self.st.phase == Phase::Tied;
+        let tie_uid = self.st.task.as_ref().map(|t| t.uid.clone()).unwrap_or_default();
+        let task = match &self.input.observations.task {
+            Some(Observation::Known(Some(t))) if t.metadata.uid == tie_uid => Some(Some(t.clone())),
+            Some(Observation::Known(_)) => Some(None),
+            _ => None,
+        };
+        if self.st.retiring.is_none() {
+            let eligible = !tied
+                || matches!(&task, Some(Some(t)) if concluded(t) && !t.is_deleting());
+            if !idle || !eligible {
+                return;
+            }
+            self.st.retiring = Some(Retiring {
+                at: now,
+                revision: self.st.revision,
+            });
+        }
+        let Some(retiring) = self.st.retiring else {
+            return;
+        };
+        if tied {
+            let Some(Some(t)) = task else {
+                // Unknown waits; a readably gone Task orphans the thread
+                // on this pass's tie check, next pass.
+                return;
+            };
+            if t.is_deleting() {
+                return;
+            }
+            if !concluded(&t) {
+                self.st.retiring = None;
+                self.attention.clear(RETIRE_FAILED);
+                return;
+            }
+            let key = retire_task_key(self.uid(), retiring.at);
+            let action = Action::DeleteTask {
+                name: t.metadata.name.clone(),
+                uid: t.metadata.uid.clone(),
+            };
+            self.retire_step(&key, action);
+            return;
+        }
+        if let Some(dir) = self.st.dir.clone() {
+            let key = retire_dir_key(self.uid(), retiring.at);
+            let removed = self.st.effects.get(&key).is_some_and(|r| {
+                matches!(
+                    r.receipt.as_ref().map(|rc| &rc.outcome),
+                    Some(Observation::Known(EffectOutcome::Deleted))
+                )
+            });
+            if !removed {
+                let action = Action::RemoveDir {
+                    host: dir.host,
+                    path: dir.path,
+                };
+                self.retire_step(&key, action);
+                return;
+            }
+            self.st.dir = None;
+        }
+        self.delete = self.creates.is_empty() && self.effects.is_empty();
+    }
+
+    /// One keyed step of a retirement: planned once; Deleted settles it; a
+    /// Task that still names the directory waits, uncounted; a refusal is
+    /// tried again after the delay, three times, then `RetireFailed` holds
+    /// the thread for a person; an Unknown outcome is performed again,
+    /// which is harmless: a deleted Task and a removed directory stay so.
+    fn retire_step(&mut self, key: &str, action: Action) {
+        let name = action.name();
+        let record = self.st.effects.get(key).cloned();
+        let outcome = record
+            .as_ref()
+            .and_then(|r| r.receipt.as_ref())
+            .map(|r| (r.outcome.clone(), r.at));
+        let counted = match outcome {
+            Some((Observation::Known(EffectOutcome::Deleted), _)) => {
+                self.attention.clear(RETIRE_FAILED);
+                self.attention.clear(WORKSPACE_BUSY);
+                return;
+            }
+            Some((Observation::Known(EffectOutcome::WorkspaceBusy { task }), _)) => {
+                self.attention.raise(
+                    WORKSPACE_BUSY,
+                    format!("Task/{task} names the thread's directory; it is removed once free"),
+                );
+                false
+            }
+            Some((Observation::Known(other), at)) => {
+                let attempts = record.as_ref().map_or(0, |r| r.attempts);
+                let why = match other {
+                    EffectOutcome::Failed { why } => why,
+                    o => format!("{o:?}"),
+                };
+                if attempts >= MAX_ATTEMPTS {
+                    self.attention.raise(
+                        RETIRE_FAILED,
+                        format!("{attempts} attempts to {name} were refused: {why}"),
+                    );
+                    return;
+                }
+                if self.now() < at.saturating_add(RETRY_DELAY_MS) {
+                    self.wake_at(at.saturating_add(RETRY_DELAY_MS));
+                    return;
+                }
+                true
+            }
+            // Not performed yet, or its outcome is not known: (again).
+            Some((Observation::Unknown { .. }, _)) | None => true,
+        };
+        self.renew_intent(key, name, counted);
+        self.effects.push(Effect {
+            key: key.to_string(),
+            action,
+        });
+        self.post_wake = true;
     }
 }
 

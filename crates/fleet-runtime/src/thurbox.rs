@@ -803,7 +803,7 @@ impl Runtime for ThurboxRuntime {
     /// On the local host the directory is made here. Thurbox has no verb
     /// that makes a directory on another host, so a remote host is refused
     /// with what to do instead.
-    fn create_dir(&self, host: &str, dir: &str) -> Observation<Result<(), String>> {
+    fn create_dir(&self, host: &str, dir: &str) -> Observation<Result<bool, String>> {
         if !is_absolute(dir) {
             return Observation::Known(Err(format!(
                 "{dir:?} must be an absolute path on the host"
@@ -814,9 +814,31 @@ impl Runtime for ThurboxRuntime {
                 "the thurbox runtime cannot create {dir} on host {host}: it makes directories on the local host only; use a TaskConfig on the local host, or a repositories workspace"
             )));
         }
+        let existed = std::path::Path::new(dir).is_dir();
         match std::fs::create_dir_all(dir) {
-            Ok(()) => Observation::Known(Ok(())),
+            Ok(()) => Observation::Known(Ok(!existed)),
             Err(e) => Observation::Known(Err(format!("cannot create {dir}: {e}"))),
+        }
+    }
+
+    /// On the local host the directory is removed here; a directory that is
+    /// gone already is removed. A remote host is refused, as `create_dir`
+    /// refuses it, so no directory there is Fleet's.
+    fn remove_dir(&self, host: &str, dir: &str) -> Observation<Result<(), String>> {
+        if !is_absolute(dir) {
+            return Observation::Known(Err(format!(
+                "{dir:?} must be an absolute path on the host"
+            )));
+        }
+        if host != LOCAL {
+            return Observation::Known(Err(format!(
+                "the thurbox runtime cannot remove {dir} on host {host}: it removes directories on the local host only"
+            )));
+        }
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => Observation::Known(Ok(())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Observation::Known(Ok(())),
+            Err(e) => Observation::Known(Err(format!("cannot remove {dir}: {e}"))),
         }
     }
 
@@ -1235,12 +1257,17 @@ mod tests {
     }
 
     #[test]
-    fn a_directory_is_made_on_the_local_host_only_and_by_an_absolute_path() {
+    fn a_directory_is_made_and_removed_on_the_local_host_only_and_by_an_absolute_path() {
         let rt = runtime();
         let remote = rt.create_dir("build-box", "/work/conversations/conv-3f9a1c0d2b7e");
         assert!(
             matches!(&remote, Observation::Known(Err(why)) if why.contains("host build-box") && why.contains("local host only")),
             "{remote:?}"
+        );
+        let removed = rt.remove_dir("build-box", "/work/conversations/conv-3f9a1c0d2b7e");
+        assert!(
+            matches!(&removed, Observation::Known(Err(why)) if why.contains("local host only")),
+            "{removed:?}"
         );
         let relative = rt.create_dir(LOCAL, "work/conversations/conv-3f9a1c0d2b7e");
         assert!(

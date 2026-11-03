@@ -210,10 +210,11 @@ the manager holds a chat platform's connection and hands each raw event to
 `fleet gateway receive`, a bounded manager verb that reads it through the
 adapter and spools it on a [Conversation](resources/conversation.md), the
 mirror of one thread. ConversationController numbers its messages, applies
-the route's admission rules and creates one Task per thread; GatewayController,
-a third controller over the Task, owns `status.gateway`, relays new messages
-into the inbox under a cursor through `record_relay`, and posts what the
-Task declares as keyed effects through a `Gateway` port, with adapters in
+the route's admission rules, creates one Task per thread in the thread's own
+directory, and retires an idle thread with its Task and that directory;
+GatewayController, a third controller over the Task, owns `status.gateway`,
+relays new messages into the inbox under a cursor through `record_relay`,
+and posts what the Task declares as keyed effects through a `Gateway` port, with adapters in
 the `fleet-gateway` crate, for Slack and Discord. The port, the crate with its
 fake, Slack and Discord adapters, the `[gateway]` section, the two kinds, the
 receive verb, ConversationController, ListenerController, and

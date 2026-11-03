@@ -53,6 +53,38 @@ pub fn task_key(conversation_uid: &str, n: u64) -> String {
     format!("conversation/{conversation_uid}/task/{n}")
 }
 
+/// `conversation/<conv uid>/retire/<started>/task`: the key of the delete
+/// of the thread's Task in the retirement that started at `started`.
+pub fn retire_task_key(conversation_uid: &str, started: Millis) -> String {
+    format!("conversation/{conversation_uid}/retire/{started}/task")
+}
+
+/// `conversation/<conv uid>/retire/<started>/dir`: the key of the removal of
+/// the thread's directory in the retirement that started at `started`.
+pub fn retire_dir_key(conversation_uid: &str, started: Millis) -> String {
+    format!("conversation/{conversation_uid}/retire/{started}/dir")
+}
+
+/// A retirement in progress: `at` when it started, which keys its effects,
+/// and the `revision` it started from. A message numbered since, which
+/// moves the revision, ends it: the thread is in use again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Retiring {
+    pub at: Millis,
+    pub revision: u64,
+}
+
+/// The directory the manager made for a thread's Tasks, recorded on the
+/// Conversation in the same write as the create's receipt, and only when
+/// the runtime answered that it made it. Fleet removes no other directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ThreadDir {
+    pub path: String,
+    pub host: String,
+}
+
 /// `conversation/<conv uid>/busy/<n>`: the key of the one busy notice for
 /// the `n`th Task.
 pub fn busy_key(conversation_uid: &str, n: u64) -> String {
@@ -254,6 +286,13 @@ pub struct ConversationStatus {
     /// Earliest next pass.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub not_before: Option<Millis>,
+    /// The thread's directory, when the manager made it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<ThreadDir>,
+    /// The thread's retirement, once it started. Absent while the thread
+    /// is not being retired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retiring: Option<Retiring>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conditions: Vec<Condition>,
 }

@@ -55,7 +55,9 @@ pub mod verbs;
 use std::collections::BTreeMap;
 
 use fleet_api::change_request::{self, ChangeRequestDefaults, ChangeRequestSpec};
-use fleet_api::conversation::{self, CONVERSATION_UID_LABEL, ConversationSpec, ConversationStatus};
+use fleet_api::conversation::{
+    self, CONVERSATION_UID_LABEL, ConversationSpec, ConversationStatus, ThreadDir,
+};
 use fleet_api::follow::{ForgeDefaults, ForgeStatus};
 use fleet_api::forge::{ChangeObservation, Forge, Uncertainty};
 use fleet_api::gateway::{
@@ -746,7 +748,7 @@ impl Manager<'_> {
         // receipt after, under the effect's key.
         for create in &plan.creates {
             *lease = self.store.renew_lease(lease, ttl)?;
-            let outcome = self.perform_create(create, lease);
+            let (outcome, made) = self.perform_create(create, lease);
             if let Observation::Unknown { why } = &outcome {
                 report
                     .unknowns
@@ -758,23 +760,27 @@ impl Manager<'_> {
                 &create.key,
                 CREATE_ACTION,
                 outcome,
+                made.as_ref(),
                 lease,
             )?;
             rv = current.metadata.resource_version;
             step.wrote += 1;
         }
         for effect in &plan.effects {
-            let Action::Post {
-                account,
-                conversation: thread,
-                text,
-            } = &effect.action
-            else {
-                // Not this controller's effect: never performed from here.
-                continue;
-            };
             *lease = self.store.renew_lease(lease, ttl)?;
-            let outcome = gateway.port.post(account, thread, text, &effect.key);
+            let outcome = match &effect.action {
+                Action::Post {
+                    account,
+                    conversation: thread,
+                    text,
+                } => gateway.port.post(account, thread, text, &effect.key),
+                Action::DeleteTask { name: task, uid } => {
+                    self.retire_task(task, uid, &obj.metadata.uid, lease)
+                }
+                Action::RemoveDir { host, path } => self.remove_thread_dir(obj, host, path),
+                // Not this controller's effect: never performed from here.
+                _ => continue,
+            };
             if let Observation::Unknown { why } = &outcome {
                 report
                     .unknowns
@@ -786,6 +792,7 @@ impl Manager<'_> {
                 &effect.key,
                 effect.action.name(),
                 outcome,
+                None,
                 lease,
             )?;
             rv = current.metadata.resource_version;
@@ -814,18 +821,21 @@ impl Manager<'_> {
     /// checked against the store's Tasks under the lease, then the Task's
     /// `dir` workspace is made on its host, then the fenced create runs. A
     /// directory the runtime cannot make is a refused create, and one it
-    /// cannot tell about is Unknown: no Task names a missing directory. An object already under the name is adopted when
-    /// it carries this Conversation's uid, since an earlier attempt's
-    /// receipt may have been lost; one with another uid, or none, is a
-    /// refusal. The store's doubt is Unknown, never a refusal.
-    fn perform_create(&self, create: &Create, lease: &LeaseToken) -> Observation<EffectOutcome> {
+    /// cannot tell about is Unknown: no Task names a missing directory. A
+    /// directory this call made is returned, to be recorded with the
+    /// receipt.
+    fn perform_create(
+        &self,
+        create: &Create,
+        lease: &LeaseToken,
+    ) -> (Observation<EffectOutcome>, Option<ThreadDir>) {
         let obj = &create.object;
         if let Some(exclusive) = &create.exclusive {
             let wanted = fleet_api::task::normalise_dir(&exclusive.workspace);
             let tasks = match self.store.list(task::KIND) {
                 Observation::Known(t) => t,
                 Observation::Unknown { why } => {
-                    return Observation::unknown(format!("list Task: {why}"));
+                    return (Observation::unknown(format!("list Task: {why}")), None);
                 }
             };
             if let Some(holder) = tasks.iter().find(|t| {
@@ -833,31 +843,48 @@ impl Manager<'_> {
                     .as_str()
                     .is_some_and(|d| fleet_api::task::normalise_dir(d) == wanted)
             }) {
-                return Observation::Known(EffectOutcome::WorkspaceBusy {
+                let busy = EffectOutcome::WorkspaceBusy {
                     task: holder.metadata.name.clone(),
-                });
+                };
+                return (Observation::Known(busy), None);
             }
         }
+        // The directory first, recorded when this call made it, whatever
+        // the create then answers: Fleet removes it when the thread retires.
+        let mut made = None;
         if let Some(dir) = obj.spec["workspace"]["dir"].as_str() {
             let host = match self.task_host(obj) {
-                Observation::Known(Ok(h)) => h,
-                Observation::Known(Err(why)) => {
-                    return Observation::Known(EffectOutcome::Failed { why });
-                }
-                Observation::Unknown { why } => return Observation::unknown(why),
+                Observation::Known(h) => h,
+                Observation::Unknown { why } => return (Observation::unknown(why), None),
             };
             match self.runtime.create_dir(&host, dir) {
-                Observation::Known(Ok(())) => {}
-                Observation::Known(Err(why)) => {
-                    return Observation::Known(EffectOutcome::Failed {
-                        why: format!("the thread's directory: {why}"),
+                Observation::Known(Ok(true)) => {
+                    made = Some(ThreadDir {
+                        path: dir.to_string(),
+                        host,
                     });
                 }
+                Observation::Known(Ok(false)) => {}
+                Observation::Known(Err(why)) => {
+                    let failed = EffectOutcome::Failed {
+                        why: format!("the thread's directory: {why}"),
+                    };
+                    return (Observation::Known(failed), None);
+                }
                 Observation::Unknown { why } => {
-                    return Observation::unknown(format!("the thread's directory: {why}"));
+                    let why = format!("the thread's directory: {why}");
+                    return (Observation::unknown(why), None);
                 }
             }
         }
+        (self.create_task(obj, lease), made)
+    }
+
+    /// The fenced create of a conversation Task: an object already under
+    /// the name is adopted when it carries this Conversation's uid, since an
+    /// earlier attempt's receipt may have been lost; one with another uid,
+    /// or none, is a refusal. The store's doubt is Unknown, never a refusal.
+    fn create_task(&self, obj: &Object, lease: &LeaseToken) -> Observation<EffectOutcome> {
         let by = ConversationController::MANAGER;
         match self.store.create_fenced(obj.clone(), by, lease) {
             Ok(o) => Observation::Known(EffectOutcome::Created {
@@ -897,28 +924,85 @@ impl Manager<'_> {
     }
 
     /// The host a Task about to be created runs on: its own `host`, else
-    /// its TaskConfig's, else the local host. A TaskConfig that is absent
-    /// is a refusal, since the directory's host is not known; one that
-    /// cannot be read is Unknown.
-    fn task_host(&self, obj: &Object) -> Observation<Result<String, String>> {
+    /// its TaskConfig's, else the local host. An absent TaskConfig names no
+    /// host, so the local one applies and the Task waits for its config as
+    /// any Task does; a TaskConfig that cannot be read is Unknown.
+    fn task_host(&self, obj: &Object) -> Observation<String> {
         if let Some(h) = obj.spec["host"].as_str() {
-            return Observation::Known(Ok(h.to_string()));
+            return Observation::Known(h.to_string());
         }
         let Some(name) = obj.spec["configRef"]["name"].as_str() else {
-            return Observation::Known(Ok(task::LOCAL_HOST.to_string()));
+            return Observation::Known(task::LOCAL_HOST.to_string());
         };
         match self.store.get(fleet_api::config::TASK_CONFIG, name) {
-            Observation::Known(Some(cfg)) if !cfg.is_deleting() => Observation::Known(Ok(cfg.spec
-                ["host"]
-                .as_str()
-                .unwrap_or(task::LOCAL_HOST)
-                .to_string())),
-            Observation::Known(_) => Observation::Known(Err(format!(
-                "TaskConfig/{name} is absent or deleting, so the host for the thread's directory is not known"
-            ))),
+            Observation::Known(Some(cfg)) if !cfg.is_deleting() => Observation::Known(
+                cfg.spec["host"]
+                    .as_str()
+                    .unwrap_or(task::LOCAL_HOST)
+                    .to_string(),
+            ),
+            Observation::Known(_) => Observation::Known(task::LOCAL_HOST.to_string()),
             Observation::Unknown { why } => {
                 Observation::unknown(format!("get TaskConfig/{name}: {why}"))
             }
+        }
+    }
+
+    /// A retiring thread's Task, deleted through the store, fenced on its
+    /// uid: gone already is done; one that is not Concluded, or not this
+    /// thread's, is a refusal; the store's doubt is Unknown.
+    fn retire_task(
+        &self,
+        name: &str,
+        uid: &str,
+        conversation_uid: &str,
+        lease: &LeaseToken,
+    ) -> Observation<EffectOutcome> {
+        let by = ConversationController::MANAGER;
+        match self
+            .store
+            .retire_conversation_task(name, uid, conversation_uid, by, lease)
+        {
+            Ok(_) | Err(StoreError::NotFound(_)) => Observation::Known(EffectOutcome::Deleted),
+            Err(StoreError::Conflict { .. }) => Observation::Known(EffectOutcome::Failed {
+                why: format!("Task/{name} under that name is another Task now"),
+            }),
+            Err(StoreError::LeaseLost(why)) => Observation::unknown(format!("lease lost: {why}")),
+            Err(StoreError::Unknown(why)) => Observation::unknown(why),
+            Err(e) => Observation::Known(EffectOutcome::Failed { why: e.to_string() }),
+        }
+    }
+
+    /// A retiring thread's directory, removed through the runtime port:
+    /// only the directory the Conversation records the manager making, and
+    /// only while no Task names it. A Task that does is `WorkspaceBusy`,
+    /// and the store's doubt is Unknown, never absence.
+    fn remove_thread_dir(&self, conv: &Object, host: &str, path: &str) -> Observation<EffectOutcome> {
+        let recorded = conv.status["dir"]["path"].as_str() == Some(path)
+            && conv.status["dir"]["host"].as_str() == Some(host);
+        if !recorded {
+            return Observation::Known(EffectOutcome::Failed {
+                why: format!("{path} is not the directory this thread recorded making"),
+            });
+        }
+        let wanted = fleet_api::task::normalise_dir(path);
+        let tasks = match self.store.list(task::KIND) {
+            Observation::Known(t) => t,
+            Observation::Unknown { why } => return Observation::unknown(format!("list Task: {why}")),
+        };
+        if let Some(holder) = tasks.iter().find(|t| {
+            t.spec["workspace"]["dir"]
+                .as_str()
+                .is_some_and(|d| fleet_api::task::normalise_dir(d) == wanted)
+        }) {
+            return Observation::Known(EffectOutcome::WorkspaceBusy {
+                task: holder.metadata.name.clone(),
+            });
+        }
+        match self.runtime.remove_dir(host, path) {
+            Observation::Known(Ok(())) => Observation::Known(EffectOutcome::Deleted),
+            Observation::Known(Err(why)) => Observation::Known(EffectOutcome::Failed { why }),
+            Observation::Unknown { why } => Observation::Unknown { why },
         }
     }
 
@@ -932,6 +1016,7 @@ impl Manager<'_> {
         key: &str,
         action: &str,
         outcome: Observation<EffectOutcome>,
+        dir: Option<&ThreadDir>,
         lease: &LeaseToken,
     ) -> Result<Object, StoreError> {
         let receipt = Receipt {
@@ -955,6 +1040,9 @@ impl Manager<'_> {
                 )));
             };
             record.receipt = Some(receipt.clone());
+            if let Some(dir) = dir {
+                st.dir = Some(dir.clone());
+            }
             let value =
                 serde_json::to_value(&st).map_err(|e| StoreError::Invalid(e.to_string()))?;
             let rv = obj.metadata.resource_version;
@@ -1934,7 +2022,9 @@ impl Manager<'_> {
             | Action::Post { .. }
             | Action::Open { .. }
             | Action::Receive { .. }
-            | Action::Log { .. } => Observation::Known(EffectOutcome::Failed {
+            | Action::Log { .. }
+            | Action::DeleteTask { .. }
+            | Action::RemoveDir { .. } => Observation::Known(EffectOutcome::Failed {
                 why: format!("{} is not a Task controller effect", effect.action.name()),
             }),
         }
