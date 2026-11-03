@@ -242,7 +242,7 @@ The Task it creates:
   "spec": {
     "configRef": {"name": "conversation"},
     "brief": "<the route's brief file, as read when the Task is created>",
-    "workspace": {"dir": "/work/conversations"},
+    "workspace": {"dir": "/work/conversations/conv-3f9a1c0d2b7e"},
     "dispatch": true
   }
 }
@@ -254,10 +254,32 @@ labels; `apply` refuses them.
 
 #### Workspaces
 
-A route with a `dir` workspace gives every Task the same directory, so the
-route runs one conversation Task at a time. The create carries an
-`exclusive: {workspace}` precondition. The manager refuses it with
-`WorkspaceBusy` while any Task has that directory. The thread then:
+A route with a `dir` workspace names a base directory. Each thread gets
+its own directory below it: `<dir>/<conversation name>`, for example
+`/work/conversations/conv-3f9a1c0d2b7e`. These rules apply:
+
+- Every Task of one thread gets the thread's directory. After an
+  orphaning, the next Task gets the same directory, so it finds what the
+  earlier Task left.
+- ConversationController computes the directory from the route and the
+  Conversation's name. It reads no file.
+- The create carries an `exclusive: {workspace}` precondition that names
+  the thread's directory.
+- The manager checks the precondition. Then it creates the directory, with
+  its missing parents, on the Task's host. Then it creates the Task.
+- A directory that the manager cannot create is a failed create. A
+  directory creation with an unknown outcome is an Unknown create. Both
+  follow the create receipts in [effect and recovery
+  keys](#effect-and-recovery-keys). No Task names a missing directory.
+- The Task's host is the TaskConfig's `host`, else `local`. The thurbox
+  runtime creates directories on the local host only. On another host,
+  the create fails and says why.
+
+Threads never wait for each other. The manager refuses the create with
+`WorkspaceBusy` only while another Task already has the thread's own
+directory. Examples are the previous Task of an Orphaned thread that is
+still being deleted, or a Task that someone applied there. The thread
+then:
 
 - raises `NeedsAttention/WorkspaceBusy`,
 - tells the person once that the request is queued,
@@ -268,11 +290,14 @@ A route with a `repositories` workspace has no shared directory. Its create
 carries no `exclusive` precondition, and each Task gets the workspace the
 runtime makes for it.
 
-A Task keeps its directory until someone deletes it, Concluded or not. The
-config is refused when one route's directory equals, contains or lies inside
-another's. The check does not stop a Task applied or created by a plugin
-into that directory later, so a route's directory should be one no other
-Task names.
+Fleet never deletes a thread's directory. This rule holds when a Task is
+deleted, and also when retention deletes the Conversation. The operator
+cleans the base directory.
+
+The config is refused when one route's base directory equals, contains or
+lies inside another's. The check does not stop a Task applied or created by
+a plugin into a thread's directory later, so no other Task should name a
+directory below a route's base directory.
 
 ### ListenerController
 
@@ -405,6 +430,9 @@ architecture rule:
 - `Plan.delete`, today ChangeRequestController's, is also
   ConversationController's.
 - A create may carry an `exclusive: {workspace}` precondition. See
+  [workspaces](#workspaces).
+- A new runtime call, `Runtime::create_dir(host, dir)`. The manager calls
+  it before a conversation Task's create, after the precondition. See
   [workspaces](#workspaces).
 - New probes: `Probe::List { kind, labels }`, answered by the store;
   `Probe::History`, `Probe::Capabilities` and

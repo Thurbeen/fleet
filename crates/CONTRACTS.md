@@ -494,8 +494,8 @@ the effect blindly. Guarantees, each with its test in
 - **Start.** In an Untied thread, an admitted message that meets
   `route.mention` (`required`: it mentions Fleet; `top-level`: it is the
   thread's starter) starts the thread's next Task, `<conversation>-<n>`,
-  exactly the interface page's JSON (the route's `taskConfig`, brief and
-  workspace, `dispatch` true, the three labels), under
+  exactly the interface page's JSON (the route's `taskConfig` and brief,
+  the thread's workspace, `dispatch` true, the three labels), under
   `conversation/<uid>/task/<n>` with the tie `pending` and the trigger
   kept; in an Orphaned thread any admitted message does. One Task per
   pass, and never while a tie is pending, busy or created. A thread whose
@@ -503,10 +503,20 @@ the effect blindly. Guarantees, each with its test in
   to it (`n` 0) and starts nothing; one whose Task is readably gone, or
   whose starter was removed, may; one whose Task is Unknown, or whose
   starter is Fleet's without a readable marker, ignores mentions.
-- **Workspace.** The manager lists the store's Tasks under the lease
-  immediately before the fenced create and answers `WorkspaceBusy` naming
-  the Task whose `spec.workspace.dir` normalises to the route's, creating
-  nothing; the tie turns `busy`, `NeedsAttention/WorkspaceBusy` is raised,
+- **Workspace.** On a route whose workspace is a `dir`, that directory is
+  a base: every Task of one thread gets `<base>/<conversation name>`
+  (`conversation::thread_dir`, computed purely), and the create's
+  `exclusive` names that directory. A `repositories` workspace is the
+  route's, with no precondition. The manager lists the store's Tasks under
+  the lease immediately before the fenced create and answers
+  `WorkspaceBusy` naming the Task whose `spec.workspace.dir` normalises to
+  the thread's, creating nothing. Otherwise it makes the directory, with
+  its missing parents, through the runtime's `create_dir` on the Task's
+  host (its `host`, else its TaskConfig's, else `local`), then creates the
+  Task: a directory the runtime refuses, or an absent TaskConfig, is a
+  `Failed` create, and one it cannot tell about is Unknown, so no Task
+  names a missing directory. Nothing deletes a thread's directory. On
+  `WorkspaceBusy` the tie turns `busy`, `NeedsAttention/WorkspaceBusy` is raised,
   one notice is posted under `conversation/<uid>/busy/<n>`, retention is
   held, and the create is planned again under the same key every `pollMs`,
   not counted as an attempt, until it lands. A busy tie whose trigger
@@ -687,9 +697,12 @@ refused.
 
 ## Runtime contract
 
-`fleet_api::runtime::Runtime`: `host`, `spawn`, `find`, `ready`,
-`workspace_trust`, `brief`, `brief_delivered`, `at_rest`, `release`, `lost`
-and `revive`, each answering Known or Unknown.
+`fleet_api::runtime::Runtime`: `host`, `create_dir`, `spawn`, `find`,
+`ready`, `workspace_trust`, `brief`, `brief_delivered`, `at_rest`,
+`release`, `lost` and `revive`, each answering Known or Unknown.
+`create_dir` makes a directory with its missing parents on a host; the
+thurbox adapter makes it on the local host and refuses any other, since
+thurbox has no verb that makes a directory on a remote host.
 Each adapter reports its longest single operation (`operation_bound`), and
 `fleet reconcile` refuses a lease that could not outlast it.
 

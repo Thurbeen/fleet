@@ -1051,9 +1051,11 @@ fn an_admitted_mention_starts_the_threads_first_task_as_the_interface_shows_it()
     assert_eq!(plan.creates.len(), 1, "{plan:#?}");
     let create = &plan.creates[0];
     assert_eq!(create.key, create_key());
+    // The route's directory is a base: the thread gets its own below it,
+    // and the precondition guards only that one.
     assert_eq!(
         create.exclusive.as_ref().map(|e| e.workspace.as_str()),
-        Some("/work/conversations")
+        Some("/work/conversations/conv-3f9a1c0d2b7e")
     );
     let expected: Object = serde_json::from_value(json!({
         "apiVersion": "fleet/v1alpha1",
@@ -1069,7 +1071,7 @@ fn an_admitted_mention_starts_the_threads_first_task_as_the_interface_shows_it()
         "spec": {
             "configRef": {"name": "conversation"},
             "brief": BRIEF,
-            "workspace": {"dir": "/work/conversations"},
+            "workspace": {"dir": "/work/conversations/conv-3f9a1c0d2b7e"},
             "dispatch": true,
         }
     }))
@@ -1990,6 +1992,11 @@ fn an_orphaned_thread_starts_the_next_task_on_any_admitted_message() {
     assert_eq!(plan.creates.len(), 1);
     assert_eq!(plan.creates[0].key, task_key(UID, 2));
     assert_eq!(plan.creates[0].object.metadata.name, format!("{NAME}-2"));
+    assert_eq!(
+        plan.creates[0].object.spec["workspace"],
+        json!({"dir": format!("/work/conversations/{NAME}")}),
+        "the thread's next Task finds what the last one left"
+    );
     assert_eq!(
         st3.task,
         Some(Tie {

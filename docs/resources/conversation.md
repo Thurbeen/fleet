@@ -83,7 +83,7 @@ changes nothing else.
 | --- | --- |
 | `phase` | `Untied`, `Tied` or `Orphaned`, defined by the [state machine](../controllers/gateway/state-machine.md#conversation-phases). |
 | `ref` | What the adapter parsed the address into. |
-| `task` | The tie: `{name, uid, n, state, trigger}`. `n` counts the Tasks this thread has started; `state` is `pending` between the create intent and its receipt, `busy` while the create waits for the route's workspace, holding off retention, then `created`, then `gone` once the Task is readably absent. `trigger` is the id of the message that asked for the Task, kept while `pending` or `busy`. |
+| `task` | The tie: `{name, uid, n, state, trigger}`. `n` counts the Tasks this thread has started; `state` is `pending` between the create intent and its receipt, `busy` while the create waits for the thread's own directory, which another Task holds, holding off retention, then `created`, then `gone` once the Task is readably absent. `trigger` is the id of the message that asked for the Task, kept while `pending` or `busy`. |
 | `revision` | Incremented by every write that numbered anything below. |
 | `judged` | The `revision` through which the messages were judged for admission. A message numbered above it waits: for the thread's starter where the account has history, for the Task a Fleet-opened thread's marker names, or for the route while it left the config. |
 | `starter` | The thread's first message, `{id, kind, key}`, from the `starter` a history read answers, or on an account without history from a `Message` whose `startsThread` is true, kept when it rotates out of `messages`; a keyed copy numbered later sets `key`; `{removed: true}` when the platform reports it deleted. Absent until the starter is read, and for a chat without threads. It decides whether a mention may start a Task, as the [interface](../controllers/gateway/interface.md#conversationcontroller) says. |
@@ -126,6 +126,12 @@ Conversation `gateway.retainMs` after the later of its last message and its
 orphaning, once it is Untied or Orphaned, by `uid` and `resourceVersion`
 under the lease, as a ChangeRequest is retired. A person may delete one at
 any time; nothing on the platform changes.
+
+On a route with a `dir` workspace, the Conversation's name also names its
+thread's directory: every Task the thread starts gets `<dir>/<name>`, which
+the manager creates with the Task. Fleet never deletes that directory, also
+not when it retires the Conversation. The operator cleans the route's base
+directory.
 
 ## Commands
 

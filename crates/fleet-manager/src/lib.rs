@@ -40,7 +40,8 @@
 //! fenced delete. A Conversation's plan may also create the Task its thread
 //! starts, under a key whose intent the status carries: the manager checks
 //! the create's `exclusive: {workspace}` precondition against the store's
-//! Tasks under the lease immediately before the fenced create, and writes
+//! Tasks under the lease, makes the Task's `dir` workspace on its host
+//! through the runtime port, then performs the fenced create, and writes
 //! the receipt back under the key; and it may post the thread's refusal or
 //! busy notice through the Gateway port, intent before and receipt after.
 //! The receive verb that fills the spool and records beats lives in
@@ -810,8 +811,10 @@ impl Manager<'_> {
     }
 
     /// One keyed create of a Conversation's plan: the precondition is
-    /// checked against the store's Tasks under the lease immediately before
-    /// the fenced create. An object already under the name is adopted when
+    /// checked against the store's Tasks under the lease, then the Task's
+    /// `dir` workspace is made on its host, then the fenced create runs. A
+    /// directory the runtime cannot make is a refused create, and one it
+    /// cannot tell about is Unknown: no Task names a missing directory. An object already under the name is adopted when
     /// it carries this Conversation's uid, since an earlier attempt's
     /// receipt may have been lost; one with another uid, or none, is a
     /// refusal. The store's doubt is Unknown, never a refusal.
@@ -833,6 +836,26 @@ impl Manager<'_> {
                 return Observation::Known(EffectOutcome::WorkspaceBusy {
                     task: holder.metadata.name.clone(),
                 });
+            }
+        }
+        if let Some(dir) = obj.spec["workspace"]["dir"].as_str() {
+            let host = match self.task_host(obj) {
+                Observation::Known(Ok(h)) => h,
+                Observation::Known(Err(why)) => {
+                    return Observation::Known(EffectOutcome::Failed { why });
+                }
+                Observation::Unknown { why } => return Observation::unknown(why),
+            };
+            match self.runtime.create_dir(&host, dir) {
+                Observation::Known(Ok(())) => {}
+                Observation::Known(Err(why)) => {
+                    return Observation::Known(EffectOutcome::Failed {
+                        why: format!("the thread's directory: {why}"),
+                    });
+                }
+                Observation::Unknown { why } => {
+                    return Observation::unknown(format!("the thread's directory: {why}"));
+                }
             }
         }
         let by = ConversationController::MANAGER;
@@ -870,6 +893,32 @@ impl Manager<'_> {
             Err(StoreError::LeaseLost(why)) => Observation::unknown(format!("lease lost: {why}")),
             Err(StoreError::Unknown(why)) => Observation::unknown(why),
             Err(e) => Observation::Known(EffectOutcome::Failed { why: e.to_string() }),
+        }
+    }
+
+    /// The host a Task about to be created runs on: its own `host`, else
+    /// its TaskConfig's, else the local host. A TaskConfig that is absent
+    /// is a refusal, since the directory's host is not known; one that
+    /// cannot be read is Unknown.
+    fn task_host(&self, obj: &Object) -> Observation<Result<String, String>> {
+        if let Some(h) = obj.spec["host"].as_str() {
+            return Observation::Known(Ok(h.to_string()));
+        }
+        let Some(name) = obj.spec["configRef"]["name"].as_str() else {
+            return Observation::Known(Ok(task::LOCAL_HOST.to_string()));
+        };
+        match self.store.get(fleet_api::config::TASK_CONFIG, name) {
+            Observation::Known(Some(cfg)) if !cfg.is_deleting() => Observation::Known(Ok(cfg.spec
+                ["host"]
+                .as_str()
+                .unwrap_or(task::LOCAL_HOST)
+                .to_string())),
+            Observation::Known(_) => Observation::Known(Err(format!(
+                "TaskConfig/{name} is absent or deleting, so the host for the thread's directory is not known"
+            ))),
+            Observation::Unknown { why } => {
+                Observation::unknown(format!("get TaskConfig/{name}: {why}"))
+            }
         }
     }
 

@@ -1664,7 +1664,7 @@ fn an_admitted_mention_starts_one_task_tied_to_the_thread() {
         json!({
             "configRef": {"name": "conversation"},
             "brief": support::GATEWAY_BRIEF,
-            "workspace": {"dir": env.gateway_workspace()},
+            "workspace": {"dir": thread_dir(&env, &conv)},
             "dispatch": true,
         }),
         "the Task is the interface page's JSON: {task:#}"
@@ -1836,13 +1836,158 @@ fn an_orphaned_thread_starts_the_next_task_on_any_admitted_message() {
     env.assert_no_temp();
 }
 
+/// The directory a thread's Tasks get on the gateway route: the route's
+/// base directory and the thread's Conversation name.
+fn thread_dir(env: &Env, conv: &str) -> String {
+    format!("{}/{conv}", env.gateway_workspace())
+}
+
 #[test]
-fn a_busy_workspace_holds_the_thread_says_so_once_and_starts_when_free() {
+fn two_threads_on_one_route_each_start_a_task_in_their_own_directory() {
+    let (env, first_conv) = admitting("two-threads");
+    let second_thread = "fake:C0123ABCD:1730000900000";
+    env.fake_gateway()
+        .seed(
+            &ConversationRef::split(second_thread).unwrap(),
+            vec![person(SAM_ID, T0 + 900_000, "The import is slow too.")],
+        )
+        .unwrap();
+    // The first thread's Task runs, concludes and is kept.
+    env.receive("Ev01", mention("1730000300000", T0 + 300_000))
+        .ok();
+    env.reconcile().ok();
+    let first = format!("{first_conv}-1");
+    let task = env.get(&first);
+    assert_eq!(
+        task["spec"]["workspace"],
+        json!({"dir": thread_dir(&env, &first_conv)}),
+        "{task:#}"
+    );
+    assert!(
+        Path::new(&thread_dir(&env, &first_conv)).is_dir(),
+        "the manager made the thread's directory"
+    );
+    env.reconcile().ok();
+    env.fleet(&[
+        "result",
+        &first,
+        "--generation",
+        "1",
+        "--outcome",
+        "shipped",
+    ])
+    .ok();
+    env.reconcile().ok();
+    assert_eq!(env.status(&first)["phase"], "Concluded");
+    // A mention in a second thread of the same route starts its Task at
+    // once, in its own directory, with no busy notice.
+    env.receive(
+        "Ev02",
+        message_event(
+            second_thread,
+            "1730000950000",
+            ALEX_ID,
+            T0 + 950_000,
+            &format!("<@{BOT}> can you look at this one?"),
+        ),
+    )
+    .ok();
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let second_conv = conversation_name(GATEWAY_ACCOUNT, second_thread);
+    let second = format!("{second_conv}-1");
+    let task = env.get(&second);
+    assert_eq!(
+        task["spec"]["workspace"],
+        json!({"dir": thread_dir(&env, &second_conv)}),
+        "{task:#}"
+    );
+    assert!(Path::new(&thread_dir(&env, &second_conv)).is_dir());
+    let st = env.conversation_status(&second_conv);
+    assert_eq!(st["phase"], "Tied", "{st:#}");
+    assert_eq!(st["task"]["state"], "created", "{st:#}");
+    assert!(
+        st["conditions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["reason"] != "WorkspaceBusy"),
+        "{st:#}"
+    );
+    assert_eq!(
+        env.fake_gateway().posts().unwrap(),
+        vec![],
+        "no busy notice in either thread"
+    );
+    assert_eq!(env.status(&first)["phase"], "Concluded");
+    env.assert_no_temp();
+}
+
+#[test]
+fn a_thread_directory_the_manager_cannot_make_is_a_refused_create_and_no_task() {
+    let (env, conv) = admitting("dir-refused");
+    // A file stands where the route's base directory should be, so the
+    // thread's directory cannot be made under it.
+    let base = PathBuf::from(env.gateway_workspace());
+    fs::create_dir_all(base.parent().unwrap()).unwrap();
+    fs::write(&base, "not a directory").unwrap();
+    env.receive("Ev01", mention("1730000300000", T0 + 300_000))
+        .ok();
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let task_name = format!("{conv}-1");
+    env.get_absent(&task_name);
+    let conv_uid = uid_of(&env, "conversation", &conv);
+    let key = format!("conversation/{conv_uid}/task/1");
+    let st = env.conversation_status(&conv);
+    let known = &st["effects"][&key]["receipt"]["outcome"]["known"];
+    assert_eq!(known["type"], "failed", "{st:#}");
+    assert!(
+        known["why"]
+            .as_str()
+            .is_some_and(|w| w.contains("the thread's directory")),
+        "{st:#}"
+    );
+    assert_eq!(st["phase"], "Untied", "{st:#}");
+    assert_eq!(
+        env.fake_gateway().posts().unwrap().len(),
+        0,
+        "no busy notice"
+    );
+    // The operator clears the way; the retry, under the same key, makes the
+    // directory and the Task.
+    fs::remove_file(&base).unwrap();
+    let path = env.object_path("Conversation", &conv);
+    let mut obj: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    obj["status"]["effects"][&key]["receipt"]["at"] = json!(0);
+    obj["status"]["notBefore"] = json!(0);
+    fs::write(&path, obj.to_string()).unwrap();
+    let report = env.reconcile().ok().json();
+    assert_eq!(report["errors"], json!([]), "{report:#}");
+    let task = env.get(&task_name);
+    assert_eq!(
+        task["spec"]["workspace"],
+        json!({"dir": thread_dir(&env, &conv)})
+    );
+    assert!(Path::new(&thread_dir(&env, &conv)).is_dir());
+    let st = env.conversation_status(&conv);
+    assert_eq!(st["phase"], "Tied", "{st:#}");
+    assert_eq!(st["effects"][&key]["attempts"], 2, "{st:#}");
+    env.assert_no_temp();
+}
+
+#[test]
+fn a_busy_thread_directory_holds_the_thread_says_so_once_and_starts_when_free() {
     let (env, conv) = admitting("busy");
-    // Another Task already runs in the route's directory, spelled with a
-    // trailing slash: the same directory.
+    // A Task applied by hand into the route's base directory holds no
+    // thread's directory.
+    let mut bystander = support::task("bystander", false);
+    bystander["spec"]["workspace"]["dir"] = json!(env.gateway_workspace());
+    env.apply(bystander).ok();
+    // Another Task already runs in this thread's own directory, spelled
+    // with a trailing slash: the same directory.
     let mut holder = support::task("holder", false);
-    holder["spec"]["workspace"]["dir"] = json!(format!("{}/", env.gateway_workspace()));
+    holder["spec"]["workspace"]["dir"] = json!(format!("{}/", thread_dir(&env, &conv)));
     env.apply(holder).ok();
     env.receive("Ev01", mention("1730000300000", T0 + 300_000))
         .ok();

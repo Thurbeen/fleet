@@ -8,8 +8,8 @@
 //! Pure: it reads the Conversation and what the probes saw, and returns a
 //! Plan whose `status` is the whole Conversation status with the spool
 //! drained of what was numbered and the intent of every effect it asks
-//! for, whose `creates` is the Task a thread starts under the route's
-//! `exclusive: {workspace}` precondition, whose `effects` are the refusal
+//! for, whose `creates` is the Task a thread starts in the thread's own
+//! directory under the `exclusive: {workspace}` precondition, whose `effects` are the refusal
 //! and busy-notice posts, and whose `delete` retires the object. The
 //! manager performs the plan through `record_received`, the fenced create,
 //! the Gateway port and the fenced delete, and writes each receipt back
@@ -24,6 +24,7 @@ use fleet_api::conversation::{
     self, CONVERSATION_LABEL, CONVERSATION_UID_LABEL, ConversationSpec, ConversationStatus,
     EFFECTS_CAP, EffectRecord, MESSAGE_CAP, Phase, REFUSALS_CAP, ROUTE_LABEL, SEEN_EVENTS_CAP,
     StoredMessage, Tie, TieState, Via, busy_key, busy_notice, refusal_key, task_key, task_name,
+    thread_dir,
 };
 use fleet_api::gateway::{
     Admission, AuthorKind, Capabilities, ConversationRef, Delivery, Event, GatewayDefaults,
@@ -930,6 +931,16 @@ impl Pass<'_, '_> {
         self.st.task.as_ref().map_or(0, |t| t.n).max(recorded) + 1
     }
 
+    /// The thread's own workspace: on a `dir` route, the route's base
+    /// directory and this Conversation's name, the same for every Task the
+    /// thread starts; a `repositories` workspace as the route gives it.
+    fn workspace(&self, route: &RouteConfig) -> task::Workspace {
+        match route.workspace.dir() {
+            Some(base) => task::Workspace::at(thread_dir(base, &self.input.object.metadata.name)),
+            None => route.workspace.clone(),
+        }
+    }
+
     /// The Task the thread starts, as the interface page gives it.
     fn task_object(&self, name: &str, route: &RouteConfig, brief: &str) -> Object {
         Object {
@@ -950,7 +961,7 @@ impl Pass<'_, '_> {
             spec: json!({
                 "configRef": {"name": route.task_config},
                 "brief": brief,
-                "workspace": route.workspace,
+                "workspace": self.workspace(route),
                 "dispatch": true,
             }),
             status: serde_json::Value::Null,
@@ -958,8 +969,9 @@ impl Pass<'_, '_> {
     }
 
     /// Ask the manager to create the tie's Task under its key, intent
-    /// first, with a `dir` route's workspace as the precondition. A
-    /// `repositories` route shares no directory, so its create has none.
+    /// first, with the thread's own directory as the precondition on a
+    /// `dir` route. A `repositories` route shares no directory, so its
+    /// create has none.
     fn plan_create(&mut self, counted: bool) {
         let (Some(route), Some(brief)) = (
             self.input.defaults.route.clone(),
@@ -980,7 +992,7 @@ impl Pass<'_, '_> {
         self.creates.push(Create {
             key,
             object,
-            exclusive: route.workspace.dir().map(|dir| Exclusive {
+            exclusive: self.workspace(&route).dir().map(|dir| Exclusive {
                 workspace: dir.to_string(),
             }),
         });
@@ -1035,12 +1047,12 @@ impl Pass<'_, '_> {
                     .defaults
                     .route
                     .as_ref()
-                    .and_then(|r| r.workspace.dir().map(str::to_string))
+                    .and_then(|r| self.workspace(r).dir().map(str::to_string))
                     .unwrap_or_default();
                 self.attention.raise(
                     WORKSPACE_BUSY,
                     format!(
-                        "Task/{holder} has the route's workspace {dir}; the request waits for it"
+                        "Task/{holder} has the thread's directory {dir}; the request waits for it"
                     ),
                 );
                 let notice = busy_key(self.uid(), tie.n);

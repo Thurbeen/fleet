@@ -71,11 +71,21 @@ pub fn task_name(conversation: &str, n: u64) -> String {
     format!("{conversation}-{n}")
 }
 
-/// The text of the one busy notice: the request is queued behind `task`.
+/// The text of the one busy notice: the request is queued behind `task`,
+/// which holds the thread's own directory.
 pub fn busy_notice(task: &str) -> String {
     format!(
-        "Your request is queued: this channel's workspace is busy with Task/{task}. It starts when the workspace is free."
+        "Your request is queued: this thread's directory is in use by Task/{task}. It starts when the directory is free."
     )
+}
+
+/// The directory every Task of one thread gets on a route with a `dir`
+/// workspace: the route's base directory and the Conversation's name, as
+/// `<base>/<conversation>`. Computed from text alone; only the manager
+/// creates it, on the Task's host.
+pub fn thread_dir(base: &str, conversation: &str) -> String {
+    let base = base.trim_end_matches(['/', '\\']);
+    format!("{base}/{conversation}")
 }
 
 /// What a Conversation mirrors. Fixed once created: a different thread is a
@@ -290,6 +300,24 @@ mod tests {
     use super::*;
     use crate::gateway::{AuthorKind, Event, Message};
     use serde_json::json;
+
+    #[test]
+    fn a_threads_directory_is_the_base_and_the_conversation_name() {
+        for base in [
+            "/work/conversations",
+            "/work/conversations/",
+            "/work/conversations//",
+        ] {
+            assert_eq!(
+                thread_dir(base, "conv-3f9a1c0d2b7e"),
+                "/work/conversations/conv-3f9a1c0d2b7e"
+            );
+        }
+        assert_eq!(
+            thread_dir("C:\\work\\conversations\\", "conv-3f9a1c0d2b7e"),
+            "C:\\work\\conversations/conv-3f9a1c0d2b7e"
+        );
+    }
 
     fn delivery(id: &str) -> Delivery {
         Delivery {
