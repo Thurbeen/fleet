@@ -109,7 +109,9 @@ route lists. In such a DM:
 
 - A top-level message from a person on `allow` starts a Task. It needs no
   mention.
-- A reply in a tied DM thread is a turn for that thread's Task.
+- A reply in a tied DM thread is a turn for that thread's Task. A new
+  top-level message is a new thread, and it starts a new Task. To continue
+  a Task, a person replies in its thread.
 - A top-level message from anyone else earns the route's refusal, once per
   thread. It never becomes an instruction.
 

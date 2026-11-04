@@ -1756,12 +1756,16 @@ impl Pass<'_, '_> {
         }
     }
 
-    /// Admission over the messages numbered since the last judgement: a
-    /// stranger's mention, or in a DM thread their top-level message, earns
-    /// one refusal per author; in an Untied thread an admitted message that
-    /// meets the mention rule, or the DM rule, starts a Task, in an Orphaned one any admitted message does. Judging waits
-    /// for the thread's starter where the account has history, and for the
-    /// route while it is not in the config.
+    /// Admission over the messages numbered since the last judgement:
+    ///
+    /// - A stranger's mention earns one refusal per author. In a DM thread
+    ///   (`spec.direct`), so does the stranger's top-level message.
+    /// - In an Untied thread, an admitted message that meets the mention
+    ///   rule starts a Task. In a DM thread, the DM rule replaces it.
+    /// - In an Orphaned thread, any admitted message starts a Task.
+    ///
+    /// Judging waits for the thread's starter where the account has
+    /// history, and for the route while it is not in the config.
     fn admit(&mut self) {
         let (Some(route), Some(_)) = (
             self.input.defaults.route.clone(),

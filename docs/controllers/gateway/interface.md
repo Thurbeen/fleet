@@ -577,21 +577,26 @@ Admission sorts each message by the route and the people table:
 | Anyone else | `Context` | Relayed with the next `Admitted` message. Starts no turn. |
 
 An `Admitted` message starts a Task in an untied thread only when it meets
-`route.mention`:
+the thread's start rule:
 
-- `required`, the default: the message mentions Fleet.
-- `top-level`: the message starts a thread. This suits a channel where every
-  top-level post is a request, such as an alert channel.
-
-A thread whose Conversation records `spec.direct` has its own rule, whatever
-`route.mention` says. There an `Admitted` message starts a Task when it
-starts the thread or mentions Fleet.
+- `route.mention = "required"`, the default: the message mentions Fleet.
+- `route.mention = "top-level"`: the message starts a thread. This suits a
+  channel where every top-level post is a request, such as an alert
+  channel.
+- The Conversation records `spec.direct`: the message starts the thread or
+  mentions Fleet. This rule replaces `route.mention` in a DM thread.
 
 In a tied thread, every `Admitted` message is a turn, with or without a
-mention. A person who is not on the allowlist and mentions Fleet gets one
-refusal per author and thread. In a thread with `spec.direct`, such a
-person's message that starts the thread also earns the refusal. Past 200
-refused authors in a thread, no further refusal is sent. An unlisted bot gets none.
+mention.
+
+A person who is not on the allowlist gets one refusal per author and
+thread. These messages earn it:
+
+- A message that mentions Fleet.
+- In a thread with `spec.direct`, a message that starts the thread.
+
+Past 200 refused authors in a thread, no further refusal is sent. An
+unlisted bot gets none.
 
 ## Effect and recovery keys
 

@@ -132,6 +132,9 @@ Rules:
 - A wildcard route needs `mention = "required"`.
 - A thread that a wildcard route covers keeps that route. A later route
   that lists its channel id changes the route of new threads only.
+
+Rules for the DM entry:
+
 - An explicit channel id always wins over the DM entry.
 - An account has at most one DM route.
 - A group DM is no one-to-one DM. The wildcard covers it under the mention
@@ -142,6 +145,10 @@ Rules:
   the refusal.
 - An edit or a removal that does not say it is in a DM still reaches a
   thread whose Conversation records `spec.direct`.
+- A thread keeps its `spec.direct`. A later config without `"dm:*"`
+  changes the rule of new threads only.
+- On Slack, each top-level DM message starts a new thread, so it starts a
+  new Task. A person continues a Task by replying in its thread.
 
 The cost rule holds on a wildcard route. In a thread that Fleet does not
 mirror, only a message that can start a Task, earn a refusal, or is Fleet's
