@@ -223,6 +223,7 @@ impl ConversationController {
             delete: false,
             creates: Vec::new(),
             effects: Vec::new(),
+            tied_now: false,
             started: None,
         };
         pass.advance();
@@ -469,6 +470,8 @@ struct Pass<'a, 'b> {
     delete: bool,
     creates: Vec<Create>,
     effects: Vec<Effect>,
+    /// The Task was tied on this pass.
+    tied_now: bool,
     /// The message that started the Task tied on this pass.
     started: Option<String>,
 }
@@ -1247,6 +1250,7 @@ impl Pass<'_, '_> {
             t.uid = uid.to_string();
             t.state = TieState::Created;
             self.started = t.trigger.take();
+            self.tied_now = true;
         }
         self.attention.clear(WORKSPACE_BUSY);
         self.attention.clear(TASK_CREATE_FAILED);
@@ -1459,8 +1463,13 @@ impl Pass<'_, '_> {
     /// - a create that waits for the thread's directory marks its trigger,
     ///   and every admitted message after it, queued;
     /// - the Task tied on this pass marks its trigger working, and every
-    ///   queued message working in place of queued;
-    /// - a wait withdrawn removes the queued reaction it added;
+    ///   queued message working in place of queued, in the write the join
+    ///   reads; the working reaction is tried this once, never again, so it
+    ///   cannot land after the Task replied;
+    /// - a queued message the tie pass could not mark loses its queued
+    ///   reaction later, and the join adds the working one;
+    /// - a wait withdrawn, or a queued message that left the mirror, loses
+    ///   the queued reaction;
     /// - a tie that ends forgets the working marks, which GatewayController
     ///   then owns.
     ///
@@ -1473,7 +1482,6 @@ impl Pass<'_, '_> {
             return;
         }
         let held: BTreeSet<String> = self.st.messages.iter().map(|m| m.id.clone()).collect();
-        self.st.reactions.marks.retain(|id, _| held.contains(id));
         match &self.input.observations.capabilities {
             Some(Observation::Known(caps)) if caps.reactions => {}
             Some(Observation::Known(_)) => {
@@ -1484,6 +1492,20 @@ impl Pass<'_, '_> {
             // Not asked, or Unknown: no mark changes this pass.
             _ => return,
         }
+        let left: Vec<String> = self
+            .st
+            .reactions
+            .marks
+            .keys()
+            .filter(|id| !held.contains(*id))
+            .cloned()
+            .collect();
+        for id in left {
+            if self.st.reactions.marks.remove(&id) == Some(Mark::Queued) {
+                // Rotated out, or removed: a queued reaction would stay.
+                self.plan_react(&id, Mark::Queued, false);
+            }
+        }
         let tie = self.st.task.clone();
         match tie.as_ref().map(|t| t.state) {
             Some(TieState::Busy) => {
@@ -1493,7 +1515,7 @@ impl Pass<'_, '_> {
                     }
                 }
             }
-            Some(TieState::Created) => {
+            Some(TieState::Created) if self.tied_now => {
                 let queued: Vec<String> = self.marked(Mark::Queued);
                 for id in queued {
                     self.mark(&id, Mark::Working);
@@ -1503,6 +1525,14 @@ impl Pass<'_, '_> {
                     && !self.st.reactions.marks.contains_key(&id)
                 {
                     self.mark(&id, Mark::Working);
+                }
+            }
+            Some(TieState::Created) => {
+                // Queued marks the tie pass could not change: the Task may
+                // have them already, so only the queued reaction goes.
+                for id in self.marked(Mark::Queued) {
+                    self.st.reactions.marks.remove(&id);
+                    self.plan_react(&id, Mark::Queued, false);
                 }
             }
             Some(TieState::Pending) => {}
@@ -1629,6 +1659,14 @@ impl Pass<'_, '_> {
                 Some(Observation::Known(EffectOutcome::Failed { .. })) => true,
                 Some(Observation::Known(_)) => false,
             };
+            if matches!(parsed, Some((_, Mark::Working, true))) {
+                // Tried once, on the tie pass: kept while the mark stands,
+                // so the join can read whether it landed, and never again.
+                if pointless {
+                    self.st.effects.remove(&key);
+                }
+                continue;
+            }
             if pointless || !unsettled || record.attempts >= MAX_ATTEMPTS {
                 self.st.effects.remove(&key);
                 continue;

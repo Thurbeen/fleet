@@ -127,13 +127,22 @@ Rules:
 
 - Only an `Admitted` message gets a reaction. A `Context` message and
   Fleet's own posts get none.
-- Fleet adds the working reaction to a message once. A message that
-  admission marked is not marked again at the join.
+- Fleet adds the working reaction to a message once. The join adds no
+  working reaction where admission's working reaction landed.
+- Admission tries its working reaction once, when the Task is created.
+  When that reaction fails, or the capabilities are Unknown then, the join
+  adds the working reaction instead. Reason: a late working reaction from
+  admission could land after the Task replied, and stay.
+- Only a wait for the thread's directory (`WorkspaceBusy`) is queued. A
+  create that is retried after a refusal, or whose outcome Fleet looks for,
+  adds no reaction.
 - Only the queued reaction shows that a request waits. The busy notice is
   no reply, so a message with the queued reaction keeps it until its Task
   is created.
 - A wait can end without a Task: the trigger leaves the mirror. Fleet then
   removes the queued reaction from each message that still has it.
+- A message with the queued reaction that leaves the mirror, removed or
+  rotated out, loses the queued reaction.
 - Only a thread post counts as a reply: a Question, a Comment or the ready
   notice. A log post does not count.
 - A message that is edited and relayed again keeps the mark it has. Fleet

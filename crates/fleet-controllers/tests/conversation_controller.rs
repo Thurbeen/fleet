@@ -2512,7 +2512,8 @@ mod reactions {
         assert_eq!(st.reactions.marks[MENTION], Mark::Working);
         // The message before it started nothing: the join marks it.
         assert_eq!(st.reactions.marks.len(), 1, "{:?}", st.reactions);
-        // Landed: the record is dropped and nothing is added again.
+        // Landed: the record is kept for the join to read, and nothing is
+        // added again.
         let mut landed = st.clone();
         landed.effects.get_mut(&key).unwrap().receipt =
             Some(receipt(EffectOutcome::Reacted { already: false }));
@@ -2521,8 +2522,94 @@ mod reactions {
             with_caps(reacting(true), Some(task_object("t1"))),
         );
         assert!(reacts(&plan).is_empty(), "{plan:?}");
-        assert!(!st.effects.contains_key(&key));
+        assert!(st.effects.contains_key(&key));
         assert_eq!(st.reactions.marks[MENTION], Mark::Working);
+    }
+
+    #[test]
+    fn a_working_reaction_that_fails_is_never_tried_again_by_the_conversation() {
+        // The Task may reply before a retry lands, and a late working
+        // reaction would then stay beside the replied one: the join adds it
+        // instead, under the Task's key.
+        let (_, st) = run(
+            &object(Some(&created())),
+            with_caps(reacting(true), Some(task_object("t1"))),
+        );
+        let key = react_key(UID, MENTION, Mark::Working, true);
+        for outcome in [
+            Observation::Known(EffectOutcome::Failed {
+                why: "rate limited".into(),
+            }),
+            Observation::Unknown {
+                why: "timed out".into(),
+            },
+        ] {
+            let mut failed = st.clone();
+            failed.effects.get_mut(&key).unwrap().receipt = Some(Receipt {
+                action: "react".into(),
+                at: NOW - 1_000,
+                outcome,
+            });
+            let (plan, after) = run_with(
+                &object(Some(&failed)),
+                with_caps(reacting(true), Some(task_object("t1"))),
+                defaults(),
+                NOW + 600_000,
+            );
+            assert!(reacts(&plan).is_empty(), "{plan:?}");
+            assert_eq!(after.effects[&key].attempts, 1);
+            assert_eq!(after.reactions.marks[MENTION], Mark::Working);
+        }
+    }
+
+    #[test]
+    fn queued_marks_the_tie_pass_could_not_change_only_lose_their_queued_reaction() {
+        let mut st = busy();
+        st.reactions.marks.insert(MENTION.into(), Mark::Queued);
+        st.effects.get_mut(&create_key()).unwrap().receipt =
+            Some(receipt(EffectOutcome::Created {
+                uid: "t1".into(),
+                adopted: false,
+            }));
+        // The tie pass, with the capabilities Unknown: no mark changes.
+        let (plan, tied_st) = run(
+            &object(Some(&st)),
+            with_caps(
+                Observation::Unknown {
+                    why: "timed out".into(),
+                },
+                Some(task_object("t1")),
+            ),
+        );
+        assert_eq!(tied_st.phase, Phase::Tied);
+        assert!(reacts(&plan).is_empty());
+        assert_eq!(tied_st.reactions.marks[MENTION], Mark::Queued);
+        // A later pass: the queued reaction goes, and no working one is
+        // added, since the join may have replied already.
+        let (plan, st) = run(
+            &object(Some(&tied_st)),
+            with_caps(reacting(true), Some(task_object("t1"))),
+        );
+        assert_eq!(
+            reacts(&plan),
+            vec![r(MENTION, "hourglass_flowing_sand", false)]
+        );
+        assert!(st.reactions.marks.is_empty(), "{:?}", st.reactions);
+    }
+
+    #[test]
+    fn a_queued_message_that_leaves_the_mirror_loses_its_queued_reaction() {
+        let mut st = busy();
+        st.task.as_mut().unwrap().state = TieState::Busy;
+        st.reactions.marks.insert("gone-1".into(), Mark::Queued);
+        st.reactions.marks.insert(MENTION.into(), Mark::Queued);
+        let (plan, st) = run(&object(Some(&st)), with_caps(reacting(true), None));
+        assert_eq!(
+            reacts(&plan),
+            vec![r("gone-1", "hourglass_flowing_sand", false)]
+        );
+        assert!(!st.reactions.marks.contains_key("gone-1"));
+        assert_eq!(st.reactions.marks[MENTION], Mark::Queued);
     }
 
     #[test]
@@ -2611,10 +2698,15 @@ mod reactions {
         st.received = vec![removed("Ev05", MENTION)];
         let (plan, st) = run(&object(Some(&st)), with_caps(reacting(true), None));
         assert_eq!(st.task, None, "withdrawn");
-        // The removed message is gone from the mirror: nothing more for it.
+        // Every queued reaction goes, the removed message's included: the
+        // mirror cannot tell a removal from a rotation, and a removal of a
+        // reaction is set, not counted.
         assert_eq!(
             reacts(&plan),
-            vec![r(&later, "hourglass_flowing_sand", false)]
+            vec![
+                r(MENTION, "hourglass_flowing_sand", false),
+                r(&later, "hourglass_flowing_sand", false)
+            ]
         );
         assert!(st.reactions.marks.is_empty(), "{:?}", st.reactions);
     }

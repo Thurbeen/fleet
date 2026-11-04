@@ -418,8 +418,8 @@ owns `status.gateway` and:
 - records answers to Questions,
 - routes a child Task's words into its parent's inbox,
 - marks each relayed admitted message working, and replied once Fleet
-  posted in the thread. A message that admission marked, queued or
-  working, is marked working with no second reaction.
+  posted in the thread. Where admission's working reaction on the message
+  landed, the join adds no second one.
 
 #### Fields this controller owns
 
@@ -643,6 +643,9 @@ A reaction follows its own rules:
   dropped. Reason: adding it then would undo the removal.
 - A queued reaction not yet settled when its message is marked working is
   dropped, for the same reason.
+- ConversationController's working reaction is tried once and never again.
+  Its record stays while the mark stands, so the join can read whether it
+  landed. Reason: a retry could land after the Task replied.
 - These rules hold for the reactions of ConversationController and of
   GatewayController alike.
 

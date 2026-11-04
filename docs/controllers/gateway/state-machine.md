@@ -176,19 +176,23 @@ account's capabilities say `reactions`.
 | none | Admission starts a Task for the message, and the create answers `Created` | working |
 | none | Admission starts a Task for the message, and the create answers `WorkspaceBusy` | queued |
 | none | The thread's create waits for its directory, and the message is `Admitted` and later than the trigger | queued |
-| queued | The create answers `Created` | working |
+| queued | The create answers `Created`, and the capabilities are known on that pass | working |
+| queued | The create answered `Created` on an earlier pass, whose capabilities were Unknown | none, and Fleet removes the queued reaction. The join marks the message working. |
 | queued | The wait is withdrawn: the trigger left the mirror | none, and Fleet removes the queued reaction |
 | none | A relay or the join delivers the message, and it is `Admitted` | working |
 | working | A Question, a Comment or a ready notice lands in the thread for the Task | replied |
-| queued, working or replied | The message leaves the mirror, removed or rotated out | none, and Fleet changes no reaction |
+| queued | The message leaves the mirror, removed or rotated out | none, and Fleet removes the queued reaction |
+| working or replied | The message leaves the mirror, removed or rotated out | none, and Fleet changes no reaction |
 | queued, working or replied | `gateway.reactions` turns `false` | none, and Fleet changes no reaction |
 | working or replied | The tie ends: the Conversation is readably gone, or names another Task | none, and Fleet changes no reaction |
 
 Rules:
 
-- Fleet adds the working reaction to a message once. The join takes a mark
-  that admission made, queued or working, as working, with no reaction of
-  its own.
+- Fleet adds the working reaction to a message once. The join marks a
+  message that admission marked working, and adds no reaction where
+  admission's working reaction landed. Otherwise the join adds it.
+- Admission tries its working reaction once. Reason: a retry could land
+  after the Task replied, and the working reaction would then stay.
 - A message marked queued keeps the queued reaction when a thread post
   lands. Reason: nothing worked on it yet.
 - A message that is edited and relayed again keeps its mark.
