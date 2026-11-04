@@ -1936,6 +1936,7 @@ impl Pass<'_, '_> {
     ) -> Option<Action> {
         let names = self.input.defaults.reactions.as_ref()?;
         let reaction = match mark {
+            Mark::Queued => &names.queued,
             Mark::Working => &names.working,
             Mark::Replied => &names.replied,
         };
@@ -1965,6 +1966,8 @@ impl Pass<'_, '_> {
 
     /// Each admitted message this relay delivers, not marked before, is
     /// marked working, where reactions are on and the platform has them.
+    /// A message admission already marked, queued or working, is marked
+    /// working with no reaction of this Task's: admission added it.
     /// An edit of a marked message is not marked again. Context and Fleet's
     /// own posts get nothing.
     fn mark_working(
@@ -2009,7 +2012,9 @@ impl Pass<'_, '_> {
         }
         for id in fresh {
             self.gw.reactions.marks.insert(id.clone(), Mark::Working);
-            self.plan_react(&spec.account, &reference, &id, Mark::Working, true);
+            if !cs.reactions.marks.contains_key(&id) {
+                self.plan_react(&spec.account, &reference, &id, Mark::Working, true);
+            }
         }
     }
 

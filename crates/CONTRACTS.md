@@ -566,6 +566,21 @@ the effect blindly. Guarantees, each with its test in
   in the mirror, or by one `since` read where the platform reads markers
   back, a complete read without it being one more attempt; where it cannot
   be found, `NeedsAttention/PostUnconfirmed` and no repeat.
+- **Reactions at admission.** Where `gateway.reactions` is on and the
+  account's capabilities say `reactions`, a create that answers `Created`
+  marks its trigger `working`; one that answers `WorkspaceBusy` marks its
+  trigger, and each later admitted message the listener delivered while
+  the create waits, `queued`. The Task's create then marks each queued
+  message working: the working reaction added, the queued one removed. A
+  wait withdrawn removes the queued reactions it added; a tie that ends
+  forgets the working marks. The marks are `status.reactions.marks`, and
+  each reaction a keyed effect under
+  `conversation/<uid>/react/<message id>/<queued|working>/<on|off>`, best
+  effort as GatewayController's: tried at most three times, never looked
+  for, dropped once settled, given up or made pointless, holding back
+  nothing and raising no condition. Unknown capabilities change no mark.
+  Tested in `conversation_controller`'s `reactions` module and
+  `e2e_gateway_reactions`.
 
 Conditions: `Reachable`, `Tied`, `NeedsAttention` (`TaskCreateFailed`,
 `WorkspaceBusy`, `RouteUnknown`, `MentionsOnly`, `PostFailed`,
@@ -637,8 +652,10 @@ Guarantees, each with its test in `gateway_controller`,
 - **Reactions are best effort.** Each admitted message a relay delivers,
   with no mark yet, is marked working and gets the working reaction, where
   `gateway.reactions` is on and the account's capabilities say
-  `reactions`. A thread post that lands marks every working message
-  replied: the replied reaction is added and the working one removed.
+  `reactions`. A message the Conversation marked at admission, queued or
+  working, is marked working with no reaction of the Task's. A thread
+  post that lands marks every working message replied: the replied
+  reaction is added and the working one removed.
   Each reaction is a keyed effect under
   `task/<name>/<uid>/gateway/react/<message id>/<working|replied>/<on|off>`,
   tried at most three times, never looked for, and dropped once settled or

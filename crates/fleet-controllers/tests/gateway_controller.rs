@@ -2524,6 +2524,48 @@ mod reactions {
     }
 
     #[test]
+    fn the_join_takes_the_marks_admission_made_without_reacting_again() {
+        let t = task(tied(), TaskStatus::default());
+        let alex = (T0 + 300_000).to_string();
+        for admitted in [Mark::Working, Mark::Queued] {
+            let mut c = conv(1, thread());
+            c.status["reactions"] = json!({"marks": {alex.clone(): admitted}});
+            let (plan, gw) = run(&t, with_caps(c, caps(true)));
+            assert_eq!(plan.appends.len(), 1, "the join goes out");
+            assert!(
+                reacts(&plan).is_empty(),
+                "{admitted:?}: {:#?}",
+                plan.effects
+            );
+            assert_eq!(
+                gw.reactions.marks,
+                BTreeMap::from([(alex.clone(), Mark::Working)]),
+                "{admitted:?}"
+            );
+            // A thread post then replies to it, as to any working mark.
+            let mut replied = gw.clone();
+            replied
+                .posts
+                .insert(key("comment/c1"), record("post", NOW, posted(NOW), 1));
+            let t2 = task(Some(replied), TaskStatus::default());
+            let (plan, gw) = run(&t2, with_caps(conv(1, thread()), caps(true)));
+            assert_eq!(
+                reacts(&plan),
+                vec![
+                    (
+                        react(&alex, "replied", true),
+                        "white_check_mark".into(),
+                        true
+                    ),
+                    (react(&alex, "working", false), "eyes".into(), false),
+                ],
+                "{admitted:?}"
+            );
+            assert_eq!(gw.reactions.marks[&alex], Mark::Replied);
+        }
+    }
+
+    #[test]
     fn without_reactions_unknown_capabilities_or_reactions_off_the_relay_goes_out_unmarked() {
         let t = task(tied(), TaskStatus::default());
         for (obs, defaults) in [
