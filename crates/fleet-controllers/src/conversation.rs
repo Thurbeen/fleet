@@ -1757,9 +1757,9 @@ impl Pass<'_, '_> {
     }
 
     /// Admission over the messages numbered since the last judgement: a
-    /// stranger's mention earns one refusal per author; in an Untied
-    /// thread an admitted message that meets the mention rule starts a
-    /// Task, in an Orphaned one any admitted message does. Judging waits
+    /// stranger's mention, or in a DM thread their top-level message, earns
+    /// one refusal per author; in an Untied thread an admitted message that
+    /// meets the mention rule, or the DM rule, starts a Task, in an Orphaned one any admitted message does. Judging waits
     /// for the thread's starter where the account has history, and for the
     /// route while it is not in the config.
     fn admit(&mut self) {
@@ -1809,7 +1809,7 @@ impl Pass<'_, '_> {
             }
             let message = as_message(&m, starter.as_ref());
             let admission = admit(&route, &people, &message);
-            if earns_refusal(admission, &message) {
+            if earns_refusal(self.spec.direct, admission, &message) {
                 self.refuse(&m.author.id, &route);
                 continue;
             }
@@ -1817,7 +1817,10 @@ impl Pass<'_, '_> {
                 continue;
             }
             let may_start = match self.st.task.as_ref().map(|t| t.state) {
-                None => starts_task(&route, admission, &message) && self.opener_allows(),
+                None => {
+                    starts_task(&route, self.spec.direct, admission, &message)
+                        && self.opener_allows()
+                }
                 Some(TieState::Gone) => true,
                 Some(TieState::Pending | TieState::Busy | TieState::Created) => false,
             };
