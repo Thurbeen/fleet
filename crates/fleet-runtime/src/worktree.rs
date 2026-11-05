@@ -35,9 +35,9 @@ pub const MARKER: &str = ".fleet-workspace.json";
 /// bound the manager's lease can outlast.
 pub const MAX_REPOSITORIES: usize = 4;
 
-/// The most `git` commands one call runs: two per repository to make it
-/// and two per repository to roll it back.
-const MAX_COMMANDS: u32 = 4 * MAX_REPOSITORIES as u32;
+/// The most `git` commands one call runs: two per repository to roll back
+/// a partial workspace, two to make it and two to roll that back.
+const MAX_COMMANDS: u32 = 6 * MAX_REPOSITORIES as u32;
 
 #[derive(Debug, Clone)]
 pub struct WorktreeConfig {
@@ -289,7 +289,9 @@ impl Workspaces for WorktreeWorkspaces {
             Observation::Unknown { why } => return Observation::Unknown { why },
         }
         // Whole or nothing: a partial attempt goes before a new one starts.
-        if let Err(e) = self.remove(&dir, &trees) {
+        if dir.exists()
+            && let Err(e) = self.remove(&dir, &trees)
+        {
             return Observation::unknown(format!("cannot roll back {dir:?}: {e}"));
         }
         match self.make(key, &dir, w, &trees) {

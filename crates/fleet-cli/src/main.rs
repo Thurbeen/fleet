@@ -1123,10 +1123,6 @@ fn open_workspaces(
     }
 }
 
-fn open_runtime(config: &Config) -> Result<Box<dyn Runtime>, Failure> {
-    open_reloadable_runtime(config).map(|(runtime, _)| runtime)
-}
-
 /// The runtime, and for thurbox the handle to its repository map.
 fn open_reloadable_runtime(
     config: &Config,
