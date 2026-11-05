@@ -91,17 +91,6 @@ impl SessionState {
         let present = found == Some(true) || lost == Some(false) || paused == Some(false);
         present.then_some(SessionState::Running)
     }
-
-    /// The state's name, as the status writes it.
-    pub fn name(self) -> &'static str {
-        match self {
-            SessionState::Running => "Running",
-            SessionState::Idle => "Idle",
-            SessionState::Paused => "Paused",
-            SessionState::Lost => "Lost",
-            SessionState::Gone => "Gone",
-        }
-    }
 }
 
 /// The session key for a Task: deterministic, so a second spawn finds the
@@ -233,7 +222,7 @@ mod tests {
     #[test]
     fn a_state_is_written_by_its_name() {
         assert_eq!(serde_json::to_value(SessionState::Lost).unwrap(), "Lost");
-        assert_eq!(SessionState::Gone.name(), "Gone");
+        assert_eq!(serde_json::to_value(SessionState::Gone).unwrap(), "Gone");
     }
 
     #[test]
