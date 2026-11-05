@@ -205,6 +205,11 @@ from `state` or `hook_state`: they read `done` while background shells,
 Monitors or crons are still pending. `pause` runs `session stop` and
 `resume` runs `session start`. Both first check that the key still belongs
 to the recorded id, as `release` does. A stopped session is at rest.
+
+No released thurbox reports the `activity` field yet:
+[Thurbeen/thurbox#1665](https://github.com/Thurbeen/thurbox/pull/1665)
+adds it. Thurbox 2.83.1, the latest release, does not have it. Without the
+field, `activity` is Unknown, and Fleet never pauses a session.
 The fake adapter provides persisted sessions and faults without starting an
 agent. Explicit provider commands still run through the same bounded executor
 with either adapter; command resolution requires a lease above 20000 ms and

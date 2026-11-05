@@ -31,7 +31,7 @@ Save this manifest as `task-config.json`:
 | `model` | no | Default model; requires a matching harness variable in native `runtime.modelEnv`. |
 | `envFrom` | no | Ordered references to [EnvProvider](env-provider.md), each `{"name":"provider"}`. |
 | `env` | no | String environment map; overrides all referenced provider values. |
-| `pauseAfterMs` | no | Pause a Task's session once its agent was idle this long, in milliseconds; at least 1. Absent means never. See [pausing an idle session](../controllers/task/state-machine.md#pausing-an-idle-session). |
+| `pauseAfterMs` | no | Pause a Task's session once its agent was idle this long, in milliseconds; at least 1. Absent means never. A thurbox that does not report activity never pauses either. See [pausing an idle session](../controllers/task/state-machine.md#pausing-an-idle-session). |
 
 All fields are optional; unknown fields are refused. Harness/host/model must
 be nonempty, contain no NUL and not start with `-`. References use the same

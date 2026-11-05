@@ -246,6 +246,11 @@ These rules apply to a paused session:
 
 `pauseAfterMs` absent means that Fleet never pauses the session.
 
+The Thurbox runtime reports activity only from a thurbox that has
+[Thurbeen/thurbox#1665](https://github.com/Thurbeen/thurbox/pull/1665).
+With an older thurbox, activity is Unknown, so Fleet never pauses. See
+[the runtime port](interface.md#runtime-port).
+
 ## Deletion protocol
 
 The [store](../../../crates/fleet-store/src/lib.rs) adds `fleet.dev/release` at
