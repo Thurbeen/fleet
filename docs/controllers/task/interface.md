@@ -175,9 +175,20 @@ Its session key is `<keyPrefix>.<uid>`. It journals each brief intent in
 session metadata as pending before sending and delivered afterward. A pending
 journal entry is ambiguous, so it is never a license to resend. A text over
 16 000 bytes is a Known failure, refused before the journal and the send.
-The adapter gives every text to the agent's own inbox with `thurbox-cli
-message send --kind fleet`. It never types into the terminal composer.
-Thurbox chooses the route and reports it as `delivered_via`:
+Every brief action carries a `voice`. `user` is the brief, an amendment or
+a `fleet send` from the CLI; `peer` is a forge or gateway relay, a child's
+report or Fleet's own catch-up note. An agent may act on its user's words as
+the user's own and on nobody else's: Claude Code labels whatever reaches its
+inbox socket as another agent's message, and its auto mode then lets that
+message authorize no forge write.
+
+The adapter types a `user` text into the composer with `thurbox-cli session
+send ID -- TEXT` when `session get` shows the agent `idle` or `done`, and
+records `deliveredVia` `composer`. A failed `session send` may have typed
+part of the text, so it is never repeated. A `peer` text, or a `user` text
+while a turn runs, goes to the agent's own inbox with `thurbox-cli message
+send --kind fleet`. Thurbox chooses that route and reports it as
+`delivered_via`:
 `claude-socket` and `codex-queue` reach a working turn. Thurbox answers
 `mailbox`, with exit 0 and a `delivery_note`, when it cannot reach the
 agent. Thurbox 2.81 answers `mailbox` for these sessions:

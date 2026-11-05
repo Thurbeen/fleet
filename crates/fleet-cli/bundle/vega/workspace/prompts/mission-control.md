@@ -55,8 +55,9 @@ turn:
 fleet send vega "VEGA re-hydrate: read AGENTS.md and prompts/mission-control.md, then follow Re-hydrate."
 ```
 
-Fleet gives each message to your agent's own inbox, never to its composer, so
-a slash command sent this way is text, not a command. Do not send `/clear`.
+Fleet types a `fleet send` into an idle agent's composer, where a slash
+command runs, and hands it to a working agent's inbox, where it is text. Do
+not send `/clear`.
 
 ## Mission Control stays up
 

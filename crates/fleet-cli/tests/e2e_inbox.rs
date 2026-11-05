@@ -428,10 +428,12 @@ fn thurbox_task(name: &str) -> Value {
 }
 
 /// Every message Fleet gave a session, on the agent's own inbox.
+/// Every text handed to the session: typed into an idle one's composer, or
+/// on a working one's inbox.
 fn sends(env: &Env) -> Vec<Vec<String>> {
     env.stub_calls()
         .iter()
-        .filter(|c| support::is_call(c, "message send"))
+        .filter(|c| support::is_call(c, "message send") || support::is_call(c, "send"))
         .map(|c| {
             c["argv"]
                 .as_array()
@@ -485,7 +487,7 @@ fn on_thurbox_cli_a_message_is_sent_once_and_journaled_under_its_key() {
     // A send that never answered may have enqueued the text: never
     // repeated; after three unreadable journal reads a person is asked.
     env.edit_stub(|s| s["sessions"][0]["state"] = json!("idle"));
-    env.stub_fault("message-send", "hang-after", 1);
+    env.stub_fault("send", "hang-after", 1);
     let third = send(&env, "Third message.");
     env.reconcile().ok();
     for _ in 0..3 {

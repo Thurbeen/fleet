@@ -21,10 +21,12 @@ that decision through the store and runtime ports.
    the controller plans a spawn under a deterministic session key.
 3. The manager persists the intent, runs the effect and persists its receipt.
    Later passes recover ambiguous effects by their keys.
-4. A ready session receives its brief in its agent's own inbox. Its
-   delivery journal prevents a blind resend when an answer is lost. Messages
-   queued with `fleet send` follow the same way, oldest first, one per pass,
-   each under its own key. A working turn receives them too.
+4. A ready session receives its brief as its user's own turn, typed into
+   its idle composer. Its delivery journal prevents a blind resend when an
+   answer is lost. Messages queued with `fleet send` follow, oldest first,
+   one per pass, each under its own key; a working turn receives them in its
+   agent's own inbox. Relays always go to that inbox: they are other
+   people's words, never the user's.
 5. The worker reports through `fleet result`. The controller concludes the
    Task, retaining the session until deletion; messages sent afterwards are
    still delivered.

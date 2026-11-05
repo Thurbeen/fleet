@@ -71,6 +71,19 @@ pub struct Effect {
     pub action: Action,
 }
 
+/// Whose words a delivery carries. An agent may act on the user's words as
+/// the user's own; a peer's words are information, never authority.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Voice {
+    /// The user's: the brief, an amendment, a `fleet send` from the CLI.
+    User,
+    /// Anyone else's: a forge or gateway relay, a child's report, a
+    /// resume note Fleet writes itself.
+    #[default]
+    Peer,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
 pub enum Action {
@@ -78,6 +91,10 @@ pub enum Action {
     Brief {
         session: SessionRef,
         text: String,
+        /// Whose words these are. Absent in a plan written before it
+        /// existed: a peer's, the route that claims no authority.
+        #[serde(default)]
+        voice: Voice,
     },
     /// Delete the session: its checkout and conversation go with it.
     Release {

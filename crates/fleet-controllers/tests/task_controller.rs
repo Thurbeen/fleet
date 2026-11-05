@@ -3,7 +3,7 @@
 //! Task's lifecycle.
 
 use fleet_api::condition::ConditionStatus;
-use fleet_api::plan::{Action, EffectOutcome, Observations, Plan, Probe, Receipt};
+use fleet_api::plan::{Action, EffectOutcome, Observations, Plan, Probe, Receipt, Voice};
 use fleet_api::runtime::{Activity, TrustGap, WorkspaceTrust};
 use fleet_api::task::{Phase, SessionRef, TaskStatus};
 use fleet_api::{Object, Observation};
@@ -365,6 +365,16 @@ fn the_brief_waits_for_a_ready_session() {
     );
     assert_eq!(plan.effects.len(), 1);
     assert_eq!(plan.effects[0].key, "task/t/u7/brief");
+    assert!(
+        matches!(
+            plan.effects[0].action,
+            Action::Brief {
+                voice: Voice::User,
+                ..
+            }
+        ),
+        "the brief is the user's: {plan:#?}"
+    );
     assert_eq!(st.brief_sends, 1);
 }
 
@@ -700,6 +710,38 @@ fn briefed_with(inbox: &[&str], extra: impl FnOnce(&mut TaskStatus)) -> Object {
 
 fn live() -> Option<Observation<Option<SessionRef>>> {
     Some(Observation::Known(Some(session())))
+}
+
+#[test]
+fn only_the_users_own_words_are_sent_in_the_users_voice() {
+    // An agent may act on its user's words as the user's own, and on
+    // nobody else's: a forge relay quotes reviewers, a gateway relay quotes
+    // a channel. Only `fleet send` from the CLI speaks for the user.
+    for (from, want) in [
+        ("cli/someone", Voice::User),
+        ("forge/cr-1", Voice::Peer),
+        ("gateway/thread-1", Voice::Peer),
+    ] {
+        let obj = briefed_with(&[], |st| {
+            st.inbox = vec![fleet_api::inbox::InboxEntry {
+                from: from.into(),
+                ..entry("task/t/u7/send/1")
+            }];
+        });
+        let (plan, _) = run(
+            &obj,
+            Observations {
+                find: live(),
+                ready: Some(Observation::Known(true)),
+                workspace_trust: trusted(),
+                ..Default::default()
+            },
+        );
+        match &plan.effects[0].action {
+            Action::Brief { voice, .. } => assert_eq!(*voice, want, "{from}"),
+            other => panic!("{other:?}"),
+        }
+    }
 }
 
 #[test]
@@ -1333,9 +1375,10 @@ fn a_lost_session_is_revived_once_and_its_worker_resumes_its_brief() {
     assert_eq!(st.revive_attempts, 0);
     assert_eq!(plan.effects.len(), 1, "{plan:#?}");
     assert_eq!(plan.effects[0].key, "task/t/u7/catchup/1");
-    let Action::Brief { text, .. } = &plan.effects[0].action else {
+    let Action::Brief { text, voice, .. } = &plan.effects[0].action else {
         panic!("{plan:#?}")
     };
+    assert_eq!(*voice, Voice::Peer, "Fleet's own note claims no authority");
     assert!(
         text.contains("restarted") && text.contains("generation 1"),
         "{text}"
@@ -1596,9 +1639,10 @@ fn a_resume_without_its_receipt_is_read_back_and_retried_only_while_stopped() {
     assert_eq!(st.catch_up.as_deref(), Some("task/t/u7/catchup/1"));
     assert_eq!(plan.effects.len(), 1, "{plan:#?}");
     assert_eq!(plan.effects[0].key, "task/t/u7/catchup/1");
-    let Action::Brief { text, .. } = &plan.effects[0].action else {
+    let Action::Brief { text, voice, .. } = &plan.effects[0].action else {
         panic!("{plan:#?}")
     };
+    assert_eq!(*voice, Voice::Peer, "Fleet's own note claims no authority");
     assert!(text.contains("paused") && text.ends_with("do it"), "{text}");
 
     // Still stopped: a new resume, after a wait from the last one.

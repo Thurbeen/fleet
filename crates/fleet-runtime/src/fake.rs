@@ -527,6 +527,7 @@ impl Runtime for FakeRuntime {
         session: &SessionRef,
         text: &str,
         intent_key: &str,
+        _voice: fleet_api::plan::Voice,
     ) -> Observation<EffectOutcome> {
         let (key, intent, len) = (session.key.clone(), intent_key.to_string(), text.len());
         let text = text.to_string();

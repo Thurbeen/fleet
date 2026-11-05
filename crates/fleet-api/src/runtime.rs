@@ -6,7 +6,7 @@
 //! unprefixed.
 
 use crate::observation::Observation;
-use crate::plan::{EffectOutcome, SpawnSpec};
+use crate::plan::{EffectOutcome, SpawnSpec, Voice};
 use crate::task::{SessionRef, Workspace};
 
 /// Whether a session's agent trusts the workspace it runs in. Workspace
@@ -103,11 +103,14 @@ pub trait Runtime {
     ) -> Observation<WorkspaceTrust>;
     /// Send the brief once under `intent_key`; the session stores the key, so
     /// a second send of the same key is `Delivered { already: true }`.
+    /// `voice` says whose words `text` is: the user's reach the agent as its
+    /// user's own turn wherever the runtime can, a peer's never do.
     fn brief(
         &self,
         session: &SessionRef,
         text: &str,
         intent_key: &str,
+        voice: Voice,
     ) -> Observation<EffectOutcome>;
     /// Read the intent key back: did a brief under it arrive?
     fn brief_delivered(&self, session: &SessionRef, intent_key: &str) -> Observation<bool>;

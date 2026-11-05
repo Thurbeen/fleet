@@ -138,18 +138,20 @@ fn a_host_that_cannot_be_read_is_unknown_for_its_own_tasks_only() {
     env.edit_stub(|s| s["hosts"] = json!({"remote": "up"}));
     env.apply(on_remote).ok();
     env.reconcile().ok();
-    // thurbox 2.81 reaches no remote agent's inbox: it keeps the brief in its
-    // mailbox. That is no delivery, and the brief is never sent again.
+    // thurbox 2.81 reaches no remote agent's inbox, but it types into a
+    // remote composer: the brief, the user's own words, reaches the agent.
     let far = env.status("far");
-    assert_eq!(far["phase"], "Spawned", "{far:#}");
-    assert_condition(&far, "Briefed", "False", "BriefUndelivered");
-    assert_condition(&far, "NeedsAttention", "True", "BriefUndelivered");
+    assert_eq!(far["phase"], "Briefed", "{far:#}");
     for _ in 0..3 {
         env.expire_wait("far");
         env.reconcile().ok();
     }
-    assert_eq!(argv_of(&env, "message send").len(), 1, "never sent again");
-    assert_eq!(env.stub_sessions()[0]["sent"], json!([]), "nothing typed");
+    assert_eq!(argv_of(&env, "send").len(), 1, "typed once");
+    assert!(argv_of(&env, "message send").is_empty());
+    assert_eq!(
+        env.stub_sessions()[0]["sent"],
+        json!(["Do the work for far."])
+    );
     let create = &argv_of(&env, "create")[0];
     let at = create.iter().position(|a| a == "--host").expect("--host");
     assert_eq!(create[at + 1], "remote");
@@ -161,7 +163,7 @@ fn a_host_that_cannot_be_read_is_unknown_for_its_own_tasks_only() {
     let report = env.reconcile().ok().json();
     assert_eq!(env.status("near")["phase"], "Briefed");
     let far = env.status("far");
-    assert_eq!(far["phase"], "Spawned", "{far:#}");
+    assert_eq!(far["phase"], "Briefed", "{far:#}");
     assert!(
         far["conditions"]
             .as_array()
@@ -247,12 +249,12 @@ fn a_brief_whose_answer_was_lost_is_read_back_and_never_sent_twice() {
     let st = env.status("t1");
     assert_eq!(st["phase"], "Briefed", "{st:#}");
     assert_condition(&st, "Briefed", "True", "ReceiptRecovered");
-    assert_eq!(argv_of(&env, "message send").len(), 1);
+    assert_eq!(argv_of(&env, "send").len(), 1, "typed once");
 
     // Unconfirmed: the send itself never answered. Fleet cannot tell, so it
     // asks for a person rather than typing the brief again.
     let env = setup("thurbox-brief-unconfirmed", vec![]);
-    env.stub_fault("message-send", "hang-after", 1);
+    env.stub_fault("send", "hang-after", 1);
     env.apply(task("t1", true)).ok();
     env.reconcile().ok();
     for _ in 0..3 {
@@ -263,16 +265,12 @@ fn a_brief_whose_answer_was_lost_is_read_back_and_never_sent_twice() {
     assert_eq!(st["phase"], "Spawned", "{st:#}");
     assert_condition(&st, "Briefed", "Unknown", "BriefUnconfirmed");
     assert_condition(&st, "NeedsAttention", "True", "BriefUnconfirmed");
-    assert_eq!(
-        argv_of(&env, "message send").len(),
-        1,
-        "never a second brief"
-    );
+    assert_eq!(argv_of(&env, "send").len(), 1, "never a second brief");
 
     // A send that fails may have typed part of the brief before failing:
     // thurbox-cli cannot say nothing arrived, so neither does fleet.
     let env = setup("thurbox-brief-failed-send", vec![]);
-    env.stub_fault("message-send", "fail", 1);
+    env.stub_fault("send", "fail", 1);
     env.apply(task("t1", true)).ok();
     env.reconcile().ok();
     env.expire_wait("t1");
@@ -280,7 +278,7 @@ fn a_brief_whose_answer_was_lost_is_read_back_and_never_sent_twice() {
     let st = env.status("t1");
     assert_eq!(st["phase"], "Spawned", "{st:#}");
     assert_condition(&st, "Briefed", "Unknown", "BriefUnconfirmed");
-    assert_eq!(argv_of(&env, "message send").len(), 1, "never typed twice");
+    assert_eq!(argv_of(&env, "send").len(), 1, "never typed twice");
 }
 
 #[test]
@@ -334,17 +332,17 @@ fn an_unconfirmed_inbox_entry_is_given_up_and_later_entries_go_past_it() {
     let key = thurbox_key(&env, "t1");
     env.fleet(&["send", "t1", "first"]).ok();
     env.fleet(&["send", "t1", "second"]).ok();
-    env.stub_fault("message-send", "fail", 1);
+    env.stub_fault("send", "fail", 1);
     for _ in 0..6 {
         set_session_state(&env, &key, "idle");
         env.expire_wait("t1");
         env.reconcile().ok();
     }
-    let sends = argv_of(&env, "message send");
+    let sends = argv_of(&env, "send");
     assert_eq!(
         sends
             .iter()
-            .filter(|a| a.contains(&"--body=first".into()))
+            .filter(|a| a.last().map(String::as_str) == Some("first"))
             .count(),
         1,
         "never typed twice: {sends:?}"
@@ -453,7 +451,7 @@ fn a_different_session_reusing_the_key_does_not_hide_a_vanished_worker() {
     assert_condition(&st, "NeedsAttention", "True", "WorkerGone");
     assert_eq!(env.get("t1")["status"]["session"]["id"], original_id);
     assert_eq!(argv_of(&env, "create").len(), 1, "never respawned");
-    assert_eq!(argv_of(&env, "message send").len(), 1, "never rebriefed");
+    assert_eq!(argv_of(&env, "send").len(), 1, "never rebriefed");
 }
 
 #[test]
@@ -966,8 +964,10 @@ fn a_message_reaches_a_working_claude_session_through_its_native_inbox() {
     );
     assert_eq!(delivered[0]["deliveredVia"], "claude-socket", "{full:#}");
     assert!(
-        argv_of(&env, "send").is_empty(),
-        "nothing was typed into the composer: {:?}",
+        !argv_of(&env, "send")
+            .iter()
+            .any(|a| a.iter().any(|x| x.contains("steer"))),
+        "the steer was not typed into the composer: {:?}",
         argv_of(&env, "send")
     );
     let messages = argv_of(&env, "message send");
@@ -975,6 +975,58 @@ fn a_message_reaches_a_working_claude_session_through_its_native_inbox() {
         messages
             .iter()
             .any(|a| a.contains(&"--body=steer: prefer the smaller fix".to_string())),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn the_users_brief_and_send_reach_an_idle_session_as_its_own_turn() {
+    // Claude Code labels whatever arrives on its inbox socket as another
+    // agent's message, and its auto mode lets no such message authorize a
+    // forge write. Workers were refused the very PR comments, body edits and
+    // merges their brief assigned. What the user asked for is typed into an
+    // idle session's composer, a turn of the user's own; only a working
+    // turn, which the composer cannot reach, takes it on the inbox.
+    let env = setup("thurbox-user-turn", vec![task("t1", true)]);
+    env.reconcile().ok();
+    let key = thurbox_key(&env, "t1");
+    assert_eq!(env.status("t1")["phase"], "Briefed");
+    let typed = argv_of(&env, "send");
+    assert!(
+        typed
+            .iter()
+            .any(|a| a.last().map(String::as_str) == Some("Do the work for t1.")),
+        "the brief was typed: {typed:?}"
+    );
+    assert!(
+        argv_of(&env, "message send").is_empty(),
+        "the brief never went to the inbox: {:?}",
+        argv_of(&env, "message send")
+    );
+
+    // The turn ended; the user's `fleet send` is typed too.
+    set_session_state(&env, &key, "idle");
+    env.fleet(&["send", "t1", "also open the PR as a draft"])
+        .ok();
+    env.expire_wait("t1");
+    env.reconcile().ok();
+    let full = full_status(&env, "t1");
+    assert_eq!(
+        full["deliveries"]["receipts"][0]["deliveredVia"], "composer",
+        "{full:#}"
+    );
+    assert!(argv_of(&env, "message send").is_empty());
+
+    // Mid-turn, the composer cannot reach the agent: the inbox steers it.
+    set_session_state(&env, &key, "working");
+    env.fleet(&["send", "t1", "steer: smaller"]).ok();
+    env.expire_wait("t1");
+    env.reconcile().ok();
+    let messages = argv_of(&env, "message send");
+    assert!(
+        messages
+            .iter()
+            .any(|a| a.contains(&"--body=steer: smaller".to_string())),
         "{messages:?}"
     );
 }
