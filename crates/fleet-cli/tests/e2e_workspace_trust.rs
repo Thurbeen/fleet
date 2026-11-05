@@ -385,7 +385,7 @@ fn claude_at_its_trust_dialog_is_never_briefed_and_asks_for_one_time_trust() {
     assert_condition(&st, "WorkspaceTrusted", "True", "Trusted");
     assert_condition(&st, "NeedsAttention", "False", "Resolved");
     assert_eq!(argv_of(&env, "create").len(), 1);
-    assert_eq!(argv_of(&env, "message send").len(), 1);
+    assert_eq!(argv_of(&env, "send").len(), 1, "the brief, typed");
 }
 
 #[test]
@@ -462,12 +462,13 @@ fn a_harness_without_a_known_trust_interface_starts_nothing_until_configured() {
     std::fs::write(&env.config, cfg).expect("config");
     env.expire_wait("a1");
     env.reconcile().ok();
-    // Trusted now, the brief goes out once. thurbox knows no agent inbox
-    // for this harness and keeps it in its mailbox: not a delivery.
+    // Trusted now, the brief goes out once, typed into the idle composer:
+    // no agent inbox is needed for the user's own words.
     let st = env.status("a1");
     assert_condition(&st, "WorkspaceTrusted", "True", "Trusted");
-    assert_condition(&st, "Briefed", "False", "BriefUndelivered");
-    assert_eq!(argv_of(&env, "message send").len(), 1, "{st:#}");
+    assert_eq!(st["phase"], "Briefed", "{st:#}");
+    assert_eq!(argv_of(&env, "send").len(), 1, "{st:#}");
+    assert!(argv_of(&env, "message send").is_empty(), "{st:#}");
 
     let bad = Env::thurbox("trust-bad-config");
     let cfg = std::fs::read_to_string(&bad.config).expect("config");

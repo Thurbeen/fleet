@@ -2061,7 +2061,11 @@ impl Manager<'_> {
     fn perform(&self, effect: &Effect) -> Observation<EffectOutcome> {
         match &effect.action {
             Action::Spawn(spec) => self.runtime.spawn(spec),
-            Action::Brief { session, text } => self.runtime.brief(session, text, &effect.key),
+            Action::Brief {
+                session,
+                text,
+                voice,
+            } => self.runtime.brief(session, text, &effect.key, *voice),
             Action::Release { session } => self.runtime.release(session),
             Action::Revive { session } => self.runtime.revive(session),
             Action::Pause { session } => self.runtime.pause(session),

@@ -1303,6 +1303,13 @@ fn answer(
                 "agent_args": agent_args, "hook_reported": hooked,
                 "state": ready, "stopped": false, "meta": {}, "sent": [], "env": env_names
             });
+            // As thurbox 2.82: a local pane whose hooks reported is
+            // corroborated as the agent; a remote one cannot be.
+            if host != "local" {
+                s["hook_corroboration"] = json!("unavailable");
+            } else if hooked {
+                s["hook_corroboration"] = json!("agent");
+            }
             if let Some(fields) = state["spawnFields"].as_object() {
                 s.as_object_mut().unwrap().extend(fields.clone());
             }
@@ -1348,6 +1355,16 @@ fn answer(
         }
         "send" => {
             let id = args.get(2).cloned().unwrap_or_default();
+            // `--json` and `--strict` may come before the text.
+            let flags = args[3.min(args.len())..]
+                .iter()
+                .take_while(|a| matches!(a.as_str(), "--json" | "--strict"))
+                .count();
+            let args = &[
+                &args[..3.min(args.len())],
+                &args[(3 + flags).min(args.len())..],
+            ]
+            .concat();
             // As thurbox-cli parses it: a text that starts with `-` is a
             // flag unless `--` comes first.
             let text = match args.get(3).map(String::as_str) {
@@ -1388,7 +1405,12 @@ fn answer(
             s["state"] = json!("working");
             let s = s.clone();
             event(state, "state", &s);
-            ok(json!({"submitted": true}))
+            // As thurbox 2.82 when someone's typing holds the composer: the
+            // text goes to the agent's own inbox instead (`composerHeld`).
+            if state["composerHeld"] == true {
+                return ok(json!({"delivered_via": "claude-socket", "may_hold": true}));
+            }
+            ok(json!({"sent": true, "submitted": true, "delivered_via": "pane"}))
         }
         "message-send" => {
             // As thurbox 2.81 routes it: the agent's own inbox, never the

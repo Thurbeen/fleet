@@ -105,6 +105,16 @@ impl TaskSpec {
         outputs
     }
 
+    /// Whether every amendment after generation `after`, up to `upto`, was
+    /// queued from the CLI: the user's words, not a plugin's. A message that
+    /// carries them speaks for the user only then.
+    pub fn amended_by_user(&self, after: u64, upto: u64) -> bool {
+        self.amendments
+            .iter()
+            .filter(|a| a.generation > after && a.generation <= upto)
+            .all(|a| a.from.starts_with(crate::inbox::CLI_SOURCE_PREFIX))
+    }
+
     /// The first message a worker gets: the brief, then every amendment so
     /// far, with the generation a result names when there are any.
     pub fn assignment(&self, task: &str, generation: u64) -> String {

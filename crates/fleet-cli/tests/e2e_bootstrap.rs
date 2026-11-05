@@ -548,7 +548,13 @@ fn manager_renews_after_the_final_probe_before_waiting_under_its_lease() {
         fn spawn(&self, _: &SpawnSpec) -> Observation<EffectOutcome> {
             panic!("must retain session")
         }
-        fn brief(&self, _: &SessionRef, _: &str, _: &str) -> Observation<EffectOutcome> {
+        fn brief(
+            &self,
+            _: &SessionRef,
+            _: &str,
+            _: &str,
+            _: fleet_api::plan::Voice,
+        ) -> Observation<EffectOutcome> {
             panic!("must not rebrief")
         }
         fn release(&self, _: &SessionRef) -> Observation<EffectOutcome> {

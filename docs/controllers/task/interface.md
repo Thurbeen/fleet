@@ -160,7 +160,7 @@ return `Observation<T>`; a refused effect is
 | `find` | Host and session key | Optional session under that key, or Unknown. |
 | `ready` | `SessionRef` | Whether the session's agent can take a message now. A working turn can take one; a dialog that holds the agent cannot. |
 | `workspace_trust` | `SessionRef` and the Task's workspace | `Trusted { how }`, `Untrusted { gap, why }` with gap `Unsupported` or `Mismatch`, or Unknown. |
-| `brief` | Session, text and intent key | `Delivered { already, via, may_hold }`, `Queued { why }`, or Failed/Unknown. `via` names the runtime's route. `may_hold` is true when the route can hold the text behind an approval dialog. `Queued` means the runtime kept the text where its agent does not read it. |
+| `brief` | Session, text, intent key and voice | `Delivered { already, via, may_hold }`, `Queued { why }`, or Failed/Unknown. `via` names the runtime's route. `may_hold` is true when the route can hold the text behind an approval dialog. `Queued` means the runtime kept the text where its agent does not read it. |
 | `brief_delivered` | Session and intent key | Whether that brief was delivered, or Unknown. |
 | `at_rest` | `SessionRef` | Whether it is safe to release that recorded session, or Unknown. |
 | `release` | `SessionRef` | `Released` if deleted or proven absent, or Failed/Unknown. Repeating a completed release is a no-op. |
@@ -177,9 +177,28 @@ Its session key is `<keyPrefix>.<uid>`. It journals each brief intent in
 session metadata as pending before sending and delivered afterward. A pending
 journal entry is ambiguous, so it is never a license to resend. A text over
 16 000 bytes is a Known failure, refused before the journal and the send.
-The adapter gives every text to the agent's own inbox with `thurbox-cli
-message send --kind fleet`. It never types into the terminal composer.
-Thurbox chooses the route and reports it as `delivered_via`:
+Every brief action carries a `voice`. `user` is the brief, or an amendment
+or a `fleet send` queued from the CLI (source `cli/<user>`); `peer` is a
+forge or gateway relay, a plugin's entry or amendment, a child's report or
+Fleet's own catch-up note. A brief or amendment message carries every
+amendment not yet given, so it is `user` only when each of them came from
+the CLI. An agent may act on its user's words as
+the user's own and on nobody else's: Claude Code labels whatever reaches its
+inbox socket as another agent's message, and its auto mode then lets that
+message authorize no forge write.
+
+The adapter types a `user` text into the composer with `thurbox-cli session
+send ID --json --strict -- TEXT` when `session get` shows the agent `idle`
+or `done` with `hook_corroboration` `agent`. Thurbox keeps `idle` and `done`
+after an agent exits, and a pane fallen back to a shell would run typed
+text, so an uncorroborated pane, a remote one included, is never typed
+into. A typed text records `deliveredVia` `composer`; when the composer
+holds someone's typing, `session send` hands the text to the inbox itself,
+and the receipt records the route it reports. A failed `session send` may
+have typed part of the text, so it is never repeated. A `peer` text, or a
+`user` text the composer cannot take, goes to the agent's own inbox with
+`thurbox-cli message send --kind fleet`. Thurbox chooses that route and
+reports it as `delivered_via`:
 `claude-socket` and `codex-queue` reach a working turn. Thurbox answers
 `mailbox`, with exit 0 and a `delivery_note`, when it cannot reach the
 agent. Thurbox 2.81 answers `mailbox` for these sessions:

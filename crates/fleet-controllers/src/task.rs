@@ -10,10 +10,12 @@
 use fleet_api::condition::{
     ConditionStatus, condition, is_true, set_condition, settle_transitions,
 };
-use fleet_api::inbox::{DeliveryAttempt, DeliveryReceipt, InboxEntry, MAX_INBOX};
+use fleet_api::inbox::{
+    CLI_SOURCE_PREFIX, DeliveryAttempt, DeliveryReceipt, InboxEntry, MAX_INBOX,
+};
 use fleet_api::meta::{Millis, Object};
 use fleet_api::plan::{
-    Action, Effect, EffectOutcome, Intent, Observations, Plan, Probe, Receipt, SpawnSpec,
+    Action, Effect, EffectOutcome, Intent, Observations, Plan, Probe, Receipt, SpawnSpec, Voice,
     effect_key,
 };
 use fleet_api::runtime::{Activity, WorkspaceTrust};
@@ -675,7 +677,20 @@ impl Pass<'_, '_> {
         let text = self
             .spec
             .assignment(&self.input.task.metadata.name, self.generation);
-        self.intend(key, Action::Brief { session, text });
+        // The brief is the user's; a plugin's amendment folded into it is not.
+        let voice = if self.spec.amended_by_user(0, self.generation) {
+            Voice::User
+        } else {
+            Voice::Peer
+        };
+        self.intend(
+            key,
+            Action::Brief {
+                session,
+                text,
+                voice,
+            },
+        );
     }
 
     /// Whether the session's agent trusts its workspace on this pass. A
@@ -824,12 +839,20 @@ impl Pass<'_, '_> {
             return;
         };
         let what = format!("inbox entry {} from {}", entry.key, entry.from);
+        // Only what the user queued from the CLI, a `fleet send` or an
+        // amendment, speaks for the user; a relay or a plugin's entry
+        // carries a forge's, a gateway's, a plugin's or another agent's words.
+        let voice = if entry.from.starts_with(CLI_SOURCE_PREFIX) {
+            Voice::User
+        } else {
+            Voice::Peer
+        };
         let Some(generation) = entry.amends else {
             if let Sent::Delivered {
                 recovered,
                 via,
                 may_hold,
-            } = self.keyed_send(session, &entry.key, entry.text.clone(), &what)
+            } = self.keyed_send(session, &entry.key, entry.text.clone(), voice, &what)
             {
                 self.record_delivery(&entry, recovered, via, may_hold);
             }
@@ -855,11 +878,18 @@ impl Pass<'_, '_> {
         let text = self
             .spec
             .amendment_message(&self.input.task.metadata.name, given, generation);
+        // The message carries every amendment above `given`, not only this
+        // entry's: it speaks for the user only when all of them do.
+        let voice = if self.spec.amended_by_user(given, generation) {
+            Voice::User
+        } else {
+            Voice::Peer
+        };
         if let Sent::Delivered {
             recovered,
             via,
             may_hold,
-        } = self.keyed_send(session, &entry.key, text, &what)
+        } = self.keyed_send(session, &entry.key, text, voice, &what)
         {
             self.record_delivery(&entry, recovered, via, may_hold);
             self.amended(entry.key, generation, recovered);
@@ -890,7 +920,14 @@ impl Pass<'_, '_> {
     /// note: a Known receipt decides, else the session's journal does after
     /// a send; a send needs the session observed ready on this pass, at most
     /// [`MAX_ATTEMPTS`] times. `what` names it in attention messages.
-    fn keyed_send(&mut self, session: SessionRef, key: &str, text: String, what: &str) -> Sent {
+    fn keyed_send(
+        &mut self,
+        session: SessionRef,
+        key: &str,
+        text: String,
+        voice: Voice,
+        what: &str,
+    ) -> Sent {
         match self.st.receipts.get(key).map(|r| r.outcome.clone()) {
             Some(Observation::Known(EffectOutcome::Delivered { via, may_hold, .. })) => {
                 return Sent::Delivered {
@@ -929,10 +966,10 @@ impl Pass<'_, '_> {
                         return Sent::Pending;
                     }
                 }
-                return self.send_keyed(session, key, text, what);
+                return self.send_keyed(session, key, text, voice, what);
             }
             Some(Observation::Known(_)) => {
-                return self.send_keyed(session, key, text, what);
+                return self.send_keyed(session, key, text, voice, what);
             }
             _ => {}
         }
@@ -948,7 +985,7 @@ impl Pass<'_, '_> {
                     };
                 }
                 Some(Observation::Known(false)) => {
-                    return self.send_keyed(session, key, text, what);
+                    return self.send_keyed(session, key, text, voice, what);
                 }
                 Some(Observation::Unknown { why }) => {
                     let attempt = self
@@ -978,13 +1015,20 @@ impl Pass<'_, '_> {
             }
             return Sent::Pending;
         }
-        self.send_keyed(session, key, text, what)
+        self.send_keyed(session, key, text, voice, what)
     }
 
     /// Send under `key`, to a session observed ready on this pass, at most
     /// [`MAX_ATTEMPTS`] times; past that it is given up on, and whatever
     /// comes next goes out past it.
-    fn send_keyed(&mut self, session: SessionRef, key: &str, text: String, what: &str) -> Sent {
+    fn send_keyed(
+        &mut self,
+        session: SessionRef,
+        key: &str,
+        text: String,
+        voice: Voice,
+        what: &str,
+    ) -> Sent {
         let sends = self.st.delivery_attempts.get(key).map_or(0, |a| a.sends);
         if sends >= MAX_ATTEMPTS {
             self.st
@@ -1018,7 +1062,14 @@ impl Pass<'_, '_> {
         attempt.probe_failures = 0;
         self.st.not_before = None;
         self.st.receipts.remove(key);
-        self.intend(key.to_string(), Action::Brief { session, text });
+        self.intend(
+            key.to_string(),
+            Action::Brief {
+                session,
+                text,
+                voice,
+            },
+        );
         Sent::Pending
     }
 
@@ -1190,7 +1241,7 @@ impl Pass<'_, '_> {
             return true;
         }
         let what = format!("catch-up note {key}");
-        match self.keyed_send(session, &key, self.catch_up_text(), &what) {
+        match self.keyed_send(session, &key, self.catch_up_text(), Voice::Peer, &what) {
             Sent::Pending => true,
             Sent::Delivered { .. } | Sent::GivenUp => {
                 self.st.catch_up = None;
