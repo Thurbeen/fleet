@@ -178,7 +178,9 @@ journal entry is ambiguous, so it is never a license to resend. A text over
 Every brief action carries a `voice`. `user` is the brief, or an amendment
 or a `fleet send` queued from the CLI (source `cli/<user>`); `peer` is a
 forge or gateway relay, a plugin's entry or amendment, a child's report or
-Fleet's own catch-up note. An agent may act on its user's words as
+Fleet's own catch-up note. A brief or amendment message carries every
+amendment not yet given, so it is `user` only when each of them came from
+the CLI. An agent may act on its user's words as
 the user's own and on nobody else's: Claude Code labels whatever reaches its
 inbox socket as another agent's message, and its auto mode then lets that
 message authorize no forge write.

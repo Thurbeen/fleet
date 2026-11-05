@@ -712,22 +712,59 @@ fn live() -> Option<Observation<Option<SessionRef>>> {
     Some(Observation::Known(Some(session())))
 }
 
+/// The Task amended once per `(generation, from)`, at the last generation.
+fn amended(mut obj: Object, amendments: &[(u64, &str)]) -> Object {
+    obj.spec["amendments"] = amendments
+        .iter()
+        .map(|(g, from)| json!({"text": format!("amend {g}"), "from": from, "at": NOW, "generation": g}))
+        .collect();
+    obj.metadata.generation = amendments.last().map_or(1, |(g, _)| *g);
+    obj
+}
+
+fn ready_obs() -> Observations {
+    Observations {
+        find: live(),
+        ready: Some(Observation::Known(true)),
+        workspace_trust: trusted(),
+        ..Default::default()
+    }
+}
+
+fn voice_of(plan: &Plan) -> Voice {
+    match &plan.effects[0].action {
+        Action::Brief { voice, .. } => *voice,
+        other => panic!("{other:?}"),
+    }
+}
+
+/// An entry's source, the Task's amendments, and the voice it must get.
+type VoiceCase = (&'static str, &'static [(u64, &'static str)], Voice);
+
 #[test]
 fn only_the_users_own_words_are_sent_in_the_users_voice() {
     // An agent may act on its user's words as the user's own, and on
     // nobody else's: a forge relay quotes reviewers, a gateway relay quotes
     // a channel, a plugin's amendment whatever its issue says. Only what
     // was queued from the CLI, a `fleet send` or an amendment, speaks for
-    // the user.
-    for (from, amends, want) in [
-        ("cli/someone", None, Voice::User),
-        ("cli/someone", Some(2), Voice::User),
-        ("forge/cr-1", None, Voice::Peer),
-        ("gateway/thread-1", None, Voice::Peer),
-        ("plugin/issues", None, Voice::Peer),
-        ("plugin/issues", Some(2), Voice::Peer),
-    ] {
-        let mut obj = briefed_with(&[], |st| {
+    // the user, and a message speaks for the user only when all it carries
+    // does: an amendment message carries every amendment not yet given.
+    let cases: [VoiceCase; 7] = [
+        ("cli/someone", &[], Voice::User),
+        ("forge/cr-1", &[], Voice::Peer),
+        ("gateway/thread-1", &[], Voice::Peer),
+        ("plugin/issues", &[], Voice::Peer),
+        ("cli/someone", &[(2, "cli/someone")], Voice::User),
+        ("plugin/issues", &[(2, "plugin/issues")], Voice::Peer),
+        (
+            "cli/someone",
+            &[(2, "plugin/issues"), (3, "cli/someone")],
+            Voice::Peer,
+        ),
+    ];
+    for (from, amendments, want) in cases {
+        let newest = amendments.last().map(|(g, _)| *g);
+        let obj = briefed_with(&[], |st| {
             st.brief = Some(fleet_api::task::BriefRecord {
                 key: "task/t/u7/brief".into(),
                 generation: 1,
@@ -735,24 +772,25 @@ fn only_the_users_own_words_are_sent_in_the_users_voice() {
             });
             st.inbox = vec![fleet_api::inbox::InboxEntry {
                 from: from.into(),
-                amends,
+                amends: newest,
                 ..entry("task/t/u7/send/1")
             }];
         });
-        obj.metadata.generation = 2;
-        let (plan, _) = run(
-            &obj,
-            Observations {
-                find: live(),
-                ready: Some(Observation::Known(true)),
-                workspace_trust: trusted(),
-                ..Default::default()
-            },
-        );
-        match &plan.effects[0].action {
-            Action::Brief { voice, .. } => assert_eq!(*voice, want, "{from} {amends:?}"),
-            other => panic!("{from} {amends:?}: {other:?}"),
-        }
+        let (plan, _) = run(&amended(obj, amendments), ready_obs());
+        assert_eq!(voice_of(&plan), want, "{from} {amendments:?}");
+    }
+}
+
+#[test]
+fn a_brief_carrying_a_plugins_amendment_is_not_the_users() {
+    for (amendments, want) in [
+        (&[][..], Voice::User),
+        (&[(2, "cli/someone")][..], Voice::User),
+        (&[(2, "plugin/issues")][..], Voice::Peer),
+    ] {
+        let (plan, _) = run(&amended(spawned(|_| {}), amendments), ready_obs());
+        assert_eq!(plan.effects[0].key, "task/t/u7/brief");
+        assert_eq!(voice_of(&plan), want, "{amendments:?}");
     }
 }
 

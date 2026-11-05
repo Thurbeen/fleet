@@ -664,12 +664,18 @@ impl Pass<'_, '_> {
         let text = self
             .spec
             .assignment(&self.input.task.metadata.name, self.generation);
+        // The brief is the user's; a plugin's amendment folded into it is not.
+        let voice = if self.spec.amended_by_user(0, self.generation) {
+            Voice::User
+        } else {
+            Voice::Peer
+        };
         self.intend(
             key,
             Action::Brief {
                 session,
                 text,
-                voice: Voice::User,
+                voice,
             },
         );
     }
@@ -859,6 +865,13 @@ impl Pass<'_, '_> {
         let text = self
             .spec
             .amendment_message(&self.input.task.metadata.name, given, generation);
+        // The message carries every amendment above `given`, not only this
+        // entry's: it speaks for the user only when all of them do.
+        let voice = if self.spec.amended_by_user(given, generation) {
+            Voice::User
+        } else {
+            Voice::Peer
+        };
         if let Sent::Delivered {
             recovered,
             via,
