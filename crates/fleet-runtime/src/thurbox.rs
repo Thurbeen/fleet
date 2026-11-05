@@ -55,12 +55,15 @@ const MAILBOX: &str = "mailbox";
 /// The receipt's `deliveredVia` of a text typed into the agent's composer.
 const COMPOSER: &str = "composer";
 
+/// The `delivered_via` `session send` answers for a text it typed.
+const PANE: &str = "pane";
+
 /// The journal mark of a text thurbox only queued: never sent again.
 const QUEUED: &str = "queued";
 
-/// The most thurbox-cli calls one operation makes: a brief (meta get, meta
-/// set, send, meta set).
-pub const MAX_CALLS_PER_OPERATION: u32 = 4;
+/// The most thurbox-cli calls one operation makes: a brief (meta get,
+/// session get, meta set, send, meta set).
+pub const MAX_CALLS_PER_OPERATION: u32 = 5;
 
 const BRIEF_META: &str = "fleet.brief";
 
@@ -500,47 +503,64 @@ impl ThurboxRuntime {
     }
 
     /// The session's own row, by id. Unknown when it cannot be read.
-    /// Hand `text` to the agent's own inbox: the route of a peer's words,
-    /// and of the user's while a turn runs. `Err` carries the observation
-    /// `brief` answers with.
-    fn to_inbox(
+    /// Hand `text` to the agent: `typed` into its composer with `session
+    /// send`, else to its own inbox with `message send`. Either way thurbox
+    /// names the route it took, which the receipt records: `session send`
+    /// itself hands the text to the inbox when the composer holds someone's
+    /// typing. `Err` carries the observation `brief` answers with.
+    fn hand_over(
         &self,
         session: &SessionRef,
         text: &str,
+        typed: bool,
     ) -> Result<(&'static str, EffectOutcome), Observation<EffectOutcome>> {
-        // The agent's own inbox, never the terminal composer: thurbox picks
-        // the route (a Claude Code socket, a Codex queue, else its mailbox),
-        // so a working turn takes it too. Fleet is no session, so no
-        // caller's session or task becomes the sender.
-        let mut spec = Spec::new(&self.cfg.cli, self.cfg.call_timeout).args([
-            "message",
-            "send",
-            "--to",
-            &session.id,
-            "--kind",
-            MESSAGE_KIND,
+        let body = format!("--body={text}");
+        let args: Vec<&str> = if typed {
+            // `--`: a text that starts with `-` is text, never a flag.
+            // `--strict`: a submission thurbox cannot confirm is no delivery.
+            vec![
+                "session",
+                "send",
+                &session.id,
+                "--json",
+                "--strict",
+                "--",
+                text,
+            ]
+        } else {
             // `--body=`: a text that starts with `-` is text, never a flag.
-            &format!("--body={text}"),
-            "--json",
-        ]);
+            vec![
+                "message",
+                "send",
+                "--to",
+                &session.id,
+                "--kind",
+                MESSAGE_KIND,
+                &body,
+                "--json",
+            ]
+        };
+        // Fleet is no session, so no caller's session or task becomes the
+        // sender.
+        let mut spec = Spec::new(&self.cfg.cli, self.cfg.call_timeout).args(args);
         spec.env_remove
             .extend(["THURBOX_SESSION".to_string(), "THURBOX_TASK".to_string()]);
         let answer = match self.call_spec(spec) {
             Answer::Ok(out) => out,
-            // A failed send may still have enqueued the message: never
-            // sent again on it.
+            // A failed send may have typed part of the text or enqueued it:
+            // never sent again on it.
             Answer::No(why) => {
                 return Err(Observation::unknown(format!(
-                    "send failed and may have enqueued it: {why}"
+                    "send failed and may have delivered part of it: {why}"
                 )));
             }
             Answer::Unknown(why) => return Err(Observation::unknown(why)),
         };
         let row: Value = serde_json::from_str(answer.trim()).unwrap_or(Value::Null);
-        let via = row["delivered_via"].as_str().map(str::to_string);
-        // thurbox falls back to its mailbox when it cannot reach the agent:
-        // a remote session, an unbound Codex, a failed socket, any other
-        // harness. Nothing reads it there, so it is not a delivery.
+        let via = match row["delivered_via"].as_str() {
+            Some(PANE) => Some(COMPOSER.to_string()),
+            other => other.map(str::to_string),
+        };
         // thurbox falls back to its mailbox when it cannot reach the agent:
         // a remote session, an unbound Codex, a failed socket, any other
         // harness. Nothing reads it there, so it is not a delivery.
@@ -563,12 +583,17 @@ impl ThurboxRuntime {
         ))
     }
 
-    /// The agent waits at its prompt, so typed text starts a turn of its
-    /// own. Anything else, an unknown row included, is not.
+    /// The agent itself waits at its prompt, so typed text starts a turn of
+    /// its own. Thurbox keeps `idle` and `done` after the agent exits, so only
+    /// a pane whose hooks corroborate a live agent counts: a pane fallen back
+    /// to a shell would run typed text. Anything else, an unknown row or a
+    /// remote one thurbox cannot corroborate included, is not.
     fn at_prompt(&self, session: &SessionRef) -> bool {
         match self.get(session) {
             Observation::Known(row) => {
-                row["stopped"] != true && matches!(row["state"].as_str(), Some("idle" | "done"))
+                row["stopped"] != true
+                    && row["hook_corroboration"] == "agent"
+                    && matches!(row["state"].as_str(), Some("idle" | "done"))
             }
             Observation::Unknown { .. } => false,
         }
@@ -1218,30 +1243,9 @@ impl Runtime for ThurboxRuntime {
             Answer::No(why) => return Observation::Known(EffectOutcome::Failed { why }),
             Answer::Unknown(why) => return Observation::unknown(why),
         }
-        let (mark, outcome) = if typed {
-            // `--`: a text that starts with `-` is text, never a flag.
-            match self.call(&["session", "send", &session.id, "--", text]) {
-                Answer::Ok(_) => {}
-                // `session send` can fail after it began typing: never
-                // typed again on it.
-                Answer::No(why) => {
-                    return Observation::unknown(format!(
-                        "send failed and may have typed part of it: {why}"
-                    ));
-                }
-                Answer::Unknown(why) => return Observation::unknown(why),
-            }
-            let outcome = EffectOutcome::Delivered {
-                already: false,
-                via: Some(COMPOSER.into()),
-                may_hold: false,
-            };
-            ("delivered", outcome)
-        } else {
-            match self.to_inbox(session, text) {
-                Ok(sent) => sent,
-                Err(unknown) => return unknown,
-            }
+        let (mark, outcome) = match self.hand_over(session, text, typed) {
+            Ok(sent) => sent,
+            Err(unknown) => return unknown,
         };
         journal.insert(intent_key.to_string(), mark.into());
         let marked = serde_json::to_string(&journal).expect("string map");

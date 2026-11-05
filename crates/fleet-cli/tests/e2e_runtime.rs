@@ -138,20 +138,18 @@ fn a_host_that_cannot_be_read_is_unknown_for_its_own_tasks_only() {
     env.edit_stub(|s| s["hosts"] = json!({"remote": "up"}));
     env.apply(on_remote).ok();
     env.reconcile().ok();
-    // thurbox 2.81 reaches no remote agent's inbox, but it types into a
-    // remote composer: the brief, the user's own words, reaches the agent.
+    // thurbox 2.81 reaches no remote agent's inbox: it keeps the brief in its
+    // mailbox. That is no delivery, and the brief is never sent again.
     let far = env.status("far");
-    assert_eq!(far["phase"], "Briefed", "{far:#}");
+    assert_eq!(far["phase"], "Spawned", "{far:#}");
+    assert_condition(&far, "Briefed", "False", "BriefUndelivered");
+    assert_condition(&far, "NeedsAttention", "True", "BriefUndelivered");
     for _ in 0..3 {
         env.expire_wait("far");
         env.reconcile().ok();
     }
-    assert_eq!(argv_of(&env, "send").len(), 1, "typed once");
-    assert!(argv_of(&env, "message send").is_empty());
-    assert_eq!(
-        env.stub_sessions()[0]["sent"],
-        json!(["Do the work for far."])
-    );
+    assert_eq!(argv_of(&env, "message send").len(), 1, "never sent again");
+    assert_eq!(env.stub_sessions()[0]["sent"], json!([]), "nothing typed");
     let create = &argv_of(&env, "create")[0];
     let at = create.iter().position(|a| a == "--host").expect("--host");
     assert_eq!(create[at + 1], "remote");
@@ -163,7 +161,7 @@ fn a_host_that_cannot_be_read_is_unknown_for_its_own_tasks_only() {
     let report = env.reconcile().ok().json();
     assert_eq!(env.status("near")["phase"], "Briefed");
     let far = env.status("far");
-    assert_eq!(far["phase"], "Briefed", "{far:#}");
+    assert_eq!(far["phase"], "Spawned", "{far:#}");
     assert!(
         far["conditions"]
             .as_array()
@@ -506,16 +504,16 @@ fn slow_probes_never_outlive_the_lease() {
     env.stub_fault("list", "slow", 2);
     env.stub_fault("doctor", "slow", 2);
     // A regression guard, not a proof of the per-probe renewal: the lease
-    // must outlast a brief's four calls with their grace, and no Task's
+    // must outlast a brief's five calls with their grace, and no Task's
     // probes add up to more than that.
-    env.fleet(&["reconcile", "--json", "--lease-ttl-ms", "30000"])
+    env.fleet(&["reconcile", "--json", "--lease-ttl-ms", "36000"])
         .ok();
     assert_eq!(env.status("t1")["phase"], "Briefed");
 }
 
 #[test]
 fn the_lease_outlasts_one_whole_runtime_operation() {
-    // A brief is four thurbox-cli calls: a lease that cannot hold four of
+    // A brief is five thurbox-cli calls: a lease that cannot hold five of
     // them is refused before anything runs.
     let env = setup("thurbox-op-bound", vec![task("t1", true)]);
     let cfg = std::fs::read_to_string(&env.config).unwrap();
@@ -1016,6 +1014,47 @@ fn the_users_brief_and_send_reach_an_idle_session_as_its_own_turn() {
         "{full:#}"
     );
     assert!(argv_of(&env, "message send").is_empty());
+
+    // The agent exited and its pane fell back to a shell, which thurbox
+    // still reports `done`: typed text would run there, so it is not typed.
+    env.edit_stub(|s| {
+        s["sessions"][0]["state"] = json!("done");
+        s["sessions"][0]["hook_corroboration"] = json!("shell");
+    });
+    env.fleet(&["send", "t1", "git push --force"]).ok();
+    env.expire_wait("t1");
+    env.reconcile().ok();
+    assert!(
+        !argv_of(&env, "send")
+            .iter()
+            .any(|a| a.iter().any(|x| x.contains("git push"))),
+        "never typed into a shell: {:?}",
+        argv_of(&env, "send")
+    );
+    assert!(
+        argv_of(&env, "message send")
+            .iter()
+            .any(|a| a.contains(&"--body=git push --force".to_string())),
+        "{:?}",
+        argv_of(&env, "message send")
+    );
+    env.edit_stub(|s| s["sessions"][0]["hook_corroboration"] = json!("agent"));
+
+    // Someone's typing holds the composer: thurbox hands the text to the
+    // inbox itself, and the receipt names that route, not the composer.
+    env.edit_stub(|s| {
+        s["sessions"][0]["state"] = json!("idle");
+        s["composerHeld"] = json!(true);
+    });
+    env.fleet(&["send", "t1", "held"]).ok();
+    env.expire_wait("t1");
+    env.reconcile().ok();
+    let full = full_status(&env, "t1");
+    let receipts = full["deliveries"]["receipts"].as_array().unwrap();
+    assert_eq!(receipts.len(), 3, "{full:#}");
+    let held = &receipts[2];
+    assert_eq!(held["deliveredVia"], "claude-socket", "{full:#}");
+    env.edit_stub(|s| s["composerHeld"] = Value::Null);
 
     // Mid-turn, the composer cannot reach the agent: the inbox steers it.
     set_session_state(&env, &key, "working");

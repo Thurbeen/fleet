@@ -803,8 +803,9 @@ Each adapter reports its longest single operation (`operation_bound`), and
   thurbox key is `<keyPrefix>.<uid>`, and `--on-existing adopt` makes a
   repeated create return the session holding the key. The brief's delivery
   is journaled in the session's own metadata. The user's words (the brief,
-  an amendment, a `fleet send` from the CLI) are typed into an idle agent's
-  composer with `session send`, a turn of the user's own; the receipt
+  an amendment or a `fleet send` queued from the CLI) are typed with
+  `session send` into the composer of an idle agent whose hooks thurbox
+  corroborates, a turn of the user's own; the receipt
   records `deliveredVia` `composer`. Everything else, and the user's words
   during a working turn, goes to the agent's own inbox through `message
   send`, where Claude Code labels it another agent's message. Thurbox picks

@@ -820,8 +820,9 @@ impl Pass<'_, '_> {
             return;
         };
         let what = format!("inbox entry {} from {}", entry.key, entry.from);
-        // Only the user's own `fleet send` speaks for the user; a relay
-        // carries a forge's, a gateway's or another agent's words.
+        // Only what the user queued from the CLI, a `fleet send` or an
+        // amendment, speaks for the user; a relay or a plugin's entry
+        // carries a forge's, a gateway's, a plugin's or another agent's words.
         let voice = if entry.from.starts_with(CLI_SOURCE_PREFIX) {
             Voice::User
         } else {
@@ -862,7 +863,7 @@ impl Pass<'_, '_> {
             recovered,
             via,
             may_hold,
-        } = self.keyed_send(session, &entry.key, text, Voice::User, &what)
+        } = self.keyed_send(session, &entry.key, text, voice, &what)
         {
             self.record_delivery(&entry, recovered, via, may_hold);
             self.amended(entry.key, generation, recovered);

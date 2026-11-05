@@ -716,18 +716,30 @@ fn live() -> Option<Observation<Option<SessionRef>>> {
 fn only_the_users_own_words_are_sent_in_the_users_voice() {
     // An agent may act on its user's words as the user's own, and on
     // nobody else's: a forge relay quotes reviewers, a gateway relay quotes
-    // a channel. Only `fleet send` from the CLI speaks for the user.
-    for (from, want) in [
-        ("cli/someone", Voice::User),
-        ("forge/cr-1", Voice::Peer),
-        ("gateway/thread-1", Voice::Peer),
+    // a channel, a plugin's amendment whatever its issue says. Only what
+    // was queued from the CLI, a `fleet send` or an amendment, speaks for
+    // the user.
+    for (from, amends, want) in [
+        ("cli/someone", None, Voice::User),
+        ("cli/someone", Some(2), Voice::User),
+        ("forge/cr-1", None, Voice::Peer),
+        ("gateway/thread-1", None, Voice::Peer),
+        ("plugin/issues", None, Voice::Peer),
+        ("plugin/issues", Some(2), Voice::Peer),
     ] {
-        let obj = briefed_with(&[], |st| {
+        let mut obj = briefed_with(&[], |st| {
+            st.brief = Some(fleet_api::task::BriefRecord {
+                key: "task/t/u7/brief".into(),
+                generation: 1,
+                recovered: false,
+            });
             st.inbox = vec![fleet_api::inbox::InboxEntry {
                 from: from.into(),
+                amends,
                 ..entry("task/t/u7/send/1")
             }];
         });
+        obj.metadata.generation = 2;
         let (plan, _) = run(
             &obj,
             Observations {
@@ -738,8 +750,8 @@ fn only_the_users_own_words_are_sent_in_the_users_voice() {
             },
         );
         match &plan.effects[0].action {
-            Action::Brief { voice, .. } => assert_eq!(*voice, want, "{from}"),
-            other => panic!("{other:?}"),
+            Action::Brief { voice, .. } => assert_eq!(*voice, want, "{from} {amends:?}"),
+            other => panic!("{from} {amends:?}: {other:?}"),
         }
     }
 }

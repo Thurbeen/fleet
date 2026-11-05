@@ -76,10 +76,11 @@ pub struct Effect {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Voice {
-    /// The user's: the brief, an amendment, a `fleet send` from the CLI.
+    /// The user's: the brief, or an amendment or `fleet send` queued from
+    /// the CLI.
     User,
-    /// Anyone else's: a forge or gateway relay, a child's report, a
-    /// resume note Fleet writes itself.
+    /// Anyone else's: a forge or gateway relay, a plugin's entry or
+    /// amendment, a child's report, a resume note Fleet writes itself.
     #[default]
     Peer,
 }
