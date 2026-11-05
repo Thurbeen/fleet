@@ -167,8 +167,9 @@ A Session has two parts:
 
 The runtime port is the only way Fleet reaches a Session. Fleet owns the
 Session's identity, its lifecycle record and every decision about it. The
-runtime owns the agent process, its window, its workspace and its
-conversation, and answers what it can prove.
+runtime owns the agent process, its window and its conversation, and
+answers what it can prove. The runtime also owns the workspace, unless
+Fleet made it through the workspace port.
 
 This split is the first step toward the
 [target architecture](../media/fleet-architecture-doom.svg), where Thurbox
