@@ -1067,6 +1067,13 @@ fn given_up_entries_never_fill_the_inbox() {
         bound + 1,
         "{full:#}"
     );
+    let given_up = full["deliveryAttempts"]
+        .as_object()
+        .unwrap()
+        .values()
+        .filter(|a| a["failed"] == true)
+        .count();
+    assert_eq!(given_up, bound + 1, "every entry given up: {full:#}");
 
     env.edit_stub(|s| s["mailboxNote"] = Value::Null);
     env.fleet(&["send", "t1", "after the outage"]).ok();

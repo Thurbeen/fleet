@@ -307,12 +307,12 @@ Guarantees, each with its test:
   drops its intent, receipt and attempt records. Three refused sends raise
   `NeedsAttention/DeliveryFailed` naming the entry, which stays while later
   entries go out; three unreadable journal reads raise
-  `DeliveryUnconfirmed` naming the entry, which is never resent and stays
-  while later entries go out; more than 20 entries still to deliver
-  raise `InboxFull`. An entry given up on counts against no bound,
-  because it can never make room. Delivery runs in Spawned (after the
-  brief), Briefed and Concluded, which stays terminal and is due while
-  its inbox is nonempty.
+  `DeliveryUnconfirmed` naming the entry, which is never resent and stays while
+  later entries go out; more than 20 entries still to deliver raise `InboxFull`.
+  An entry given up on does not count. Such an entry can never be delivered, so
+  it can never make room. Nothing bounds the entries given up on; each raises
+  its own `NeedsAttention`. Delivery runs in Spawned (after the brief), Briefed
+  and Concluded, which stays terminal and is due while its inbox is nonempty.
   At rest, a Concluded Task is due once every `SESSION_RECHECK_MS` (5
   minutes), recorded as `status.sessionCheckedAt`, to look its session up.
   A readable list without the session there is `WorkerGone`, never a

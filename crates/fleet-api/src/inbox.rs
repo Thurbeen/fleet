@@ -200,7 +200,7 @@ pub fn check_append(
     let due = due(inbox, attempts);
     if due > MAX_INBOX {
         return Err(format!(
-            "inbox holds {due} undelivered entries (more than {MAX_INBOX}); deliver some first"
+            "inbox holds {due} entries still to deliver (more than {MAX_INBOX}); deliver some first"
         ));
     }
     Ok(())

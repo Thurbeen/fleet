@@ -665,7 +665,7 @@ impl Pass<'_, '_> {
             return;
         }
         if self.inbox_full() {
-            // More than MAX_INBOX undelivered: the store would refuse the
+            // More than MAX_INBOX still to deliver: the store would refuse the
             // append. Neither the cursor nor the read moves, so this is
             // judged again once the inbox drains.
             return;

@@ -804,7 +804,7 @@ impl Pass<'_, '_> {
         if due > MAX_INBOX {
             self.needs_attention(
                 "InboxFull",
-                format!("{due} undelivered entries; appends are refused past {MAX_INBOX}"),
+                format!("{due} entries still to deliver; appends are refused past {MAX_INBOX}"),
             );
         } else {
             self.settle_attention("InboxFull");
