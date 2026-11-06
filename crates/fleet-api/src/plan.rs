@@ -353,7 +353,7 @@ pub enum EffectOutcome {
     /// The workspace is whole under the effect's key; `adopted` when a whole
     /// one was there already.
     Materialized {
-        workspace: crate::workspace::WorkspaceRef,
+        workspace: Box<crate::workspace::WorkspaceRef>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         adopted: bool,
     },

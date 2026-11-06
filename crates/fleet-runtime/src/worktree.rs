@@ -237,6 +237,7 @@ impl WorktreeWorkspaces {
             key: key.to_string(),
             host: LOCAL_HOST.to_string(),
             dir: trees[0].path.clone(),
+            extra_dirs: trees[1..].iter().map(|t| t.path.clone()).collect(),
             trust_root: Some(trees[0].source.clone()),
         };
         let marker = Marker {
@@ -281,7 +282,7 @@ impl Workspaces for WorktreeWorkspaces {
         match Workspaces::find(self, host, key) {
             Observation::Known(Some(workspace)) => {
                 return Observation::Known(EffectOutcome::Materialized {
-                    workspace,
+                    workspace: Box::new(workspace),
                     adopted: true,
                 });
             }
@@ -296,7 +297,7 @@ impl Workspaces for WorktreeWorkspaces {
         }
         match self.make(key, &dir, w, &trees) {
             Ok(workspace) => Observation::Known(EffectOutcome::Materialized {
-                workspace,
+                workspace: Box::new(workspace),
                 adopted: false,
             }),
             Err(answer) => {

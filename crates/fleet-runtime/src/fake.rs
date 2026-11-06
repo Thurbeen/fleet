@@ -709,8 +709,17 @@ impl Workspaces for FakeRuntime {
         repositories: &RepositoriesWorkspace,
     ) -> Observation<EffectOutcome> {
         let (host, key, repositories) = (host.to_string(), key.to_string(), repositories.clone());
-        let dir = self.host.dir.join("workspaces").join(&key);
-        let dir = dir.to_string_lossy().into_owned();
+        // One directory per repository, under the key, as a worktree
+        // adapter lays them out.
+        let root = self.host.dir.join("workspaces").join(&key);
+        let mut dirs = repositories
+            .repositories
+            .iter()
+            .map(|r| root.join(&r.name).to_string_lossy().into_owned());
+        let dir = dirs
+            .next()
+            .unwrap_or_else(|| root.to_string_lossy().into_owned());
+        let extra_dirs: Vec<String> = dirs.collect();
         self.effect("materialize", move |s| {
             if let Some(r) = repositories
                 .repositories
@@ -721,7 +730,7 @@ impl Workspaces for FakeRuntime {
             }
             if let Some(w) = s.workspaces.get(&key).filter(|w| !w.cleaned) {
                 return EffectOutcome::Materialized {
-                    workspace: w.workspace.clone(),
+                    workspace: Box::new(w.workspace.clone()),
                     adopted: true,
                 };
             }
@@ -729,6 +738,7 @@ impl Workspaces for FakeRuntime {
                 key: key.clone(),
                 host: host.clone(),
                 dir: dir.clone(),
+                extra_dirs: extra_dirs.clone(),
                 trust_root: None,
             };
             s.log.push(format!("materialize {host} {key}"));
@@ -741,7 +751,7 @@ impl Workspaces for FakeRuntime {
                 },
             );
             EffectOutcome::Materialized {
-                workspace,
+                workspace: Box::new(workspace),
                 adopted: false,
             }
         })

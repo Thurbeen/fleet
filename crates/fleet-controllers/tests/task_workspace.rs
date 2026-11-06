@@ -73,6 +73,7 @@ fn ws() -> WorkspaceRef {
         key: "t.u7".into(),
         host: "local".into(),
         dir: "/w/t.u7/app".into(),
+        extra_dirs: vec!["/w/t.u7/docs".into()],
         trust_root: Some("/src/app".into()),
     }
 }
@@ -123,7 +124,7 @@ fn a_repositories_task_materializes_before_it_spawns() {
 #[test]
 fn the_spawn_runs_in_the_workspace_fleet_made() {
     let obj = materializing(Some(Observation::Known(EffectOutcome::Materialized {
-        workspace: ws(),
+        workspace: Box::new(ws()),
         adopted: false,
     })));
     let (plan, st) = run(&obj, host_up());

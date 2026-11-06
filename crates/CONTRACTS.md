@@ -903,8 +903,9 @@ deletes the session; every adapter keeps these rules:
   workspace-trust interface for is `Known(TrustUnmapped { harness })`. The
   adapter answers both before any external call.
 
-Thurbox maps a `{dir}` to `--repo-path`. It maps `{repositories}` to one
-worktree create:
+Thurbox maps a `{dir}` to `--repo-path`. It maps a ready workspace Fleet
+made to `--repo-path dir` and one `--add-dir` per `extraDirs` entry, and
+makes no worktree. It maps `{repositories}` to one worktree create:
 
 - The first repository's source is `--repo-path`, and its `ref` is
   `--base-branch`.
@@ -996,8 +997,8 @@ and Claude Code 2.1.312.
 A Workspace is the set of files one Session works in (`fleet_api::workspace`).
 A Task owns at most one. TaskController records it in `status.workspace`
 as `WorkspaceRef`: Fleet's `key`, the `host` the adapter reported, the `dir`
-the session runs in and an optional `trustRoot`. The workspace key is the
-session key.
+the session runs in, the `extraDirs` it also spans and an optional
+`trustRoot`. The workspace key is the session key.
 
 `fleet_api::workspace::Workspaces`: `materialize`, `find` and `clean`, each
 answering Known or Unknown, and `operation_bound`. The `[workspaces]`
@@ -1027,6 +1028,7 @@ The `worktree` adapter serves the local host and refuses any other:
 - `runtime.repositories` maps each URL to its source checkout.
 - The session runs in the first repository's worktree. Its trust root is
   that repository's source checkout, as for a thurbox worktree.
+- Each other repository's worktree is in `extraDirs`, in the Task's order.
 - The marker `<root>/<key>/.fleet-workspace.json` is written last. A
   directory without it is partial.
 - A branch left by an earlier attempt is checked out again, so no commit

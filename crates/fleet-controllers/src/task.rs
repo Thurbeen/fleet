@@ -1598,7 +1598,7 @@ impl Pass<'_, '_> {
             match self.st.receipts.get(&key).map(|r| r.outcome.clone()) {
                 Some(Observation::Known(EffectOutcome::Materialized { workspace, adopted })) => {
                     return self.workspace_ready(
-                        workspace,
+                        *workspace,
                         if adopted { "Adopted" } else { "Materialized" },
                     );
                 }
@@ -1633,7 +1633,7 @@ impl Pass<'_, '_> {
                                 action: MATERIALIZE.into(),
                                 at: self.now(),
                                 outcome: Observation::Known(EffectOutcome::Materialized {
-                                    workspace: workspace.clone(),
+                                    workspace: Box::new(workspace.clone()),
                                     adopted: true,
                                 }),
                             };
@@ -1808,7 +1808,7 @@ impl Pass<'_, '_> {
         let key = self.key(MATERIALIZE, Some(self.st.materialize_attempts));
         match self.st.receipts.get(&key).map(|r| &r.outcome) {
             Some(Observation::Known(EffectOutcome::Materialized { workspace, .. })) => {
-                return Ok(Some(workspace.clone()));
+                return Ok(Some((**workspace).clone()));
             }
             Some(Observation::Known(_)) => return Ok(None),
             Some(Observation::Unknown { .. }) | None => {}

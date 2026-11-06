@@ -718,6 +718,21 @@ fn a_workspace_fleet_made_reaches_thurbox_as_a_ready_directory() {
     };
     // thurbox runs the session in the directory and makes no worktree.
     assert_eq!(after("--repo-path"), Some(dir), "{create:?}");
+    // Every other worktree Fleet made is spanned as it is.
+    let added: Vec<&String> = create
+        .windows(2)
+        .filter(|w| w[0] == "--add-dir")
+        .map(|w| &w[1])
+        .collect();
+    let extra: Vec<&str> = st["workspace"]["extraDirs"]
+        .as_array()
+        .expect("the other worktrees")
+        .iter()
+        .map(|d| d.as_str().expect("a dir"))
+        .collect();
+    assert_eq!(extra.len(), 1, "{st:#}");
+    assert!(extra[0].ends_with("docs"), "{st:#}");
+    assert_eq!(added, extra, "{create:?}");
     for flag in ["--worktree-branch", "--base-branch", "--add-repo"] {
         assert_eq!(after(flag), None, "{create:?}");
     }

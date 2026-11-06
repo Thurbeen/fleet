@@ -37,13 +37,18 @@ use crate::plan::EffectOutcome;
 use crate::task::RepositoriesWorkspace;
 
 /// A Workspace that exists: Fleet's `key`, the `host` the adapter made it
-/// on, and the `dir` the Session runs in there.
+/// on, the `dir` the Session runs in there, and the `extra_dirs` it also
+/// spans.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkspaceRef {
     pub key: String,
     pub host: String,
     pub dir: String,
+    /// The other directories the Session spans as they are, in the order
+    /// the Task names them: the worktrees of repositories 2..n.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_dirs: Vec<String>,
     /// The directory an agent keys its workspace trust on, when it is not
     /// `dir`: the primary repository's source checkout, for a worktree.
     #[serde(default, skip_serializing_if = "Option::is_none")]

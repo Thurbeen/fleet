@@ -923,15 +923,23 @@ impl Runtime for ThurboxRuntime {
         };
         let workspace = match (&spec.ready, &spec.workspace) {
             // Fleet made the workspace: thurbox only runs the session in it.
-            (Some(r), _) if !is_absolute(&r.dir) => {
-                return Observation::Known(EffectOutcome::Failed {
-                    why: format!(
-                        "the workspace {:?} Fleet made is not an absolute path",
-                        r.dir
-                    ),
-                });
+            (Some(r), _) => {
+                if let Some(d) = std::iter::once(&r.dir)
+                    .chain(&r.extra_dirs)
+                    .find(|d| !is_absolute(d))
+                {
+                    return Observation::Known(EffectOutcome::Failed {
+                        why: format!("the workspace {d:?} Fleet made is not an absolute path"),
+                    });
+                }
+                // The other worktrees are spanned as they are: Fleet made
+                // them, so thurbox makes no worktree of its own.
+                let mut args = vec!["--repo-path".to_string(), r.dir.clone()];
+                for d in &r.extra_dirs {
+                    args.extend(["--add-dir".to_string(), d.clone()]);
+                }
+                args
             }
-            (Some(r), _) => vec!["--repo-path".to_string(), r.dir.clone()],
             // thurbox resolves --repo-path as an absolute path on the target
             // host; a relative one would mean whatever directory fleet ran in.
             (None, Workspace::Dir(w)) if !is_absolute(&w.dir) => {
@@ -1517,6 +1525,7 @@ mod tests {
             key: "t.u1".into(),
             host: "remote".into(),
             dir: "/w/t.u1/a".into(),
+            extra_dirs: Vec::new(),
             trust_root: Some("/src/made".into()),
         };
         assert_eq!(

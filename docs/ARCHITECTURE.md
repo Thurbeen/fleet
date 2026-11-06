@@ -206,8 +206,8 @@ When Fleet makes the Workspace, its lifecycle follows the Task:
 
 1. TaskController plans `Materialize` under the workspace key, before the
    spawn.
-2. The spawn gets the ready `{host, dir}`. The runtime runs the Session
-   there and makes nothing.
+2. The spawn gets the ready `{host, dir}`, and the other directories the
+   Session spans. The runtime runs the Session there and makes nothing.
 3. After the release, TaskController plans `CleanWorkspace`. The release
    finalizer goes only after the clean has a receipt.
 

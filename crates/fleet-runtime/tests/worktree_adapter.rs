@@ -24,17 +24,12 @@ fn sh(dir: &Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?}: {out:?}");
 }
 
-/// A source checkout with one commit on `main`, and an adapter over it.
-fn setup(name: &str) -> (PathBuf, WorktreeWorkspaces, RepositoriesWorkspace) {
-    let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join("worktree")
-        .join(format!("{name}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&base);
-    let src = base.join("src");
-    fs::create_dir_all(&src).unwrap();
-    sh(&src, &["init", "-q", "-b", "main"]);
+/// A git checkout at `src` with one commit on `main`.
+fn source(src: &Path) {
+    fs::create_dir_all(src).unwrap();
+    sh(src, &["init", "-q", "-b", "main"]);
     sh(
-        &src,
+        src,
         &[
             "-c",
             "user.name=t",
@@ -47,6 +42,16 @@ fn setup(name: &str) -> (PathBuf, WorktreeWorkspaces, RepositoriesWorkspace) {
             "first",
         ],
     );
+}
+
+/// A source checkout with one commit on `main`, and an adapter over it.
+fn setup(name: &str) -> (PathBuf, WorktreeWorkspaces, RepositoriesWorkspace) {
+    let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("worktree")
+        .join(format!("{name}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    let src = base.join("src");
+    source(&src);
     let repos = Repositories::new(BTreeMap::from([(
         "https://example.test/app".to_string(),
         text(&src),
@@ -79,7 +84,7 @@ fn a_workspace_is_made_once_found_by_its_key_and_cleaned() {
     );
     assert_eq!(
         ws.find("local", "t.u1"),
-        Observation::Known(Some(workspace.clone()))
+        Observation::Known(Some((*workspace).clone()))
     );
     // A second materialize adopts the whole one and runs no worktree add.
     assert_eq!(
@@ -134,7 +139,7 @@ fn a_partial_workspace_is_none_and_the_next_materialize_rolls_it_back() {
     };
     assert_eq!(
         ws.find("local", "t.u1"),
-        Observation::Known(Some(workspace))
+        Observation::Known(Some(*workspace))
     );
 }
 
@@ -171,4 +176,47 @@ fn a_refused_ref_leaves_nothing_behind() {
         Observation::Known(EffectOutcome::Failed { .. })
     ));
     assert!(!base.join("workspaces/t.u1").exists());
+}
+
+#[test]
+fn every_repository_after_the_first_is_named_as_an_extra_dir() {
+    let base = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join("worktree")
+        .join(format!("multi-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&base);
+    source(&base.join("app"));
+    source(&base.join("docs"));
+    let repos = Repositories::new(BTreeMap::from([
+        (
+            "https://example.test/app".to_string(),
+            text(&base.join("app")),
+        ),
+        (
+            "https://example.test/docs".to_string(),
+            text(&base.join("docs")),
+        ),
+    ]));
+    let ws = WorktreeWorkspaces::new(WorktreeConfig::new(base.join("workspaces"), repos));
+    let named = RepositoriesWorkspace {
+        repositories: ["app", "docs"]
+            .map(|n| Repository {
+                name: n.into(),
+                url: format!("https://example.test/{n}"),
+                reference: None,
+            })
+            .to_vec(),
+    };
+    let Observation::Known(EffectOutcome::Materialized { workspace, .. }) =
+        ws.materialize("local", "t.u1", &named)
+    else {
+        panic!("not materialized");
+    };
+    let made = base.join("workspaces/t.u1");
+    assert_eq!(workspace.dir, text(&made.join("app")));
+    assert_eq!(workspace.extra_dirs, vec![text(&made.join("docs"))]);
+    assert!(made.join("docs/.git").exists());
+    assert_eq!(
+        ws.find("local", "t.u1"),
+        Observation::Known(Some(*workspace))
+    );
 }
