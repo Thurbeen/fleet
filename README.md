@@ -86,8 +86,8 @@ fleet amend hello --text "Also cover the docs."  # add to the brief; same sessio
 fleet delete task hello                    # release the session, then remove the Task
 ```
 
-`list`, `status`, `version` and the writing verbs take `--json`; `get`
-always prints JSON. The worker answers with
+`list`, `status`, `version`, `apply`, `send`, `amend` and `reconcile` take
+`--json`; `get` always prints JSON. The worker answers with
 `fleet result hello --generation N --outcome shipped --summary TEXT`, where
 `N` is `brief.generation` in `fleet status task hello --json`. Run
 `fleet --help` or `fleet COMMAND --help` for every command and flag.

@@ -69,7 +69,8 @@ conversation](#talking-in-a-conversation)); `status.answered`, written only
 by an inbox append that carries `answers`; and the parent labels, which the
 store checks at creation. The fourth: posting. GatewayController plans
 `Post`, `Open`, `Receive`, `Log` and `React` actions; the manager performs
-them through the `Gateway` port and writes a receipt under each key.
+`Post`, `Open`, `Log` and `React` through the `Gateway` port and `Receive`
+through the store, and writes a receipt under each key.
 `e2e_gateway_post`, `e2e_gateway_logs` and `e2e_gateway_reactions` hold it
 to that.
 
