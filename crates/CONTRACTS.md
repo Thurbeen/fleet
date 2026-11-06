@@ -308,9 +308,11 @@ Guarantees, each with its test:
   `NeedsAttention/DeliveryFailed` naming the entry, which stays while later
   entries go out; three unreadable journal reads raise
   `DeliveryUnconfirmed` naming the entry, which is never resent and stays
-  while later entries go out; more than 20 undelivered raise
-  `InboxFull`. Delivery runs in Spawned (after the brief), Briefed and
-  Concluded, which stays terminal and is due while its inbox is nonempty.
+  while later entries go out; more than 20 entries still to deliver
+  raise `InboxFull`. An entry given up on counts against no bound,
+  because it can never make room. Delivery runs in Spawned (after the
+  brief), Briefed and Concluded, which stays terminal and is due while
+  its inbox is nonempty.
   At rest, a Concluded Task is due once every `SESSION_RECHECK_MS` (5
   minutes), recorded as `status.sessionCheckedAt`, to look its session up.
   A readable list without the session there is `WorkerGone`, never a
@@ -679,7 +681,7 @@ Guarantees, each with its test in `gateway_controller`,
   the older ones out, as still on the platform. Messages rotated out of
   the mirror above the cursor count a gap and raise
   `NeedsAttention/RelayGap` until the next relay that carries something.
-  More than 20 undelivered entries hold the relay without moving the
+  More than 20 entries still to deliver hold the relay without moving the
   cursor or `seen`. One pass plans no more appends than the store accepts
   in turn: the relay first, then each child's items in order; a child's
   counters stop at the first item left, and the child stays due.
@@ -771,7 +773,7 @@ refused.
   `gateway-controller`, under the lease) refuses a key already in `inbox`
   or `deliveries`, an `about.revision` at or below the mirror's
   (`about.uid`) highest delivered one, an append while more than 20
-  entries are undelivered, a deleting Task, a source not under the
+  entries are still to deliver, a deleting Task, a source not under the
   caller's prefix (`cli/`, `forge/`, `gateway/`), and an `answers` id that
   names no declared Question, and records the entry's `answers` in
   `status.answered`, first answer wins; `record_relay` (ForgeController or

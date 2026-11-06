@@ -1181,7 +1181,7 @@ fn more_unread_items_than_the_inbox_holds_go_out_in_batches_the_store_accepts() 
     let accepted = |inbox: &[InboxEntry], plan: &Plan| {
         let mut inbox = inbox.to_vec();
         for e in &plan.appends {
-            check_append(&inbox, &Deliveries::default(), e).unwrap();
+            check_append(&inbox, &Default::default(), &Deliveries::default(), e).unwrap();
             inbox.push(e.clone());
         }
     };
