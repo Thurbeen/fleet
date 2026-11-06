@@ -293,7 +293,7 @@ permit controller fields to change.
 | Session key | `<name>.<uid>`; the uid prevents a recreated Task adopting an earlier Task's session. |
 | Spawn effect | `task/<name>/<uid>/spawn/<attempt>`. |
 | Brief effect | `task/<name>/<uid>/brief`, reused for every permitted send of that one brief. |
-| Inbox entry | Its own `key`, reused for every permitted send of it: `task/<name>/<uid>/send/<n>` for `fleet send`, `n` the resourceVersion the append was made against; `task/<name>/<uid>/amend/<generation>` for `fleet amend`; `task/<name>/<uid>/relay/<change uid>/<revision>` for a forge relay; `task/<name>/<uid>/plugin/<plugin>/<key>` for a plugin's append. |
+| Inbox entry | Its own `key`, reused for every permitted send of it: `task/<name>/<uid>/send/<n>` for `fleet send`, `n` the resourceVersion the append was made against; `task/<name>/<uid>/amend/<generation>` for `fleet amend`; `task/<name>/<uid>/relay/<change uid>/<revision>` for a forge relay; `task/<name>/<uid>/plugin/<plugin>/<key>` for a plugin's append; `task/<name>/<uid>/gateway/<conversation uid>/<revision>` for a chat relay; `task/<name>/<uid>/gateway/child/<child uid>/<item>` for a child's words. |
 | Release effect | `task/<name>/<uid>/release/<attempt>`. |
 | Intent | Action name, timestamp and generation, stored under the effect key. The brief's receipt records the generation of its intent. |
 | Receipt | Action name, timestamp and `Observation<EffectOutcome>`, stored under the effect key. |
