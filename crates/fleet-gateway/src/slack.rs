@@ -636,43 +636,164 @@ pub fn message_of(bot: &str, item: &Value) -> Result<Message, String> {
     let at = ts_millis(ts).ok_or_else(|| format!("message ts {ts:?} is not a Slack timestamp"))?;
     let user = item["user"].as_str().filter(|u| !u.is_empty());
     let bot_id = item["bot_id"].as_str().filter(|b| !b.is_empty());
-    let subtype = item["subtype"].as_str();
-    let name = name_of(item);
-    let author = match (user, bot_id) {
-        (Some(u), _) if u == bot => Author {
-            id: u.into(),
-            name,
-            kind: AuthorKind::Fleet,
-        },
-        (Some(u), None) if subtype != Some("bot_message") => Author {
-            id: u.into(),
-            name,
-            kind: AuthorKind::Person,
-        },
-        (Some(u), _) => Author {
-            id: u.into(),
-            name,
-            kind: AuthorKind::Bot,
-        },
-        (None, Some(b)) => Author {
-            id: b.into(),
-            name,
-            kind: AuthorKind::Bot,
-        },
-        (None, None) => return Err(format!("message {ts} has neither a user nor a bot_id")),
+    let Some(id) = user.or(bot_id) else {
+        return Err(format!("message {ts} has neither a user nor a bot_id"));
     };
-    let text = item["text"].as_str().unwrap_or("").to_string();
+    let author = Author {
+        id: id.into(),
+        name: name_of(item),
+        kind: kind_of(bot, item),
+    };
+    let text = item["text"].as_str().unwrap_or("");
     let thread_ts = item["thread_ts"].as_str();
     Ok(Message {
         id: ts.to_string(),
         // Fleet's own post never mentions Fleet, whatever it quotes.
-        mentions_fleet: author.kind != AuthorKind::Fleet && mentions(&text, bot),
+        mentions_fleet: author.kind != AuthorKind::Fleet && mentions(text, bot),
         at,
         key: key_of(item),
         starts_thread: thread_ts.is_none_or(|t| t == ts),
-        text,
+        text: shown(bot, item),
         author,
     })
+}
+
+/// Who wrote a message: Fleet when its `user` is the account's `bot`,
+/// another bot when it has a `bot_id` or is of subtype `bot_message`, and
+/// a person otherwise.
+fn kind_of(bot: &str, item: &Value) -> AuthorKind {
+    let user = item["user"].as_str().filter(|u| !u.is_empty());
+    let bot_id = item["bot_id"].as_str().filter(|b| !b.is_empty());
+    if user == Some(bot) {
+        AuthorKind::Fleet
+    } else if bot_id.is_some() || item["subtype"].as_str() == Some("bot_message") {
+        AuthorKind::Bot
+    } else {
+        AuthorKind::Person
+    }
+}
+
+/// A message's text as Slack shows it.
+///
+/// - Fleet's own post and a person's message are their `text`. A person's
+///   `rich_text` blocks repeat it. A person's attachments are left out:
+///   link unfurls and shared messages carry words the person did not write.
+/// - Another bot's body is its `blocks` when it has any, else its `text`.
+///   With blocks, `text` is only the notification fallback. Each legacy
+///   attachment follows: alert bots often leave `text` empty and post their
+///   whole body as an attachment.
+fn shown(bot: &str, item: &Value) -> String {
+    if kind_of(bot, item) != AuthorKind::Bot {
+        return text_of(item);
+    }
+    let blocks = blocks_text(&item["blocks"]);
+    let body = if blocks.is_empty() {
+        text_of(item)
+    } else {
+        blocks
+    };
+    lines(std::iter::once(body).chain(each(&item["attachments"]).map(attachment_text)))
+}
+
+/// The elements of a JSON array; none for anything else.
+fn each(v: &Value) -> impl Iterator<Item = &Value> {
+    v.as_array().into_iter().flatten()
+}
+
+/// The non-empty parts, one per line.
+fn lines(parts: impl Iterator<Item = String>) -> String {
+    parts
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A legacy attachment's shown fields in display order, or its `fallback`
+/// summary when it shows none of them.
+fn attachment_text(a: &Value) -> String {
+    let title = match (text_at(a, "title"), text_at(a, "title_link")) {
+        (t, l) if !t.is_empty() && !l.is_empty() => format!("{t} ({l})"),
+        (t, _) => t,
+    };
+    let fields = each(&a["fields"]).map(|f| match (text_at(f, "title"), text_at(f, "value")) {
+        (t, v) if !t.is_empty() && !v.is_empty() => format!("{t}: {v}"),
+        (t, v) => t + &v,
+    });
+    let shown = lines(
+        [
+            text_at(a, "pretext"),
+            text_at(a, "author_name"),
+            title,
+            text_of(a),
+        ]
+        .into_iter()
+        .chain(fields)
+        .chain([blocks_text(&a["blocks"]), text_at(a, "footer")]),
+    );
+    if shown.is_empty() {
+        text_at(a, "fallback")
+    } else {
+        shown
+    }
+}
+
+/// The text of Block Kit blocks, one line per block: `header`, `section`
+/// (its text, then its fields), `context`, `markdown` and `rich_text`.
+/// Other blocks, such as `divider`, `image` and `actions`, show no text.
+fn blocks_text(blocks: &Value) -> String {
+    lines(each(blocks).map(|b| {
+        match b["type"].as_str() {
+            Some("header") => text_of(&b["text"]),
+            Some("markdown") => text_of(b),
+            Some("section") => {
+                lines(std::iter::once(text_of(&b["text"])).chain(each(&b["fields"]).map(text_of)))
+            }
+            Some("context") => each(&b["elements"])
+                .map(text_of)
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "),
+            Some("rich_text") => lines(each(&b["elements"]).map(rich_text)),
+            _ => String::new(),
+        }
+    }))
+}
+
+/// One `rich_text` element as text. A `rich_text_list` is a line per item.
+/// A section, quote or preformatted run joins its inline elements. Mentions
+/// and broadcasts read in Slack's `text` syntax. A date reads as its
+/// `fallback`, or as its Unix `timestamp` without one.
+fn rich_text(e: &Value) -> String {
+    match e["type"].as_str() {
+        Some("rich_text_list") => {
+            lines(each(&e["elements"]).map(|i| format!("- {}", rich_text(i))))
+        }
+        Some("text") => text_of(e),
+        Some("link") => match (text_at(e, "text"), text_at(e, "url")) {
+            (label, url) if !label.is_empty() && label != url => format!("{label} ({url})"),
+            (_, url) => url,
+        },
+        Some("user") => format!("<@{}>", text_at(e, "user_id")),
+        Some("channel") => format!("<#{}>", text_at(e, "channel_id")),
+        Some("usergroup") => format!("<!subteam^{}>", text_at(e, "usergroup_id")),
+        Some("emoji") => format!(":{}:", text_at(e, "name")),
+        Some("broadcast") => format!("<!{}>", text_at(e, "range")),
+        Some("date") => match (text_at(e, "fallback"), &e["timestamp"]) {
+            (fallback, _) if !fallback.is_empty() => fallback,
+            (_, Value::Number(ts)) => ts.to_string(),
+            (_, _) => String::new(),
+        },
+        _ => each(&e["elements"]).map(rich_text).collect(),
+    }
+}
+
+/// The string at `key`; empty when it is absent or not a string.
+fn text_at(v: &Value, key: &str) -> String {
+    v[key].as_str().unwrap_or("").to_string()
+}
+
+fn text_of(v: &Value) -> String {
+    text_at(v, "text")
 }
 
 /// `<@U…>` or `<@U…|name>` with Fleet's bot user id.
@@ -845,7 +966,9 @@ pub fn read_event(account: &AccountConfig, envelope: &Envelope) -> Observation<O
                 Event::Edited {
                     conversation: conversation(thread),
                     id: id.into(),
-                    text: str_of(m, "text").unwrap_or("").into(),
+                    // Read as a new message is, so a bot's edit keeps its
+                    // blocks and attachments.
+                    text: shown(&account.bot, &Value::Object(m.clone())),
                     edited_at,
                 }
             }
@@ -1436,6 +1559,73 @@ mod tests {
                 assert_eq!(conversation.thread.as_deref(), Some("1730000300.000200"));
                 assert_eq!(id, "1730000360.000300");
             }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// `payload` with its event (or, with `inner`, the changed message)
+    /// edited by `f`.
+    fn edited(payload: &str, inner: bool, f: impl FnOnce(&mut Value)) -> String {
+        let mut v: Value = serde_json::from_str(payload).unwrap();
+        let event = &mut v["payload"]["event"];
+        f(if inner { &mut event["message"] } else { event });
+        v.to_string()
+    }
+
+    #[test]
+    fn a_bots_event_and_its_edit_read_its_attachments_and_blocks() {
+        // An alert with an empty `text` and its body in an attachment.
+        let alert = edited(BOT_MESSAGE, false, |e| {
+            e["text"] = json!("");
+            e["attachments"] = json!([{"fallback": "Triggered: api latency",
+                "title": "[FIRING] api latency above 2s", "text": "p99 2.4s",
+                "fields": [{"title": "env", "value": "production"}]}]);
+        });
+        let d = delivery(&alert);
+        let (_, m) = message(&d);
+        assert_eq!(m.author.kind, AuthorKind::Bot);
+        assert_eq!(
+            m.text,
+            "[FIRING] api latency above 2s\np99 2.4s\nenv: production"
+        );
+        // Slack shows `pretext` above the attachment, and `author_name` inside it.
+        let both = edited(BOT_MESSAGE, false, |e| {
+            e["text"] = json!("");
+            e["attachments"] = json!([{"author_name": "monitor", "pretext": "Monitor triggered",
+                "title": "api latency"}]);
+            e["blocks"] = json!([{"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": [
+                {"type": "text", "text": "since "},
+                {"type": "date", "timestamp": 1_730_000_000, "format": "{date_num}"}]}]}]);
+        });
+        assert_eq!(
+            message(&delivery(&both)).1.text,
+            "since 1730000000\nMonitor triggered\nmonitor\napi latency"
+        );
+        // An attachment that shows nothing else reads as its fallback.
+        let bare = edited(BOT_MESSAGE, false, |e| {
+            e["text"] = json!("");
+            e["attachments"] = json!([{"fallback": "Triggered: api latency", "color": "danger"}]);
+        });
+        assert_eq!(message(&delivery(&bare)).1.text, "Triggered: api latency");
+        // A bot edits its message: the edit reads its blocks, not the fallback `text`.
+        let edit = edited(EDIT, true, |m| {
+            m.as_object_mut().unwrap().remove("user");
+            m["subtype"] = json!("bot_message");
+            m["bot_id"] = json!("B0ALERT001");
+            m["text"] = json!("Resolved");
+            m["blocks"] = json!([{"type": "section", "text": {"type": "mrkdwn", "text": "*Resolved:* api latency"}}]);
+        });
+        match &delivery(&edit).event {
+            Event::Edited { text, .. } => assert_eq!(text, "*Resolved:* api latency"),
+            other => panic!("{other:?}"),
+        }
+        // A person's edit is its `text`: an unfurl's attachment is not their words.
+        let person = edited(EDIT, true, |m| {
+            m["attachments"] =
+                json!([{"title": "an unfurled page", "from_url": "https://example.com/"}]);
+        });
+        match &delivery(&person).event {
+            Event::Edited { text, .. } => assert_eq!(text, "here is the full log"),
             other => panic!("{other:?}"),
         }
     }
