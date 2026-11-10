@@ -182,6 +182,7 @@ first, so that a failing account answers Unknown.
 | Ignored events | Other envelope types, events that are not messages, other workspaces, and message subtypes other than none, `file_share`, `thread_broadcast` and `bot_message`. |
 | Mention | `<@U…>` or `<@U…\|name>` with Fleet's bot user id in `text`[^slack-format]. The adapter does not rely on `app_mention`. Reason: `app_mention` needs `app_mentions.read`, and the reference does not state how it behaves inside threads (**unverified**)[^slack-mention]. |
 | Authors | The account's `bot` is `fleet`. A message with a `bot_id`, or of subtype `bot_message`, is a `bot`. Anyone else is a `person`. |
+| Text | A message's text is what Slack shows, one part per line. A `fleet` or `person` message is its `text`. Reason: a person's `rich_text` blocks repeat their `text`. A `person` message does not include its attachments. Reason: link unfurls and shared messages carry words the person did not write. A `bot` message starts with its `blocks` when it has any, and with its `text` otherwise. Reason: with `blocks`, `text` is only the notification fallback[^slack-post]. Each legacy attachment of a `bot` message follows. An attachment shows its `pretext`, `author_name`, `title` (with `title_link`), `text`, `fields` as `title: value`, `blocks` and `footer`[^slack-attachments]. An attachment that shows none of these is its `fallback`. Reason: alert bots often leave `text` empty and post their body as an attachment. The adapter reads the `header`, `section` (text and fields), `context`, `markdown` and `rich_text` blocks[^slack-blocks]. In `rich_text`, a mention reads as `<@U…>`, `<#C…>` or `<!subteam^S…>`, and a broadcast as `<!here>`, `<!channel>` or `<!everyone>`. A link reads as `label (url)`, or as its URL when it has no other label. A date reads as its `fallback`, or as its Unix `timestamp` without one[^slack-rich-text]. An edit is read in the same way. Mention detection reads only `text`. |
 | `history` | `conversations.replies` for a thread, `conversations.history` for a channel, both with `include_all_metadata`[^slack-replies]. Pages of 200 follow `next_cursor`. `has_more` without a cursor is Unknown (`Incomplete`). |
 | `starter` | The parent message. A `tombstone` parent is `removed`. |
 | `post` | `chat.postMessage` with `thread_ts`, one `markdown` block, a `mrkdwn` `text`, and `unfurl_links` and `unfurl_media` off[^slack-post]. |
@@ -294,6 +295,9 @@ These points are **unverified**:
 [^slack-post]: <https://docs.slack.dev/reference/methods/chat.postMessage>
 [^slack-format]: <https://docs.slack.dev/messaging/formatting-message-text>
 [^slack-mention]: <https://docs.slack.dev/reference/events/app_mention>
+[^slack-attachments]: <https://docs.slack.dev/legacy/legacy-messaging/legacy-secondary-message-attachments>
+[^slack-blocks]: <https://docs.slack.dev/reference/block-kit/blocks>
+[^slack-rich-text]: <https://docs.slack.dev/reference/block-kit/block-elements/rich-text-section-element>
 [^slack-user]: <https://docs.slack.dev/reference/objects/user-object/>
 [^slack-markdown]: <https://docs.slack.dev/reference/block-kit/blocks/markdown-block>
 [^slack-compare]: <https://docs.slack.dev/apis/events-api/comparing-http-socket-mode>
