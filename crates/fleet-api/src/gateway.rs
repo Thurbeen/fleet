@@ -764,15 +764,17 @@ pub struct GatewayConfig {
     pub reactions: Option<ReactionsConfig>,
 }
 
-/// The default "working" reaction: Slack's name for 👀.
-pub const DEFAULT_WORKING: &str = "eyes";
+/// The default "seen" reaction: Slack's name for 👀.
+pub const DEFAULT_SEEN: &str = "eyes";
+/// The default "working" reaction: Slack's name for 🛠️.
+pub const DEFAULT_WORKING: &str = "hammer_and_wrench";
 /// The default "replied" reaction: Slack's name for ✅.
 pub const DEFAULT_REPLIED: &str = "white_check_mark";
 /// The default "queued" reaction: Slack's and Discord's name for ⏳.
 pub const DEFAULT_QUEUED: &str = "hourglass_flowing_sand";
 
 /// `[gateway] reactions`: `false` (or `true`), or
-/// `{ queued = "<name>", working = "<name>", replied = "<name>" }`.
+/// `{ queued = "<name>", seen = "<name>", working = "<name>", replied = "<name>" }`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ReactionsConfig {
@@ -780,10 +782,12 @@ pub enum ReactionsConfig {
     Names(ReactionNames),
 }
 
-/// The names of the three reactions, each the platform's emoji name.
+/// The names of the four reactions, each the platform's emoji name.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReactionNames {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub working: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -792,21 +796,26 @@ pub struct ReactionNames {
     pub queued: Option<String>,
 }
 
-/// The three reactions as the controllers read them.
+/// The four reactions as the controllers read them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reactions {
-    /// Added while a Task works on a message.
+    /// Added when Fleet received a message: its Task was created, or the
+    /// message was relayed to it.
+    pub seen: String,
+    /// Added when the worker says more is coming; `seen` is removed then.
     pub working: String,
-    /// Added once Fleet replied in the thread; `working` is removed then.
+    /// Added once the worker's turn is over; `seen` or `working` is removed
+    /// then.
     pub replied: String,
     /// Added when admission accepts a message that must wait for its Task;
-    /// replaced by `working` once the Task exists.
+    /// replaced by `seen` once the Task exists.
     pub queued: String,
 }
 
 impl Default for Reactions {
     fn default() -> Self {
         Reactions {
+            seen: DEFAULT_SEEN.into(),
             working: DEFAULT_WORKING.into(),
             replied: DEFAULT_REPLIED.into(),
             queued: DEFAULT_QUEUED.into(),
@@ -823,6 +832,7 @@ impl ReactionsConfig {
             ReactionsConfig::Names(n) => {
                 let base = Reactions::default();
                 Some(Reactions {
+                    seen: n.seen.clone().unwrap_or(base.seen),
                     working: n.working.clone().unwrap_or(base.working),
                     replied: n.replied.clone().unwrap_or(base.replied),
                     queued: n.queued.clone().unwrap_or(base.queued),
@@ -1222,6 +1232,7 @@ impl GatewayConfig {
         }
         if let Some(ReactionsConfig::Names(names)) = &self.reactions {
             for (field, name) in [
+                ("seen", &names.seen),
                 ("working", &names.working),
                 ("replied", &names.replied),
                 ("queued", &names.queued),
@@ -1235,15 +1246,27 @@ impl GatewayConfig {
                 }
             }
             if let Some(r) = ReactionsConfig::Names(names.clone()).reactions() {
-                for (a, b, x, y) in [
-                    ("working", "replied", &r.working, &r.replied),
-                    ("working", "queued", &r.working, &r.queued),
-                    ("replied", "queued", &r.replied, &r.queued),
-                ] {
-                    if x.trim_matches(':') == y.trim_matches(':') {
-                        return Err(format!(
-                            "gateway.reactions: {a} and {b} name the same emoji"
-                        ));
+                let all = [
+                    ("seen", &r.seen),
+                    ("working", &r.working),
+                    ("replied", &r.replied),
+                    ("queued", &r.queued),
+                ];
+                for (i, (a, x)) in all.iter().enumerate() {
+                    for (b, y) in &all[i + 1..] {
+                        if x.trim_matches(':') != y.trim_matches(':') {
+                            continue;
+                        }
+                        let mut why = format!("gateway.reactions: {a} and {b} name the same emoji");
+                        // `working` once named the mark `seen` has now.
+                        if (*a, *b) == ("seen", "working") && names.seen.is_none() {
+                            why.push_str(
+                                "; `working` now marks the longer work after a quick reply, \
+                                 and `seen` (default \"eyes\") marks a received message: \
+                                 set `seen` to that emoji and give `working` another one",
+                            );
+                        }
+                        return Err(why);
                     }
                 }
             }
@@ -1426,7 +1449,8 @@ mod tests {
         assert_eq!(
             Reactions::default(),
             Reactions {
-                working: "eyes".into(),
+                seen: "eyes".into(),
+                working: "hammer_and_wrench".into(),
                 replied: "white_check_mark".into(),
                 queued: "hourglass_flowing_sand".into(),
             }
@@ -1440,6 +1464,7 @@ mod tests {
         assert_eq!(
             named.defaults().reactions,
             Some(Reactions {
+                seen: "eyes".into(),
                 working: "gear".into(),
                 replied: "white_check_mark".into(),
                 queued: "pause_button".into(),
@@ -1456,6 +1481,17 @@ mod tests {
                 json!({"working": "eyes", "replied": "eyes"}),
                 "the same emoji",
             ),
+            (json!({"seen": "a b"}), "gateway.reactions.seen"),
+            (
+                json!({"seen": "white_check_mark"}),
+                "seen and replied name the same emoji",
+            ),
+            // A config written when `working` was the first mark: refused,
+            // with what to change.
+            (
+                json!({"working": "eyes"}),
+                "seen and working name the same emoji; `working` now marks the longer work",
+            ),
             (json!({"queued": " "}), "gateway.reactions.queued"),
             (
                 json!({"working": "hourglass_flowing_sand"}),
@@ -1469,6 +1505,16 @@ mod tests {
             let err = parse(bad.clone()).validate().unwrap_err();
             assert!(err.contains(why), "{bad}: {err}");
         }
+        // Naming `seen` explicitly gets the plain message.
+        let err = parse(json!({"seen": "eyes", "working": "eyes"}))
+            .validate()
+            .unwrap_err();
+        assert_eq!(
+            err,
+            "gateway.reactions: seen and working name the same emoji"
+        );
+        let kept = parse(json!({"seen": "eyes", "working": "gear"}));
+        assert_eq!(kept.validate(), Ok(()));
         let mut c = serde_json::to_value(config()).unwrap();
         c["reactions"] = json!({"done": "x"});
         assert!(serde_json::from_value::<GatewayConfig>(c).is_err());

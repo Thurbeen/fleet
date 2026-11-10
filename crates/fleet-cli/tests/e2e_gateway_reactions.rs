@@ -1,8 +1,9 @@
 //! Reactions end to end: a person's mention starts a Task, and the message
-//! gets the "working" reaction when it is relayed into the Task's inbox;
-//! once Fleet posts in the thread for the Task, the message gets the
-//! "replied" reaction and loses "working". A reaction that fails holds
-//! back neither the relay nor the post and raises nothing, and
+//! gets the "seen" reaction when it is relayed into the Task's inbox. The
+//! worker's quick reply marks it "replied", or "working" when the reply says
+//! more is coming; a `Working` declaration marks it working without a
+//! post, and a final reply or the result marks it replied. A reaction that
+//! fails holds back neither the relay nor the post and raises nothing, and
 //! `reactions = false` turns them off.
 
 mod support;
@@ -17,7 +18,8 @@ const THREAD: &str = "fake:C0123ABCD:1730000000000";
 const BOT: &str = "B0FLEET001";
 /// The id of Alex's mention, the message that starts the Task.
 const MENTION: &str = "1730000300000";
-const WORKING: &str = "eyes";
+const SEEN: &str = "eyes";
+const WORKING: &str = "hammer_and_wrench";
 const REPLIED: &str = "white_check_mark";
 
 fn thread() -> ConversationRef {
@@ -132,13 +134,13 @@ fn comment_posted(env: &Env, task: &str) -> bool {
 }
 
 #[test]
-fn a_mention_is_marked_working_then_replied_once_the_tasks_comment_is_posted() {
-    let (env, task) = tied("working-then-replied", |_| {});
+fn a_mention_is_marked_seen_then_replied_by_a_quick_reply_that_is_enough() {
+    let (env, task) = tied("seen-then-replied", |_| {});
     // The join relayed the mention and the allowlisted message before it.
-    assert_eq!(reacted(&env, MENTION), vec![WORKING.to_string()]);
-    assert_eq!(reacted(&env, &T0.to_string()), vec![WORKING.to_string()]);
+    assert_eq!(reacted(&env, MENTION), vec![SEEN.to_string()]);
+    assert_eq!(reacted(&env, &T0.to_string()), vec![SEEN.to_string()]);
     let gw = gateway(&env, &task);
-    assert_eq!(gw["reactions"]["marks"][MENTION], "working", "{gw:#}");
+    assert_eq!(gw["reactions"]["marks"][MENTION], "seen", "{gw:#}");
 
     declare(
         &env,
@@ -150,7 +152,7 @@ fn a_mention_is_marked_working_then_replied_once_the_tasks_comment_is_posted() {
     assert_eq!(
         reacted(&env, MENTION),
         vec![REPLIED.to_string()],
-        "replied, and no longer working"
+        "replied, and no longer seen"
     );
     assert_eq!(reacted(&env, &T0.to_string()), vec![REPLIED.to_string()]);
     let gw = gateway(&env, &task);
@@ -168,7 +170,7 @@ fn a_mention_is_marked_working_then_replied_once_the_tasks_comment_is_posted() {
     reconcile_clean(&env);
     assert_eq!(env.fake_gateway().reactions().unwrap(), calls);
 
-    // A later message is marked working on its relay, and a context message
+    // A later message is marked seen on its relay, and a context message
     // from someone off the allowlist is not.
     env.receive(
         "Ev02",
@@ -181,9 +183,115 @@ fn a_mention_is_marked_working_then_replied_once_the_tasks_comment_is_posted() {
     )
     .ok();
     reconcile_clean(&env);
-    assert_eq!(reacted(&env, "x2"), vec![WORKING.to_string()]);
+    assert_eq!(reacted(&env, "x2"), vec![SEEN.to_string()]);
     assert_eq!(reacted(&env, "x3"), Vec::<String>::new());
     assert_eq!(reacted(&env, MENTION), vec![REPLIED.to_string()]);
+}
+
+/// The reactions on both messages the join relayed.
+fn both(env: &Env) -> [Vec<String>; 2] {
+    [reacted(env, MENTION), reacted(env, &T0.to_string())]
+}
+
+fn one(reaction: &str) -> [Vec<String>; 2] {
+    [vec![reaction.to_string()], vec![reaction.to_string()]]
+}
+
+#[test]
+fn a_quick_reply_that_says_more_marks_working_then_the_final_reply_marks_replied() {
+    let (env, task) = tied("seen-working-replied", |_| {});
+    assert_eq!(both(&env), one(SEEN));
+    // The worker is told the flow with every relay.
+    let join = texts(&env, &task)[1].clone();
+    assert!(join.contains("Reply quickly first"), "{join}");
+    assert!(join.contains("\"more\": true"), "{join}");
+    assert!(join.contains("\"kind\": \"Working\""), "{join}");
+
+    declare(
+        &env,
+        &task,
+        json!({"kind": "Comment", "id": "c1", "text": "Looking at the exporter now.", "more": true}),
+    );
+    reconcile_clean(&env);
+    assert!(comment_posted(&env, &task), "the quick reply is posted");
+    assert_eq!(both(&env), one(WORKING), "working, and no longer seen");
+    let gw = gateway(&env, &task);
+    assert_eq!(gw["reactions"]["marks"][MENTION], "working", "{gw:#}");
+    // Nothing more lands: the marks stay working.
+    reconcile_clean(&env);
+    assert_eq!(both(&env), one(WORKING));
+
+    declare(
+        &env,
+        &task,
+        json!({"kind": "Comment", "id": "c2", "text": "Fixed: the token had expired."}),
+    );
+    reconcile_clean(&env);
+    reconcile_clean(&env);
+    assert_eq!(both(&env), one(REPLIED), "replied, and no longer working");
+    assert_eq!(adds(&env, MENTION, WORKING), 1, "working added once");
+    assert_eq!(adds(&env, MENTION, SEEN), 1, "seen added once");
+    let gw = gateway(&env, &task);
+    assert_eq!(gw["reactions"]["marks"][MENTION], "replied", "{gw:#}");
+    assert_ne!(attention(&gw)["status"], "True", "{gw:#}");
+}
+
+#[test]
+fn a_working_declaration_marks_working_without_a_post_and_the_result_marks_replied() {
+    let (env, task) = tied("working-then-result", |_| {});
+    assert_eq!(both(&env), one(SEEN));
+    let posts = env.fake_gateway().posts().unwrap().len();
+    declare(&env, &task, json!({"kind": "Working", "id": "w1"}));
+    reconcile_clean(&env);
+    assert_eq!(both(&env), one(WORKING));
+    assert_eq!(
+        env.fake_gateway().posts().unwrap().len(),
+        posts,
+        "a Working declaration posts nothing"
+    );
+    // A Working declaration without an id is skipped and named.
+    declare(&env, &task, json!({"kind": "Working"}));
+    reconcile_clean(&env);
+    let gw = gateway(&env, &task);
+    assert_eq!(attention(&gw)["reason"], "DeclarationInvalid", "{gw:#}");
+    assert_eq!(both(&env), one(WORKING));
+
+    // The result ends the turn.
+    env.fleet(&[
+        "result",
+        &task,
+        "--generation",
+        "1",
+        "--outcome",
+        "shipped",
+        "--summary",
+        "fixed the export",
+    ])
+    .ok();
+    reconcile_clean(&env);
+    assert_eq!(both(&env), one(REPLIED));
+    let gw = gateway(&env, &task);
+    assert_eq!(gw["reactions"]["result"], 1, "{gw:#}");
+
+    // A later message is marked seen, and the result already counted does
+    // not mark it replied.
+    env.receive(
+        "Ev02",
+        message_event(THREAD, "x2", ALEX_ID, T0 + 400_000, "Also the weekly one."),
+    )
+    .ok();
+    reconcile_clean(&env);
+    reconcile_clean(&env);
+    assert_eq!(reacted(&env, "x2"), vec![SEEN.to_string()]);
+    // A Question hands the turn to the person: replied.
+    declare(
+        &env,
+        &task,
+        json!({"kind": "Question", "id": "q1", "text": "Which region?"}),
+    );
+    reconcile_clean(&env);
+    reconcile_clean(&env);
+    assert_eq!(reacted(&env, "x2"), vec![REPLIED.to_string()]);
 }
 
 #[test]
@@ -272,7 +380,7 @@ fn reactions_can_be_renamed_in_the_config() {
     let (env, task) = tied("reactions-renamed", |env| {
         gateway_line(
             env,
-            "reactions = { working = \"gear\", replied = \"thumbsup\" }",
+            "reactions = { seen = \"gear\", replied = \"thumbsup\" }",
         )
     });
     assert_eq!(reacted(&env, MENTION), vec!["gear".to_string()]);
@@ -297,8 +405,12 @@ fn a_reaction_name_that_is_not_one_emoji_name_is_refused() {
             "gateway.reactions: working and replied name the same emoji",
         ),
         (
+            "reactions = { working = \"eyes\" }",
+            "gateway.reactions: seen and working name the same emoji; `working` now marks the longer work after a quick reply",
+        ),
+        (
             "reactions = { queued = \"eyes\" }",
-            "gateway.reactions: working and queued name the same emoji",
+            "gateway.reactions: seen and queued name the same emoji",
         ),
         (
             "reactions = { queued = \"\" }",
@@ -397,23 +509,23 @@ fn mention(env: &Env, delivery: &str, id: &str, at: u64) {
 }
 
 #[test]
-fn an_admitted_mention_is_marked_working_at_admission_and_not_again_at_the_join() {
-    let env = admitting("working-at-admission");
+fn an_admitted_mention_is_marked_seen_at_admission_and_not_again_at_the_join() {
+    let env = admitting("seen-at-admission");
     mention(&env, "Ev01", MENTION, T0 + 300_000);
     reconcile_clean(&env);
     let task = format!("{}-1", conv());
     // Admission reacted, under the Conversation's own key: the mark exists
     // before the Task's first pass needs to run.
     let st = env.conversation_status(&conv());
-    assert_eq!(st["reactions"]["marks"][MENTION], "working", "{st:#}");
+    assert_eq!(st["reactions"]["marks"][MENTION], "seen", "{st:#}");
     let keys = conv_reactions(&env);
     assert!(
         keys.iter()
-            .any(|k| k.ends_with(&format!("/react/{MENTION}/working/on"))),
-        "the working reaction is the Conversation's effect: {keys:?}"
+            .any(|k| k.ends_with(&format!("/react/{MENTION}/seen/on"))),
+        "the seen reaction is the Conversation's effect: {keys:?}"
     );
-    assert_eq!(reacted(&env, MENTION), vec![WORKING.to_string()]);
-    // The join relayed the mention and marked it working, without a second
+    assert_eq!(reacted(&env, MENTION), vec![SEEN.to_string()]);
+    // The join relayed the mention and marked it seen, without a second
     // reaction; the earlier message, which started nothing, is the join's.
     assert_eq!(
         gateway(&env, &task)["conversation"]["state"],
@@ -421,13 +533,10 @@ fn an_admitted_mention_is_marked_working_at_admission_and_not_again_at_the_join(
         "{:#}",
         gateway(&env, &task)
     );
-    assert_eq!(
-        gateway(&env, &task)["reactions"]["marks"][MENTION],
-        "working"
-    );
-    assert_eq!(adds(&env, MENTION, WORKING), 1, "added once");
-    assert_eq!(reacted(&env, &T0.to_string()), vec![WORKING.to_string()]);
-    assert_eq!(adds(&env, &T0.to_string(), WORKING), 1);
+    assert_eq!(gateway(&env, &task)["reactions"]["marks"][MENTION], "seen");
+    assert_eq!(adds(&env, MENTION, SEEN), 1, "added once");
+    assert_eq!(reacted(&env, &T0.to_string()), vec![SEEN.to_string()]);
+    assert_eq!(adds(&env, &T0.to_string(), SEEN), 1);
     // A thread post replies to both, as before.
     declare(
         &env,
@@ -438,12 +547,12 @@ fn an_admitted_mention_is_marked_working_at_admission_and_not_again_at_the_join(
     reconcile_clean(&env);
     assert_eq!(reacted(&env, MENTION), vec![REPLIED.to_string()]);
     assert_eq!(reacted(&env, &T0.to_string()), vec![REPLIED.to_string()]);
-    assert_eq!(adds(&env, MENTION, WORKING), 1, "never added twice");
+    assert_eq!(adds(&env, MENTION, SEEN), 1, "never added twice");
 }
 
 #[test]
-fn a_queued_request_is_marked_queued_then_working_once_its_task_starts() {
-    let env = admitting("queued-then-working");
+fn a_queued_request_is_marked_queued_then_seen_once_its_task_starts() {
+    let env = admitting("queued-then-seen");
     // Another Task holds the thread's own directory: the request queues.
     let mut holder = support::task("holder", false);
     holder["spec"]["workspace"]["dir"] = json!(format!("{}/{}", env.gateway_workspace(), conv()));
@@ -474,7 +583,7 @@ fn a_queued_request_is_marked_queued_then_working_once_its_task_starts() {
     // The busy notice is no reply: the marks stay queued.
     assert_eq!(reacted(&env, MENTION), vec![QUEUED.to_string()]);
     // The directory frees: the Task starts, and every queued message is
-    // marked working instead, once.
+    // marked seen instead, once.
     env.fleet(&["delete", "task", "holder"]).ok();
     env.reconcile().ok();
     env.expire_wait_of("Conversation", &conv());
@@ -487,12 +596,12 @@ fn a_queued_request_is_marked_queued_then_working_once_its_task_starts() {
         gateway(&env, &task)
     );
     for id in [MENTION, "x2"] {
-        assert_eq!(reacted(&env, id), vec![WORKING.to_string()], "{id}");
-        assert_eq!(adds(&env, id, WORKING), 1, "{id}: added once");
+        assert_eq!(reacted(&env, id), vec![SEEN.to_string()], "{id}");
+        assert_eq!(adds(&env, id, SEEN), 1, "{id}: added once");
         assert_eq!(adds(&env, id, QUEUED), 1, "{id}: queued once");
     }
     let st = env.conversation_status(&conv());
-    assert_eq!(st["reactions"]["marks"][MENTION], "working", "{st:#}");
+    assert_eq!(st["reactions"]["marks"][MENTION], "seen", "{st:#}");
     assert_eq!(reacted(&env, "x3"), Vec::<String>::new());
     // A thread post replies to them.
     declare(
