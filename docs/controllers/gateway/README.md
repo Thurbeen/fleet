@@ -260,6 +260,9 @@ Rules:
 - Each reaction is a keyed effect: Fleet writes the intent first and the
   receipt after. A reaction is set, not counted, so a repeat after a crash
   changes nothing.
+- A stage whose reaction is off shows no mark, but its mark still moves.
+  For example, with `working = "eyes"` and no `seen`, the seen stage is
+  off: a received message shows nothing until the worker's answer.
 - `gateway.reactions = false` turns reactions off. An adapter whose
   platform has no reactions answers `reactions = false` in its
   capabilities, and Fleet then adds none.

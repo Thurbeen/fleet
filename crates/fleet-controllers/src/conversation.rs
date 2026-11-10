@@ -1610,19 +1610,14 @@ impl Pass<'_, '_> {
     }
 
     fn react_action(&self, message: &str, mark: Mark, on: bool) -> Option<Action> {
-        let names = self.input.defaults.reactions.as_ref()?;
+        // A stage whose name yielded to another key's shows no mark.
+        let reaction = self.input.defaults.reactions.as_ref()?.name(mark)?;
         let reference = self.st.reference.clone()?;
-        let reaction = match mark {
-            Mark::Queued => &names.queued,
-            Mark::Seen => &names.seen,
-            Mark::Working => &names.working,
-            Mark::Replied => &names.replied,
-        };
         Some(Action::React {
             account: self.spec.account.clone(),
             conversation: reference,
             message: message.to_string(),
-            reaction: reaction.clone(),
+            reaction: reaction.to_string(),
             on,
         })
     }
@@ -1659,6 +1654,15 @@ impl Pass<'_, '_> {
                 }
                 Some(_) => false,
             };
+            // A stage that shows no mark leaves nothing to retry.
+            let shown = parsed.as_ref().is_some_and(|(_, mark, _)| {
+                self.input
+                    .defaults
+                    .reactions
+                    .as_ref()
+                    .is_some_and(|r| r.name(*mark).is_some())
+            });
+            let pointless = pointless || !shown;
             let unsettled = match record.receipt.as_ref().map(|r| &r.outcome) {
                 None | Some(Observation::Unknown { .. }) => true,
                 Some(Observation::Known(EffectOutcome::Failed { .. })) => true,

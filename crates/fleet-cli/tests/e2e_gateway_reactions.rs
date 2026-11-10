@@ -394,6 +394,51 @@ fn reactions_can_be_renamed_in_the_config() {
 }
 
 #[test]
+fn a_default_yields_to_an_explicit_name_and_its_stage_shows_no_mark() {
+    // `working` names the seen default explicitly: the config loads, and
+    // the seen stage is off.
+    let (env, task) = tied("default-yields", |env| {
+        gateway_line(env, "reactions = { working = \"eyes\" }")
+    });
+    assert_eq!(reacted(&env, MENTION), Vec::<String>::new(), "no seen mark");
+    let gw = gateway(&env, &task);
+    assert_eq!(gw["reactions"]["marks"][MENTION], "seen", "{gw:#}");
+    declare(
+        &env,
+        &task,
+        json!({"kind": "Comment", "id": "c1", "text": "On it.", "more": true}),
+    );
+    reconcile_clean(&env);
+    assert_eq!(reacted(&env, MENTION), vec!["eyes".to_string()], "working");
+    declare(
+        &env,
+        &task,
+        json!({"kind": "Comment", "id": "c2", "text": "Done."}),
+    );
+    reconcile_clean(&env);
+    reconcile_clean(&env);
+    assert_eq!(reacted(&env, MENTION), vec![REPLIED.to_string()]);
+    let gw = gateway(&env, &task);
+    assert_ne!(attention(&gw)["status"], "True", "{gw:#}");
+    // The off stage has no reaction record to wait on or retry.
+    let off: Vec<&String> = gw["posts"]
+        .as_object()
+        .map(|o| o.keys().filter(|k| k.contains("/seen/")).collect())
+        .unwrap_or_default();
+    assert!(off.is_empty(), "no seen record: {off:?}");
+    assert_eq!(
+        env.fake_gateway()
+            .reactions()
+            .unwrap()
+            .iter()
+            .filter(|r| r.message == MENTION)
+            .count(),
+        3,
+        "eyes added for working, removed, and the replied one added"
+    );
+}
+
+#[test]
 fn a_reaction_name_that_is_not_one_emoji_name_is_refused() {
     for (line, want) in [
         (
@@ -401,15 +446,15 @@ fn a_reaction_name_that_is_not_one_emoji_name_is_refused() {
             "gateway.reactions.working: \"two words\" is not one emoji name",
         ),
         (
-            "reactions = { working = \"white_check_mark\" }",
+            "reactions = { working = \"white_check_mark\", replied = \"white_check_mark\" }",
             "gateway.reactions: working and replied name the same emoji",
         ),
         (
-            "reactions = { working = \"eyes\" }",
-            "gateway.reactions: seen and working name the same emoji; `working` now marks the longer work after a quick reply",
+            "reactions = { seen = \"eyes\", working = \"eyes\" }",
+            "gateway.reactions: seen and working name the same emoji",
         ),
         (
-            "reactions = { queued = \"eyes\" }",
+            "reactions = { queued = \"eyes\", seen = \":eyes:\" }",
             "gateway.reactions: seen and queued name the same emoji",
         ),
         (

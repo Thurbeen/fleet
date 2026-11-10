@@ -1992,18 +1992,13 @@ impl Pass<'_, '_> {
         mark: Mark,
         on: bool,
     ) -> Option<Action> {
-        let names = self.input.defaults.reactions.as_ref()?;
-        let reaction = match mark {
-            Mark::Queued => &names.queued,
-            Mark::Seen => &names.seen,
-            Mark::Working => &names.working,
-            Mark::Replied => &names.replied,
-        };
+        // A stage whose name yielded to another key's shows no mark.
+        let reaction = self.input.defaults.reactions.as_ref()?.name(mark)?;
         Some(Action::React {
             account: account.to_string(),
             conversation: reference.clone(),
             message: message.to_string(),
-            reaction: reaction.clone(),
+            reaction: reaction.to_string(),
             on,
         })
     }
@@ -2212,7 +2207,14 @@ impl Pass<'_, '_> {
                 }
                 Some(_) => false,
             };
-            if pointless || !unsettled(&record) || self.input.defaults.reactions.is_none() {
+            let shown = parsed.as_ref().is_some_and(|(_, mark, _)| {
+                self.input
+                    .defaults
+                    .reactions
+                    .as_ref()
+                    .is_some_and(|r| r.name(*mark).is_some())
+            });
+            if pointless || !unsettled(&record) || !shown {
                 self.gw.posts.remove(&key);
                 continue;
             }

@@ -2889,6 +2889,53 @@ mod reactions {
     }
 
     #[test]
+    fn a_stage_that_shows_no_mark_plans_no_reaction_and_drops_its_record() {
+        let alex = (T0 + 300_000).to_string();
+        let k = react(&alex, "seen", true);
+        let mut gw = marked(&alex, Mark::Seen).unwrap();
+        gw.posts.insert(
+            k.clone(),
+            record("react", NOW - 40_000, Some(Observation::unknown("lost")), 1),
+        );
+        // `working = "eyes"`: the seen default yielded, so seen is off.
+        let off = GatewayDefaults {
+            reactions: Some(fleet_api::gateway::Reactions {
+                seen: None,
+                working: Some("eyes".into()),
+                ..fleet_api::gateway::Reactions::default()
+            }),
+            ..defaults()
+        };
+        let t = task(Some(gw), TaskStatus::default());
+        let (plan, gw) = run_with(&t, with_caps(conv(2, thread()), caps(true)), off.clone());
+        assert!(reacts(&plan).is_empty(), "{:#?}", plan.effects);
+        assert!(!gw.posts.contains_key(&k), "{gw:#?}");
+        // The mark still moves: working shows `eyes`, and nothing removes
+        // the seen reaction that never was.
+        let mut gw = gw;
+        gw.posts.insert(
+            key("comment/c1"),
+            record("post", NOW - 2_000, posted(NOW - 2_000), 1),
+        );
+        gw.posted.push("c1".into());
+        gw.declared = 1;
+        let st = TaskStatus {
+            declared: vec![json!({"kind": "Comment", "id": "c1", "text": ".", "more": true})],
+            ..TaskStatus::default()
+        };
+        let (plan, gw) = run_with(
+            &task(Some(gw), st),
+            with_caps(conv(2, thread()), caps(true)),
+            off,
+        );
+        assert_eq!(
+            reacts(&plan),
+            vec![(react(&alex, "working", true), "eyes".into(), true)]
+        );
+        assert_eq!(gw.reactions.marks[&alex], Mark::Working);
+    }
+
+    #[test]
     fn turning_reactions_off_forgets_the_marks_and_drops_the_records() {
         let alex = (T0 + 300_000).to_string();
         let k = react(&alex, "seen", true);

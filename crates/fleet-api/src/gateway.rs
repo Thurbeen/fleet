@@ -796,30 +796,77 @@ pub struct ReactionNames {
     pub queued: Option<String>,
 }
 
-/// The four reactions as the controllers read them.
+/// The four reactions as the controllers read them. `None`: that stage
+/// shows no mark, because its default names an emoji another key names
+/// explicitly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Reactions {
     /// Added when Fleet received a message: its Task was created, or the
     /// message was relayed to it.
-    pub seen: String,
+    pub seen: Option<String>,
     /// Added when the worker says more is coming; `seen` is removed then.
-    pub working: String,
+    pub working: Option<String>,
     /// Added once the worker's turn is over; `seen` or `working` is removed
     /// then.
-    pub replied: String,
+    pub replied: Option<String>,
     /// Added when admission accepts a message that must wait for its Task;
     /// replaced by `seen` once the Task exists.
-    pub queued: String,
+    pub queued: Option<String>,
 }
 
 impl Default for Reactions {
     fn default() -> Self {
         Reactions {
-            seen: DEFAULT_SEEN.into(),
-            working: DEFAULT_WORKING.into(),
-            replied: DEFAULT_REPLIED.into(),
-            queued: DEFAULT_QUEUED.into(),
+            seen: Some(DEFAULT_SEEN.into()),
+            working: Some(DEFAULT_WORKING.into()),
+            replied: Some(DEFAULT_REPLIED.into()),
+            queued: Some(DEFAULT_QUEUED.into()),
         }
+    }
+}
+
+impl Reactions {
+    /// The emoji name that shows `mark`, or `None` when that stage is off.
+    pub fn name(&self, mark: crate::talk::Mark) -> Option<&str> {
+        use crate::talk::Mark;
+        match mark {
+            Mark::Queued => self.queued.as_deref(),
+            Mark::Seen => self.seen.as_deref(),
+            Mark::Working => self.working.as_deref(),
+            Mark::Replied => self.replied.as_deref(),
+        }
+    }
+}
+
+/// Two emoji names that name one emoji: colons around a name do not count.
+fn same_emoji(a: &str, b: &str) -> bool {
+    a.trim_matches(':') == b.trim_matches(':')
+}
+
+impl ReactionNames {
+    /// Each key with its explicit name, if any, and its default.
+    fn keys(&self) -> [(&'static str, Option<&String>, &'static str); 4] {
+        [
+            ("seen", self.seen.as_ref(), DEFAULT_SEEN),
+            ("working", self.working.as_ref(), DEFAULT_WORKING),
+            ("replied", self.replied.as_ref(), DEFAULT_REPLIED),
+            ("queued", self.queued.as_ref(), DEFAULT_QUEUED),
+        ]
+    }
+
+    /// A key's name: the explicit one, else its default, unless another
+    /// key names that default explicitly. A default yields to an explicit
+    /// name, and its stage then shows no mark.
+    fn resolve(&self, key: &str) -> Option<String> {
+        let keys = self.keys();
+        let (_, explicit, default) = keys.iter().find(|(k, _, _)| *k == key)?;
+        if let Some(name) = explicit {
+            return Some((*name).clone());
+        }
+        let taken = keys
+            .iter()
+            .any(|(k, e, _)| *k != key && e.is_some_and(|e| same_emoji(e, default)));
+        (!taken).then(|| default.to_string())
     }
 }
 
@@ -829,15 +876,12 @@ impl ReactionsConfig {
         match self {
             ReactionsConfig::Enabled(false) => None,
             ReactionsConfig::Enabled(true) => Some(Reactions::default()),
-            ReactionsConfig::Names(n) => {
-                let base = Reactions::default();
-                Some(Reactions {
-                    seen: n.seen.clone().unwrap_or(base.seen),
-                    working: n.working.clone().unwrap_or(base.working),
-                    replied: n.replied.clone().unwrap_or(base.replied),
-                    queued: n.queued.clone().unwrap_or(base.queued),
-                })
-            }
+            ReactionsConfig::Names(n) => Some(Reactions {
+                seen: n.resolve("seen"),
+                working: n.resolve("working"),
+                replied: n.resolve("replied"),
+                queued: n.resolve("queued"),
+            }),
         }
     }
 }
@@ -1245,28 +1289,18 @@ impl GatewayConfig {
                     ));
                 }
             }
-            if let Some(r) = ReactionsConfig::Names(names.clone()).reactions() {
-                let all = [
-                    ("seen", &r.seen),
-                    ("working", &r.working),
-                    ("replied", &r.replied),
-                    ("queued", &r.queued),
-                ];
-                for (i, (a, x)) in all.iter().enumerate() {
-                    for (b, y) in &all[i + 1..] {
-                        if x.trim_matches(':') != y.trim_matches(':') {
-                            continue;
-                        }
-                        let mut why = format!("gateway.reactions: {a} and {b} name the same emoji");
-                        // `working` once named the mark `seen` has now.
-                        if (*a, *b) == ("seen", "working") && names.seen.is_none() {
-                            why.push_str(
-                                "; `working` now marks the longer work after a quick reply, \
-                                 and `seen` (default \"eyes\") marks a received message: \
-                                 set `seen` to that emoji and give `working` another one",
-                            );
-                        }
-                        return Err(why);
+            // Two keys that name one emoji explicitly are refused: a
+            // reaction is added and removed by its name. A default that
+            // another key names explicitly yields instead.
+            let keys = names.keys();
+            for (i, (a, x, _)) in keys.iter().enumerate() {
+                for (b, y, _) in &keys[i + 1..] {
+                    if let (Some(x), Some(y)) = (x, y)
+                        && same_emoji(x, y)
+                    {
+                        return Err(format!(
+                            "gateway.reactions: {a} and {b} name the same emoji"
+                        ));
                     }
                 }
             }
@@ -1445,14 +1479,15 @@ mod tests {
             c["reactions"] = v;
             serde_json::from_value(c).unwrap()
         };
+        let some = |n: &str| Some(n.to_string());
         assert_eq!(config().defaults().reactions, Some(Reactions::default()));
         assert_eq!(
             Reactions::default(),
             Reactions {
-                seen: "eyes".into(),
-                working: "hammer_and_wrench".into(),
-                replied: "white_check_mark".into(),
-                queued: "hourglass_flowing_sand".into(),
+                seen: some("eyes"),
+                working: some("hammer_and_wrench"),
+                replied: some("white_check_mark"),
+                queued: some("hourglass_flowing_sand"),
             }
         );
         assert_eq!(parse(json!(false)).defaults().reactions, None);
@@ -1464,57 +1499,62 @@ mod tests {
         assert_eq!(
             named.defaults().reactions,
             Some(Reactions {
-                seen: "eyes".into(),
-                working: "gear".into(),
-                replied: "white_check_mark".into(),
-                queued: "pause_button".into(),
+                seen: some("eyes"),
+                working: some("gear"),
+                replied: some("white_check_mark"),
+                queued: some("pause_button"),
             })
         );
         assert_eq!(named.validate(), Ok(()));
+        // A default yields to an explicit name: the unset key is off, and
+        // the config loads.
+        for (names, off) in [
+            (json!({"working": "eyes"}), "seen"),
+            (json!({"working": ":eyes:"}), "seen"),
+            (json!({"seen": "white_check_mark"}), "replied"),
+            (json!({"queued": "hammer_and_wrench"}), "working"),
+            (json!({"replied": "hourglass_flowing_sand"}), "queued"),
+        ] {
+            let c = parse(names.clone());
+            assert_eq!(c.validate(), Ok(()), "{names}");
+            let r = c.defaults().reactions.unwrap();
+            let got = [
+                ("seen", &r.seen),
+                ("working", &r.working),
+                ("replied", &r.replied),
+                ("queued", &r.queued),
+            ];
+            for (key, name) in got {
+                assert_eq!(name.is_none(), key == off, "{names}: {key} {name:?}");
+            }
+        }
+        let r = parse(json!({"working": "eyes"}))
+            .defaults()
+            .reactions
+            .unwrap();
+        assert_eq!(r.name(crate::talk::Mark::Seen), None);
+        assert_eq!(r.name(crate::talk::Mark::Working), Some("eyes"));
+        // Two explicit names for one emoji are refused.
         for (bad, why) in [
             (json!({"replied": ""}), "gateway.reactions.replied"),
             (
                 json!({"working": ":eyes:", "replied": "eyes"}),
-                "the same emoji",
+                "working and replied name the same emoji",
             ),
             (
-                json!({"working": "eyes", "replied": "eyes"}),
-                "the same emoji",
+                json!({"seen": "eyes", "working": "eyes"}),
+                "seen and working name the same emoji",
             ),
             (json!({"seen": "a b"}), "gateway.reactions.seen"),
-            (
-                json!({"seen": "white_check_mark"}),
-                "seen and replied name the same emoji",
-            ),
-            // A config written when `working` was the first mark: refused,
-            // with what to change.
-            (
-                json!({"working": "eyes"}),
-                "seen and working name the same emoji; `working` now marks the longer work",
-            ),
             (json!({"queued": " "}), "gateway.reactions.queued"),
             (
-                json!({"working": "hourglass_flowing_sand"}),
-                "working and queued name the same emoji",
-            ),
-            (
-                json!({"queued": ":white_check_mark:"}),
+                json!({"replied": "x", "queued": ":x:"}),
                 "replied and queued name the same emoji",
             ),
         ] {
             let err = parse(bad.clone()).validate().unwrap_err();
             assert!(err.contains(why), "{bad}: {err}");
         }
-        // Naming `seen` explicitly gets the plain message.
-        let err = parse(json!({"seen": "eyes", "working": "eyes"}))
-            .validate()
-            .unwrap_err();
-        assert_eq!(
-            err,
-            "gateway.reactions: seen and working name the same emoji"
-        );
-        let kept = parse(json!({"seen": "eyes", "working": "gear"}));
-        assert_eq!(kept.validate(), Ok(()));
         let mut c = serde_json::to_value(config()).unwrap();
         c["reactions"] = json!({"done": "x"});
         assert!(serde_json::from_value::<GatewayConfig>(c).is_err());

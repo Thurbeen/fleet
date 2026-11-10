@@ -71,9 +71,11 @@ What an adapter must guarantee:
 - **`gateway.reactions` names four reactions.** `queued` defaults to
   `hourglass_flowing_sand` (⏳), `seen` to `eyes` (👀), `working` to
   `hammer_and_wrench` (🛠️) and `replied` to `white_check_mark` (✅).
-  `reactions = false` turns all four off. The config is refused when a
-  name is empty or holds whitespace, when two names give the same emoji,
-  and when it has another key.
+  `reactions = false` turns all four off. A default yields to a name that
+  another key sets explicitly: the left-out key is then off, and its stage
+  shows no mark. The config is refused when a name is empty or holds
+  whitespace, when two keys name the same emoji explicitly, and when it has
+  another key.
 - **A `post` to a channel address opens no thread.** Every part of a split
   text is a top-level post in the channel. A `since` read of the channel
   address finds them.
