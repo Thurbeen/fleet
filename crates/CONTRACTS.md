@@ -630,17 +630,17 @@ the effect blindly. Guarantees, each with its test in
   be found, `NeedsAttention/PostUnconfirmed` and no repeat.
 - **Reactions at admission.** Where `gateway.reactions` is on and the
   account's capabilities say `reactions`, a create that answers `Created`
-  marks its trigger `working`; one that answers `WorkspaceBusy` marks its
+  marks its trigger `seen`; one that answers `WorkspaceBusy` marks its
   trigger, and each later admitted message the listener delivered while
   the create waits, `queued`. The pass that ties the Task marks each queued
-  message working: the working reaction added, the queued one removed; a
+  message seen: the seen reaction added, the queued one removed; a
   later pass only removes the queued reaction of a message still marked
-  queued. Admission's working reaction is tried once, never again, and
+  queued. Admission's seen reaction is tried once, never again, and
   its record is kept while the mark stands. A wait withdrawn, or a queued
   message that left the mirror, loses the queued reaction; a tie that ends
-  forgets the working marks. The marks are `status.reactions.marks`, and
+  forgets the seen marks. The marks are `status.reactions.marks`, and
   each reaction a keyed effect under
-  `conversation/<uid>/react/<message id>/<queued|working>/<on|off>`, best
+  `conversation/<uid>/react/<message id>/<queued|seen>/<on|off>`, best
   effort as GatewayController's: a queued reaction tried at most three
   times, none looked for, each dropped once settled, given up or made
   pointless, holding back nothing and raising no condition. Unknown
@@ -716,16 +716,21 @@ Guarantees, each with its test in `gateway_controller`,
   that may already append to the parent's inbox: a person, a `tasks =
   "any"` plugin, or a `tasks = "own"` plugin that created the parent. They
   never change afterwards.
-- **Reactions are best effort.** Each admitted message a relay delivers,
-  with no mark yet, is marked working and gets the working reaction, where
-  `gateway.reactions` is on and the account's capabilities say
-  `reactions`. A message the Conversation marked working at admission,
-  whose working reaction landed there, is marked working with no reaction
-  of the Task's; any other is reacted to as usual. A thread
-  post that lands marks every working message replied: the replied
-  reaction is added and the working one removed.
+- **Reactions are best effort, and follow the worker.** Each admitted
+  message a relay delivers, with no mark yet, is marked seen and gets the
+  seen reaction, where `gateway.reactions` is on and the account's
+  capabilities say `reactions`. A message the Conversation marked seen at
+  admission, whose seen reaction landed there, is marked seen with no
+  reaction of the Task's; any other is reacted to as usual. Seen and
+  working marks are open. The newest thread post that lands after them
+  moves every open mark: a Comment with `"more": true` to working, any
+  other post to replied. A `Working` declaration with an `id` moves every
+  open mark to working when it is read, except the marks its own pass's
+  relay made. A result for a generation not yet counted
+  (`reactions.result`) moves every open mark to replied. Each move adds
+  the new reaction and removes the old one; a mark never moves back.
   Each reaction is a keyed effect under
-  `task/<name>/<uid>/gateway/react/<message id>/<working|replied>/<on|off>`,
+  `task/<name>/<uid>/gateway/react/<message id>/<seen|working|replied>/<on|off>`,
   tried at most three times, never looked for, and dropped once settled or
   given up. A reaction holds back no relay and no post, and raises no
   condition. A message that leaves the mirror, a thread that is readably

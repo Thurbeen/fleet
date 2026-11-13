@@ -68,11 +68,14 @@ What an adapter must guarantee:
   `gateway.reactions` gives it. The adapter maps the name to what its
   platform takes. An adapter whose platform has no reactions answers
   `reactions = false`, and Fleet then calls no `react`.
-- **`gateway.reactions` names three reactions.** `queued` defaults to
-  `hourglass_flowing_sand` (⏳), `working` to `eyes` (👀) and `replied` to
-  `white_check_mark` (✅). `reactions = false` turns all three off. The
-  config is refused when a name is empty or holds whitespace, when two
-  names give the same emoji, and when it has another key.
+- **`gateway.reactions` names four reactions.** `queued` defaults to
+  `hourglass_flowing_sand` (⏳), `seen` to `eyes` (👀), `working` to
+  `hammer_and_wrench` (🛠️) and `replied` to `white_check_mark` (✅).
+  `reactions = false` turns all four off. A default yields to a name that
+  another key sets explicitly: the left-out key is then off, and its stage
+  shows no mark. The config is refused when a name is empty or holds
+  whitespace, when two keys name the same emoji explicitly, and when it has
+  another key.
 - **A `post` to a channel address opens no thread.** Every part of a split
   text is a top-level post in the channel. A `since` read of the channel
   address finds them.
@@ -241,8 +244,8 @@ It works over each [Conversation](../../resources/conversation.md):
   Task now holds that name,
 - sends one polite refusal per author who is not on the allowlist and
   mentions Fleet,
-- marks the trigger of a created Task working, and the messages of a
-  waiting request queued, then working when its Task is created, under
+- marks the trigger of a created Task seen, and the messages of a
+  waiting request queued, then seen when its Task is created, under
   `status.reactions`,
 - retires the thread after its retention: its Concluded Task, the
   directory the manager made for it, then the Conversation.
@@ -412,8 +415,8 @@ pub fn reconcile(&self, input: &GatewayInput<'_>) -> Result<Plan, StoreError>;
     the cursor land in one write.
   - `effects`: the `Open`, `Receive`, `Post`, `Log` and `React` actions
     whose intents the status carries. One pass plans at most one thread
-    effect and one log effect, and the reactions of its relay and of one
-    reply.
+    effect and one log effect, and the reactions of its relay and of
+    the moves of the open marks.
   - `remove_finalizer`: always `None`.
 
 It is a second controller over each [Task](../../resources/task.md). It
@@ -427,9 +430,10 @@ owns `status.gateway` and:
 - opens a thread for a Question from an untied Task,
 - records answers to Questions,
 - routes a child Task's words into its parent's inbox,
-- marks each relayed admitted message working, and replied once Fleet
-  posted in the thread. Where admission's working reaction on the message
-  landed, the join adds no second one.
+- marks each relayed admitted message seen, then working or replied as
+  the Task's posts, `Working` declarations and result say. Where
+  admission's seen reaction on the message landed, the join adds no
+  second one.
 
 #### Fields this controller owns
 
@@ -448,12 +452,12 @@ owns `status.gateway` and:
 | `ready` | The `uid` of each followed ChangeRequest whose ready notice was posted in the thread. |
 | `questions` | Per Question id, where and when it was posted. |
 | `gaps` | How many relays found messages dropped from the mirror. |
-| `reactions` | `marks`: per message id in the thread, `working` or `replied`, for the messages the mirror still holds. `replies`: the keys of the thread posts already counted against the working marks. |
+| `reactions` | `marks`: per message id in the thread, `seen`, `working` or `replied`, for the messages the mirror still holds. `replies`: the keys of the thread posts already counted against the open marks. `result`: the result generation already counted. |
 | `conditions` | `Tied`, `NeedsAttention`. |
 
 ConversationController owns `status.reactions` on a Conversation:
-`marks`, per message id, `queued` or `working`, for the messages the mirror
-still holds. A `working` mark there lasts while the tie lasts. Its reaction
+`marks`, per message id, `queued` or `seen`, for the messages the mirror
+still holds. A `seen` mark there lasts while the tie lasts. Its reaction
 records are in the Conversation's `status.effects`, with `intent.action`
 `react`.
 
@@ -523,13 +527,18 @@ A Task talks by declaring items in `status.declared` with
 | Kind | Fields | Tied Task | Untied Task | Child |
 | --- | --- | --- | --- | --- |
 | `Question` | `id`, `text` | Posted once. | Opens a thread, then is tied to it. | Sent to the parent's inbox. |
-| `Comment` | `id`, `text` | Posted once. | Skipped. | Sent to the parent's inbox. |
+| `Comment` | `id`, `text`, optional `more` | Posted once. Once it lands, it marks the open messages working when `more` is `true`, and replied otherwise. | Skipped. | Sent to the parent's inbox. |
+| `Working` | `id` | Posts nothing. Marks the open messages working when Fleet reads it. | Ignored. | Ignored. |
 | `Draft` | `id`, `title`, `text` or `url` | Logged once, as awaiting review. Never posted in the thread. | Logged the same way. | Sent to the parent's inbox, and logged. |
 | `ChangeRequest` | `url`, `name`, as today | Logged when followed, and each time its state moves. The thread gets one ready notice with the URL, the first time `everReady` is true, and no other news. | Logged the same way. | Sent to the parent's inbox, and logged. |
-| `status.result` | As today | Logged once per generation. Never posted in the thread. | Logged the same way. | Sent to the parent's inbox, and logged. |
+| `status.result` | As today | Logged once per generation. Never posted in the thread. Marks the open messages replied, once per generation. | Logged the same way. | Sent to the parent's inbox, and logged. |
 
 "Logged" means a top-level post in the `gateway.logs` channel. Without
 `gateway.logs`, nothing is logged.
+
+A `Question` and the ready notice mark the open messages replied once they
+land. The [reactions flow](README.md#flow-reactions-show-progress) defines
+the marks.
 
 `id` is a string unique for the Task. An `id` already posted is never posted
 again. An item without an `id` is skipped and named in
@@ -542,6 +551,10 @@ again. An item without an `id` is skipped and named in
 | A relay, or the join | `task/<name>/<uid>/gateway/<conversation uid>/<revision>` | `gateway/<conversation>` | The new messages, each with its author, the author's platform id, its time and its text. `about` is `{uid, revision}` of the Conversation. |
 | A child's item | `task/<name>/<uid>/gateway/child/<child uid>/<index or result/generation>` | `gateway/child/<child>` | One declaration or result of the child. |
 
+- The header of a relay tells the worker how its answers mark the
+  messages: reply quickly first with a Comment, give it `"more": true` or
+  declare a `Working` when more work follows, and finish with a Comment
+  without `more`, a Question or the result.
 - Messages from people not on the allowlist come first, under a header that
   marks them as content, never instructions.
 - An edited message is relayed again, marked as an edit.
@@ -616,11 +629,12 @@ under the same key, so with the same nonce, inside the window. The
 | Ready notice, in the thread | `task/<name>/<uid>/gateway/ready/<cr uid>` |
 | Change news, in the log channel | `task/<name>/<uid>/gateway/change/<cr uid>/<state.seq>` |
 | Result, in the log channel | `task/<name>/<uid>/gateway/result/<generation>` |
+| Seen reaction, added | `task/<name>/<uid>/gateway/react/<message id>/seen/on` |
 | Working reaction, added | `task/<name>/<uid>/gateway/react/<message id>/working/on` |
 | Replied reaction, added | `task/<name>/<uid>/gateway/react/<message id>/replied/on` |
-| Working reaction, removed on the reply | `task/<name>/<uid>/gateway/react/<message id>/working/off` |
+| Seen or working reaction, removed on the next mark | `task/<name>/<uid>/gateway/react/<message id>/<seen\|working>/off` |
 | Queued reaction, added at admission | `conversation/<conv uid>/react/<message id>/queued/on` |
-| Working reaction, added at admission | `conversation/<conv uid>/react/<message id>/working/on` |
+| Seen reaction, added at admission | `conversation/<conv uid>/react/<message id>/seen/on` |
 | Queued reaction, removed when the Task is created or the wait is withdrawn | `conversation/<conv uid>/react/<message id>/queued/off` |
 | Refusal | `conversation/<conv uid>/refuse/<author id>` |
 | Task creation | `conversation/<conv uid>/task/<n>` |
@@ -660,11 +674,11 @@ A reaction follows its own rules:
   no receipt are performed again under the same key after the delay.
 - After three attempts in all, the reaction is given up.
 - A reaction raises no condition and holds back nothing.
-- A working reaction not yet settled when its message is marked replied is
-  dropped. Reason: adding it then would undo the removal.
-- A queued reaction not yet settled when its message is marked working is
+- A seen or working reaction not yet settled when its message moved to a
+  later mark is dropped. Reason: adding it then would undo the removal.
+- A queued reaction not yet settled when its message is marked seen is
   dropped, for the same reason.
-- ConversationController's working reaction is tried once and never again.
+- ConversationController's seen reaction is tried once and never again.
   Its record stays while the mark stands, so the join can read whether it
   landed. Reason: a retry could land after the Task replied.
 - These rules hold for the reactions of ConversationController and of

@@ -1,6 +1,6 @@
 # Gateway controller
 
-Implemented. The installed binary has steps 1 to 12 below: the `[gateway]`
+Implemented. The installed binary has steps 1 to 13 below: the `[gateway]`
 key, the Gateway port, the `fleet-gateway` crate with its fake, Slack and
 Discord adapters, the `Conversation` and `Listener` kinds,
 ConversationController (the mirror, admission, Task creation in each
@@ -12,10 +12,10 @@ verbs. It has GatewayController's tie, the join and the relay,
 child's words reaching its parent's inbox. It posts what a tied Task
 declares, opens a thread for an untied Task's Question, and posts every
 Task's result and change news in the log channel. It marks an admitted
-request with a working reaction when admission starts its Task, or with a
+request with a seen reaction when admission starts its Task, or with a
 queued reaction while the request waits. It marks each message it relays
-with a working reaction, and with a replied reaction once Fleet posted in
-the thread. A wildcard route covers every channel that no other route
+with a seen reaction. The worker's answers then mark the message working
+or replied. A wildcard route covers every channel that no other route
 lists. A DM route covers every one-to-one DM with the bot, where a
 top-level message needs no mention. The listener programs stay outside
 Fleet.
@@ -90,7 +90,9 @@ to check the model.
    the next allowlisted message, marked as content, never instructions.
 7. The worker answers with declarations: a `Comment` or a `Question`.
    Fleet posts each one in the thread, in order, and never twice. The
-   worker holds no platform credential and names no destination.
+   worker holds no platform credential and names no destination. The
+   reactions on the person's message follow the worker's progress. See
+   [reactions show progress](#flow-reactions-show-progress).
 8. When a `ChangeRequest` the Task follows first leaves `draft`
    (`everReady` turns true), Fleet posts one notice in the thread with the
    change's URL. This is the only change news a thread gets.
@@ -157,35 +159,84 @@ no object.
 
 ## Flow: reactions show progress
 
+Each admitted message gets one mark at a time. Each new mark replaces the
+one before. The marks, with their default reactions, are:
+
+| Mark | Default | Meaning |
+| --- | --- | --- |
+| queued | ⏳ `hourglass_flowing_sand` | The request waits for the thread's directory (`WorkspaceBusy`). |
+| seen | 👀 `eyes` | Fleet received the message: its Task exists, or Fleet relayed the message to the Task. |
+| working | 🛠️ `hammer_and_wrench` | The worker replied quickly and said more is coming, or declared that it works. |
+| replied | ✅ `white_check_mark` | The worker's turn is over. |
+
+A message marked seen or working is an open message. The worker still owes
+it an answer.
+
+```text
+(admitted) ─► queued ─► seen ─┬──────────────► replied
+                 (wait)       └─► working ───► replied
+```
+
 1. Admission accepts a message that starts a Task. The trigger is that
    message.
 2. Fleet creates the Task. The create has one of two results:
-   - The Task is created. Fleet adds the working reaction, 👀 by default, to
-     the trigger.
+   - The Task is created. Fleet adds the seen reaction to the trigger.
    - The Task waits, because another Task holds the thread's directory.
-     Fleet adds the queued reaction, ⏳ by default, to the trigger.
+     Fleet adds the queued reaction to the trigger.
 3. While the Task waits, each later admitted message also gets the queued
    reaction.
 4. When the Task is created after a wait, each message with the queued
-   reaction gets the working reaction. Fleet removes its queued reaction.
+   reaction gets the seen reaction. Fleet removes its queued reaction.
 5. GatewayController relays admitted messages into the tied Task's inbox:
-   the join, or a later relay. Fleet adds the working reaction to each
+   the join, or a later relay. Fleet adds the seen reaction to each
    admitted message in that relay that has no reaction yet.
-6. The Task works, and declares a `Comment` or a `Question`, or a change it
-   follows becomes ready for review.
-7. Fleet posts in the thread for the Task.
-8. Each message in the thread that still has the working reaction gets the
-   replied reaction, ✅ by default. Fleet removes its working reaction.
+6. The worker replies quickly with a `Comment`. The Comment answers, or
+   says what the worker will do.
+7. Fleet posts the Comment in the thread. Then one of two things happens:
+   - The Comment has no `"more": true`. Each open message gets the replied
+     reaction. The quick reply was enough.
+   - The Comment has `"more": true`. Each open message gets the working
+     reaction. Fleet removes its seen reaction.
+8. The worker can also mark the open messages working without a post. It
+   declares `{"kind": "Working", "id": "<id>"}`.
+9. The worker finishes. One of these marks each open message replied:
+   - a Comment without `"more": true`, once Fleet posted it,
+   - a Question, once Fleet posted it,
+   - the ready notice of a change the Task follows, once Fleet posted it,
+   - the Task's result, through `fleet result`.
+10. Fleet adds the replied reaction and removes the seen or working
+    reaction.
 
 Rules:
 
 - Only an `Admitted` message gets a reaction. A `Context` message and
   Fleet's own posts get none.
-- Fleet adds the working reaction to a message once. The join adds no
-  working reaction where admission's working reaction landed.
-- Admission tries its working reaction once, when the Task is created.
+- A mark only moves forward: queued, seen, working, replied. A replied
+  message keeps its mark. A later message starts at seen.
+- Each move applies to every open message in the thread. A message that
+  is already working stays working when a Comment with `more` lands.
+- A move counts only what the worker could have read. A post that lands,
+  or a result, moves the messages marked before the relay of that pass. A
+  `Working` declaration does not move a message relayed in the same pass.
+- When several thread posts landed since the last move, the newest post
+  decides the mark.
+- A Task's result marks the open messages replied once per generation.
+  Fleet records the generation it counted in `status.gateway.reactions`.
+- A Question hands the turn to the person, so it marks replied. Reason:
+  the person's answer is the next turn, and its message gets its own seen
+  mark.
+- A `Working` declaration needs an `id`, unique for the Task. Reason:
+  `fleet declare` treats an identical object as a no-op, so a second
+  `Working` needs a new `id`. A `Working` declaration without an `id` is
+  skipped and raises `NeedsAttention/DeclarationInvalid`.
+- A `Working` declaration posts nothing. It is read in declaration order
+  with the Comments and Questions, so it waits behind a post that has not
+  landed.
+- Fleet adds the seen reaction to a message once. The join adds no seen
+  reaction where admission's seen reaction landed.
+- Admission tries its seen reaction once, when the Task is created.
   When that reaction fails, or the capabilities are Unknown then, the join
-  adds the working reaction instead. Reason: a late working reaction from
+  adds the seen reaction instead. Reason: a late seen reaction from
   admission could land after the Task replied, and stay.
 - Only a wait for the thread's directory (`WorkspaceBusy`) is queued. A
   create that is retried after a refusal, or whose outcome Fleet looks for,
@@ -200,7 +251,7 @@ Rules:
 - Only a thread post counts as a reply: a Question, a Comment or the ready
   notice. A log post does not count.
 - A message that is edited and relayed again keeps the mark it has. Fleet
-  marks it working only when it has no mark yet.
+  marks it seen only when it has no mark yet.
 - A message that leaves the mirror, removed or rotated out, gets nothing
   more.
 - Reactions are best effort. A reaction that fails or has an unknown
@@ -209,9 +260,17 @@ Rules:
 - Each reaction is a keyed effect: Fleet writes the intent first and the
   receipt after. A reaction is set, not counted, so a repeat after a crash
   changes nothing.
+- A stage whose reaction is off shows no mark, but its mark still moves.
+  For example, with `working = "eyes"` and no `seen`, the seen stage is
+  off: a received message shows nothing until the worker's answer.
 - `gateway.reactions = false` turns reactions off. An adapter whose
   platform has no reactions answers `reactions = false` in its
   capabilities, and Fleet then adds none.
+
+The worker learns this flow from every relay. Each relay entry tells it to
+reply quickly first, to mark the messages working when more is coming, and
+to finish with a final Comment, a Question or its result. See
+[inbox entries](interface.md#inbox-entries).
 
 ## Flow: a thread's end of life
 
@@ -432,10 +491,10 @@ In scope:
   answers,
 - routing a child Task's words to its parent,
 - the Slack and Discord adapters, the receive verb and the Listener,
-- marking an admitted request with a working reaction, or a queued one
+- marking an admitted request with a seen reaction, or a queued one
   while it waits for its Task,
-- marking a relayed message with a working reaction, and with a replied
-  reaction once Fleet posted in the thread.
+- marking a relayed message with a seen reaction, then with a working or
+  replied reaction as the worker's answers say.
 
 The Task controller pauses a conversation Task's idle session when the
 Task's TaskConfig sets `pauseAfterMs`. The next message for the Task resumes
@@ -476,7 +535,9 @@ Out of scope, deliberately:
 | Why does the Conversation record `direct`? | Admission reads the rule from the Conversation, not from each event. A history read does not say whether its chat is a DM, and some edit events do not either. |
 | Can a wildcard route use `mention = "top-level"`? | No. On every channel, it would make every top-level post of an allowlisted person a Task. |
 | Does a wildcard route change the listener digest or the Listener conditions? | No. The digest covers the account's own settings, not its routes. `Accepted` asks only whether some route uses the account, and a wildcard route does. |
-| Where does a mark live before the Task exists? | On the Conversation, under `status.reactions`. ConversationController owns admission, so it owns the queued mark and the first working mark. GatewayController owns every mark from the join on. |
+| Where does a mark live before the Task exists? | On the Conversation, under `status.reactions`. ConversationController owns admission, so it owns the queued mark and the first seen mark. GatewayController owns every mark from the join on. |
+| Why does the worker, not Fleet, decide between working and replied? | Only the worker knows whether its quick reply was enough. A reply is final by default, so a worker that says nothing more about it gets ✅, as before. |
+| Why is `working` a mark of its own, and not the first mark? | 👀 reads as "seen". A person needs to see the difference between "Fleet has the message" and "the worker started the longer work". |
 | Why are reactions best effort? | A reaction only shows progress. The relay and the post are what matter to the person, so a reaction never holds them back. A reaction is set, not counted, so a repeat is harmless and needs no marker. |
 | What if a platform cannot find Fleet's posts again? | Fleet never repeats a post whose outcome is unknown there. It raises `NeedsAttention/PostUnconfirmed`, and later posts to that thread wait for a person. |
 
@@ -497,7 +558,8 @@ and adds its crate edges, field managers and negative fixtures to
 | 6 | The Discord adapter through `curl`; `inbound = "discord-gateway"`, `messageContent` and `intents`; nonce recovery in ConversationController | `crates/fleet-gateway/src/discord.rs`, `fleet-api/src/gateway.rs`, `fleet-controllers/src/conversation.rs` | Truth tables in the adapter's unit tests; synthetic dispatches; `conversation_controller`; `e2e_gateway_discord` against the stub `curl` |
 | 7 | The log channel: `gateway.logs`; the `Log` action; a top-level `post` to a channel address; the port's `link`; Drafts, results and change news of every Task leave the thread, which keeps one ready notice per change | `fleet-api/src/gateway.rs`, `fleet-api/src/plan.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_logs`, `e2e_gateway_post` |
 | 8 | One directory per thread, and one end of life: a route's `dir` is a base directory; each thread's Tasks get `<dir>/<conversation name>`, which the manager creates through the runtime's `create_dir` and records; `WorkspaceBusy` only for a Task that holds the thread's own directory; an idle thread with a Concluded Task or none retires its Task, its recorded directory and its Conversation; `gateway.retainMs` defaults to seven days | `fleet-api/src/conversation.rs`, `fleet-api/src/runtime.rs`, `fleet-api/src/store.rs`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `fleet-runtime`, `fleet-store` | `conversation_controller`, `store_contract`, `e2e_gateway` |
-| 9 | Reactions: the port's `react` and the `reactions` capability; `[gateway] reactions`; the `React` action; a relayed admitted message marked working, and marked replied once a thread post lands; Slack's `reactions.add` and `reactions.remove`, Discord's own-reaction endpoints, the fake's record | `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_reactions`, `e2e_gateway`, `e2e_gateway_discord` |
-| 10 | Reactions at admission: the trigger marked working when its Task is created, or queued while it waits for the thread's directory; a waiting request's later admitted messages marked queued; queued replaced by working when the Task is created; `[gateway] reactions` `queued`; the Conversation's `status.reactions` and its `React` effects; the join takes those marks without a second reaction | `fleet-api/src/conversation.rs`, `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/conversation.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager` | `conversation_controller`, `gateway_controller`, `e2e_gateway_reactions` |
+| 9 | Reactions: the port's `react` and the `reactions` capability; `[gateway] reactions`; the `React` action; a relayed admitted message marked seen, and marked replied once a thread post lands; Slack's `reactions.add` and `reactions.remove`, Discord's own-reaction endpoints, the fake's record | `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager`, `crates/fleet-gateway` | `gateway_controller`, `e2e_gateway_reactions`, `e2e_gateway`, `e2e_gateway_discord` |
+| 10 | Reactions at admission: the trigger marked seen when its Task is created, or queued while it waits for the thread's directory; a waiting request's later admitted messages marked queued; queued replaced by seen when the Task is created; `[gateway] reactions` `queued`; the Conversation's `status.reactions` and its `React` effects; the join takes those marks without a second reaction | `fleet-api/src/conversation.rs`, `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/conversation.rs`, `fleet-controllers/src/gateway.rs`, `fleet-manager` | `conversation_controller`, `gateway_controller`, `e2e_gateway_reactions` |
 | 11 | The wildcard route: `"*"` in `channels`; an explicit channel id wins; the log channel stays uncovered; one wildcard route per account, with `mention = "required"`; a questions route needs a channel id | `fleet-api/src/gateway.rs`, `fleet-controllers/src/gateway.rs` | `fleet-api` unit tests, `gateway_controller`, `e2e_gateway_wildcard` |
 | 12 | The DM route: `"dm:*"` in `channels`; the port's `direct` on a delivery, Slack's `channel_type` `im`; the Conversation's `spec.direct`; a top-level DM starts a Task without a mention, and a stranger's earns the refusal; an explicit channel id wins; one DM route per account; never on Discord | `fleet-api/src/gateway.rs`, `fleet-api/src/conversation.rs`, `fleet-controllers/src/conversation.rs`, `fleet-manager`, `crates/fleet-gateway` | `fleet-api` unit tests, Slack truth tables, `conversation_controller`, `e2e_gateway_dm` |
+| 13 | Reactions that follow the worker: the seen mark takes the first mark's place; a Comment with `"more": true` or a `Working` declaration marks the open messages working; a final Comment, a Question, the ready notice or the result marks them replied; `[gateway] reactions` `seen`, and `working` defaults to `hammer_and_wrench`; every relay tells the worker the flow | `fleet-api/src/gateway.rs`, `fleet-api/src/talk.rs`, `fleet-controllers/src/conversation.rs`, `fleet-controllers/src/gateway.rs` | `fleet-api` unit tests, `gateway_controller`, `conversation_controller`, `e2e_gateway_reactions` |

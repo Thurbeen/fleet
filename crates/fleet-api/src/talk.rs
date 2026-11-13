@@ -42,6 +42,9 @@ pub const ROUTE_LABEL: &str = "gateway.fleet.dev/route";
 pub const DECLARED_QUESTION: &str = "Question";
 pub const DECLARED_COMMENT: &str = "Comment";
 pub const DECLARED_DRAFT: &str = "Draft";
+/// A declaration that marks the thread working without a post. It carries
+/// an `id`, so a second one is not a no-op of `fleet declare`.
+pub const DECLARED_WORKING: &str = "Working";
 
 /// An inbox entry holds at most this many bytes of messages: the newest
 /// are kept, and the entry says how many older ones remain on the platform.
@@ -163,8 +166,8 @@ pub struct GatewayStatus {
     /// How many relays found messages dropped from the mirror.
     #[serde(default)]
     pub gaps: u64,
-    /// The reactions on the thread's messages: which are marked working or
-    /// replied.
+    /// The reactions on the thread's messages: which are marked seen,
+    /// working or replied.
     #[serde(default, skip_serializing_if = "ReactionStatus::is_empty")]
     pub reactions: ReactionStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -178,9 +181,14 @@ pub enum Mark {
     /// Admitted, and waiting for its Task: the "queued" reaction. Only a
     /// Conversation marks a message queued.
     Queued,
-    /// Relayed to the Task, which is working on it: the "working" reaction.
+    /// Fleet received it: admitted with its Task created, or relayed to the
+    /// Task. The "seen" reaction.
+    Seen,
+    /// The worker said more is coming: a Comment with `more`, or a
+    /// `Working` declaration. The "working" reaction, and no "seen".
     Working,
-    /// Fleet posted in the thread since: the "replied" reaction, and no
+    /// The worker's turn is over: a final Comment, a Question, the ready
+    /// notice or its result. The "replied" reaction, and no "seen" or
     /// "working".
     Replied,
 }
@@ -190,6 +198,7 @@ impl Mark {
     pub fn as_str(self) -> &'static str {
         match self {
             Mark::Queued => "queued",
+            Mark::Seen => "seen",
             Mark::Working => "working",
             Mark::Replied => "replied",
         }
@@ -198,6 +207,7 @@ impl Mark {
     fn parse(word: &str) -> Option<Mark> {
         match word {
             "queued" => Some(Mark::Queued),
+            "seen" => Some(Mark::Seen),
             "working" => Some(Mark::Working),
             "replied" => Some(Mark::Replied),
             _ => None,
@@ -214,15 +224,26 @@ pub struct ReactionStatus {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub marks: BTreeMap<String, Mark>,
     /// The keys of the thread posts already counted: each landed before
-    /// every working mark, or replied to the marks standing when it landed.
-    /// Empty while no message is marked working.
+    /// every seen or working mark, or moved the marks standing when it
+    /// landed. Empty while no message is marked seen or working.
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub replies: std::collections::BTreeSet<String>,
+    /// The result generation that marked the thread replied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<u64>,
+}
+
+impl Mark {
+    /// Whether the worker still owes this message a reply: seen or
+    /// working.
+    pub fn is_open(self) -> bool {
+        matches!(self, Mark::Seen | Mark::Working)
+    }
 }
 
 impl ReactionStatus {
     pub fn is_empty(&self) -> bool {
-        self.marks.is_empty() && self.replies.is_empty()
+        self.marks.is_empty() && self.replies.is_empty() && self.result.is_none()
     }
 }
 
@@ -247,7 +268,7 @@ pub fn react_parse(rest: &str) -> Option<(String, Mark, bool)> {
 }
 
 /// The key of a reaction effect on a message:
-/// `task/<name>/<uid>/gateway/react/<message id>/<working|replied>/<on|off>`.
+/// `task/<name>/<uid>/gateway/react/<message id>/<seen|working|replied>/<on|off>`.
 pub fn react_key(name: &str, uid: &str, message: &str, mark: Mark, on: bool) -> String {
     post_key(name, uid, &react_suffix(message, mark, on))
 }

@@ -2472,7 +2472,7 @@ fn a_message_written_while_the_tied_task_is_deleted_waits_to_be_judged() {
 }
 
 // ----------------------------------------------------------------------
-// Reactions: admission marks a request working, or queued while it waits.
+// Reactions: admission marks a request seen, or queued while it waits.
 // ----------------------------------------------------------------------
 
 mod reactions {
@@ -2543,17 +2543,17 @@ mod reactions {
     }
 
     #[test]
-    fn a_created_task_marks_its_trigger_working_once_under_the_conversations_key() {
+    fn a_created_task_marks_its_trigger_seen_once_under_the_conversations_key() {
         let (plan, st) = run(
             &object(Some(&created())),
             with_caps(reacting(true), Some(task_object("t1"))),
         );
         assert_eq!(st.phase, Phase::Tied);
         assert_eq!(reacts(&plan), vec![r(MENTION, "eyes", true)]);
-        let key = react_key(UID, MENTION, Mark::Working, true);
+        let key = react_key(UID, MENTION, Mark::Seen, true);
         assert_eq!(plan.effects[0].key, key);
         assert_eq!(st.effects[&key].intent.action, "react");
-        assert_eq!(st.reactions.marks[MENTION], Mark::Working);
+        assert_eq!(st.reactions.marks[MENTION], Mark::Seen);
         // The message before it started nothing: the join marks it.
         assert_eq!(st.reactions.marks.len(), 1, "{:?}", st.reactions);
         // Landed: the record is kept for the join to read, and nothing is
@@ -2567,19 +2567,19 @@ mod reactions {
         );
         assert!(reacts(&plan).is_empty(), "{plan:?}");
         assert!(st.effects.contains_key(&key));
-        assert_eq!(st.reactions.marks[MENTION], Mark::Working);
+        assert_eq!(st.reactions.marks[MENTION], Mark::Seen);
     }
 
     #[test]
-    fn a_working_reaction_that_fails_is_never_tried_again_by_the_conversation() {
-        // The Task may reply before a retry lands, and a late working
+    fn a_seen_reaction_that_fails_is_never_tried_again_by_the_conversation() {
+        // The Task may reply before a retry lands, and a late seen
         // reaction would then stay beside the replied one: the join adds it
         // instead, under the Task's key.
         let (_, st) = run(
             &object(Some(&created())),
             with_caps(reacting(true), Some(task_object("t1"))),
         );
-        let key = react_key(UID, MENTION, Mark::Working, true);
+        let key = react_key(UID, MENTION, Mark::Seen, true);
         for outcome in [
             Observation::Known(EffectOutcome::Failed {
                 why: "rate limited".into(),
@@ -2602,8 +2602,69 @@ mod reactions {
             );
             assert!(reacts(&plan).is_empty(), "{plan:?}");
             assert_eq!(after.effects[&key].attempts, 1);
-            assert_eq!(after.reactions.marks[MENTION], Mark::Working);
+            assert_eq!(after.reactions.marks[MENTION], Mark::Seen);
         }
+    }
+
+    #[test]
+    fn a_seen_record_is_dropped_once_the_seen_stage_shows_no_mark() {
+        // Admission planned its seen reaction; the config then names `eyes`
+        // for `working`, so the seen default yields and the stage is off.
+        let (_, st) = run(
+            &object(Some(&created())),
+            with_caps(reacting(true), Some(task_object("t1"))),
+        );
+        let key = react_key(UID, MENTION, Mark::Seen, true);
+        assert!(st.effects.contains_key(&key), "{:?}", st.effects);
+        let mut off = defaults();
+        off.reactions = Some(fleet_api::gateway::Reactions {
+            seen: None,
+            working: Some("eyes".into()),
+            ..fleet_api::gateway::Reactions::default()
+        });
+        let (plan, after) = run_with(
+            &object(Some(&st)),
+            with_caps(reacting(true), Some(task_object("t1"))),
+            off,
+            NOW + 600_000,
+        );
+        assert!(reacts(&plan).is_empty(), "not retried: {plan:?}");
+        assert!(
+            !after.effects.contains_key(&key),
+            "dropped: {:?}",
+            after.effects
+        );
+    }
+
+    #[test]
+    fn a_working_mark_from_before_seen_existed_is_never_tried_again() {
+        // An older binary marked the trigger `working` with 👀. `working`
+        // now names 🛠️, so a retry would add the wrong emoji.
+        let (_, st) = run(
+            &object(Some(&created())),
+            with_caps(reacting(true), Some(task_object("t1"))),
+        );
+        let seen = react_key(UID, MENTION, Mark::Seen, true);
+        let old = react_key(UID, MENTION, Mark::Working, true);
+        let mut legacy = st.clone();
+        let mut record = legacy.effects.remove(&seen).unwrap();
+        record.receipt = Some(Receipt {
+            action: "react".into(),
+            at: NOW - 1_000,
+            outcome: Observation::Known(EffectOutcome::Failed {
+                why: "rate limited".into(),
+            }),
+        });
+        legacy.effects.insert(old.clone(), record);
+        legacy.reactions.marks.insert(MENTION.into(), Mark::Working);
+        let (plan, after) = run_with(
+            &object(Some(&legacy)),
+            with_caps(reacting(true), Some(task_object("t1"))),
+            defaults(),
+            NOW + 600_000,
+        );
+        assert!(reacts(&plan).is_empty(), "{plan:?}");
+        assert!(!after.effects.contains_key(&old), "{:?}", after.effects);
     }
 
     #[test]
@@ -2628,7 +2689,7 @@ mod reactions {
         assert_eq!(tied_st.phase, Phase::Tied);
         assert!(reacts(&plan).is_empty());
         assert_eq!(tied_st.reactions.marks[MENTION], Mark::Queued);
-        // A later pass: the queued reaction goes, and no working one is
+        // A later pass: the queued reaction goes, and no seen one is
         // added, since the join may have replied already.
         let (plan, st) = run(
             &object(Some(&tied_st)),
@@ -2657,7 +2718,7 @@ mod reactions {
     }
 
     #[test]
-    fn a_waiting_create_marks_its_request_queued_then_working_once_the_task_starts() {
+    fn a_waiting_create_marks_its_request_queued_then_seen_once_the_task_starts() {
         let mut st = busy();
         // A later admitted message, and a stranger's, both delivered.
         st.messages
@@ -2701,7 +2762,7 @@ mod reactions {
             }));
         let (plan, busy_again) = run(&object(Some(&again)), with_caps(reacting(true), None));
         assert!(reacts(&plan).is_empty(), "{plan:?}");
-        // Free: each queued message is marked working, queued removed.
+        // Free: each queued message is marked seen, queued removed.
         let mut free = busy_again.clone();
         free.task.as_mut().unwrap().state = TieState::Pending;
         free.effects.get_mut(&create_key()).unwrap().receipt =
@@ -2724,8 +2785,8 @@ mod reactions {
         ];
         want.sort();
         assert_eq!(got, want);
-        assert_eq!(st.reactions.marks[MENTION], Mark::Working);
-        assert_eq!(st.reactions.marks[&later], Mark::Working);
+        assert_eq!(st.reactions.marks[MENTION], Mark::Seen);
+        assert_eq!(st.reactions.marks[&later], Mark::Seen);
     }
 
     #[test]
@@ -2851,9 +2912,9 @@ mod reactions {
     }
 
     #[test]
-    fn an_orphaned_thread_forgets_the_working_marks_of_its_old_task() {
+    fn an_orphaned_thread_forgets_the_seen_marks_of_its_old_task() {
         let mut st = tied();
-        st.reactions.marks.insert(MENTION.into(), Mark::Working);
+        st.reactions.marks.insert(MENTION.into(), Mark::Seen);
         st.messages
             .push(stored(person(ALEX, T0 + 300_000, "<@B0FLEET001> hi"), 1));
         st.judged = 1;

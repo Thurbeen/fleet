@@ -3,7 +3,7 @@
 //! history and the Task the thread is tied to, it numbers what is new,
 //! keeps the tie honest, admits each message by the route's rules, starts
 //! one Task for an admitted message that meets the mention rule, refuses a
-//! stranger once, marks an admitted request queued or working with a
+//! stranger once, marks an admitted request queued or seen with a
 //! best-effort reaction, and retires the object after its retention.
 //!
 //! Pure: it reads the Conversation and what the probes saw, and returns a
@@ -1454,7 +1454,7 @@ impl Pass<'_, '_> {
     }
 
     // ------------------------------------------------------------------
-    // Reactions: an admitted request is marked queued or working.
+    // Reactions: an admitted request is marked queued or seen.
     // ------------------------------------------------------------------
 
     /// The marks admission makes before a Task has the thread's messages,
@@ -1462,15 +1462,15 @@ impl Pass<'_, '_> {
     ///
     /// - a create that waits for the thread's directory marks its trigger,
     ///   and every admitted message after it, queued;
-    /// - the Task tied on this pass marks its trigger working, and every
-    ///   queued message working in place of queued, in the write the join
-    ///   reads; the working reaction is tried this once, never again, so it
+    /// - the Task tied on this pass marks its trigger seen, and every
+    ///   queued message seen in place of queued, in the write the join
+    ///   reads; the seen reaction is tried this once, never again, so it
     ///   cannot land after the Task replied;
     /// - a queued message the tie pass could not mark loses its queued
-    ///   reaction later, and the join adds the working one;
+    ///   reaction later, and the join adds the seen one;
     /// - a wait withdrawn, or a queued message that left the mirror, loses
     ///   the queued reaction;
-    /// - a tie that ends forgets the working marks, which GatewayController
+    /// - a tie that ends forgets the seen marks, which GatewayController
     ///   then owns.
     ///
     /// Reactions off, or a platform without them, forget every mark.
@@ -1518,13 +1518,13 @@ impl Pass<'_, '_> {
             Some(TieState::Created) if self.tied_now => {
                 let queued: Vec<String> = self.marked(Mark::Queued);
                 for id in queued {
-                    self.mark(&id, Mark::Working);
+                    self.mark(&id, Mark::Seen);
                 }
                 if let Some(id) = self.started.clone()
                     && held.contains(&id)
                     && !self.st.reactions.marks.contains_key(&id)
                 {
-                    self.mark(&id, Mark::Working);
+                    self.mark(&id, Mark::Seen);
                 }
             }
             Some(TieState::Created) => {
@@ -1541,7 +1541,7 @@ impl Pass<'_, '_> {
                     self.st.reactions.marks.remove(&id);
                     self.plan_react(&id, Mark::Queued, false);
                 }
-                self.st.reactions.marks.retain(|_, m| *m != Mark::Working);
+                self.st.reactions.marks.retain(|_, m| *m == Mark::Queued);
             }
         }
         self.retry_reactions();
@@ -1590,7 +1590,7 @@ impl Pass<'_, '_> {
     }
 
     /// Move a message to `mark`, with the reactions that takes: queued is
-    /// added; working is added, and a queued reaction removed.
+    /// added; seen is added, and a queued reaction removed.
     fn mark(&mut self, id: &str, mark: Mark) {
         let before = self.st.reactions.marks.insert(id.to_string(), mark);
         self.plan_react(id, mark, true);
@@ -1610,18 +1610,14 @@ impl Pass<'_, '_> {
     }
 
     fn react_action(&self, message: &str, mark: Mark, on: bool) -> Option<Action> {
-        let names = self.input.defaults.reactions.as_ref()?;
+        // A stage whose name yielded to another key's shows no mark.
+        let reaction = self.input.defaults.reactions.as_ref()?.name(mark)?;
         let reference = self.st.reference.clone()?;
-        let reaction = match mark {
-            Mark::Queued => &names.queued,
-            Mark::Working => &names.working,
-            Mark::Replied => &names.replied,
-        };
         Some(Action::React {
             account: self.spec.account.clone(),
             conversation: reference,
             message: message.to_string(),
-            reaction: reaction.clone(),
+            reaction: reaction.to_string(),
             on,
         })
     }
@@ -1648,18 +1644,31 @@ impl Pass<'_, '_> {
             let parsed = react_of(&uid, &key);
             let pointless = match &parsed {
                 None => true,
+                // Admission marks only queued and seen. Another mark here
+                // was written when `working` named the first mark: its
+                // reaction now names another emoji, so it is not retried.
+                Some((_, Mark::Working | Mark::Replied, _)) => true,
                 Some((id, mark, true)) => self.st.reactions.marks.get(id) != Some(mark),
                 Some((id, Mark::Queued, false)) => {
                     self.st.reactions.marks.get(id) == Some(&Mark::Queued)
                 }
                 Some(_) => false,
             };
+            // A stage that shows no mark leaves nothing to retry.
+            let shown = parsed.as_ref().is_some_and(|(_, mark, _)| {
+                self.input
+                    .defaults
+                    .reactions
+                    .as_ref()
+                    .is_some_and(|r| r.name(*mark).is_some())
+            });
+            let pointless = pointless || !shown;
             let unsettled = match record.receipt.as_ref().map(|r| &r.outcome) {
                 None | Some(Observation::Unknown { .. }) => true,
                 Some(Observation::Known(EffectOutcome::Failed { .. })) => true,
                 Some(Observation::Known(_)) => false,
             };
-            if matches!(parsed, Some((_, Mark::Working, true))) {
+            if matches!(parsed, Some((_, Mark::Seen, true))) {
                 // Tried once, on the tie pass: kept while the mark stands,
                 // so the join can read whether it landed, and never again.
                 if pointless {

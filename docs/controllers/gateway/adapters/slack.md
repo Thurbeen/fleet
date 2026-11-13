@@ -21,8 +21,8 @@ On the Slack side, the operator does these steps:
    `groups:history`[^slack-message], and `message_metadata:read`. History
    reads need the last scope to return Fleet's marker[^slack-metadata].
    Add `reactions:write`, so Fleet can mark a person's message queued,
-   working and replied[^slack-react-add][^slack-react-remove]. Without it, every
-   reaction fails, and relays and posts go on.
+   seen, working and replied[^slack-react-add][^slack-react-remove].
+   Without it, every reaction fails, and relays and posts go on.
 3. Subscribe the app to the `message.channels` and `message.groups`
    events[^slack-message].
 4. Choose the listener's transport, and set `inbound` to match:
@@ -188,7 +188,7 @@ first, so that a failing account answers Unknown.
 | `post` | `chat.postMessage` with `thread_ts`, one `markdown` block, a `mrkdwn` `text`, and `unfurl_links` and `unfurl_media` off[^slack-post]. |
 | `open` | `chat.postMessage` without `thread_ts`. The new thread's address is the channel and the returned `ts`. Later chunks of a split text reply to it. |
 | `post` to a channel address | `chat.postMessage` without `thread_ts`, for every chunk: a log post starts no thread. A `since` read of the channel uses `conversations.history`. |
-| `react` | `reactions.add` to add, `reactions.remove` to remove, with `channel`, `timestamp` (the message's `ts`) and `name`[^slack-react-add][^slack-react-remove]. `name` is Slack's emoji name, such as `eyes` or `white_check_mark`; surrounding colons are stripped. Both methods list JSON and form bodies as accepted. The adapter sends form arguments, as it does for every method other than `chat.*`. `already_reacted` and `no_reaction` mean the reaction already stands as asked: a Known success. |
+| `react` | `reactions.add` to add, `reactions.remove` to remove, with `channel`, `timestamp` (the message's `ts`) and `name`[^slack-react-add][^slack-react-remove]. `name` is Slack's emoji name, such as `eyes`, `hammer_and_wrench` or `white_check_mark`; surrounding colons are stripped. Both methods list JSON and form bodies as accepted. The adapter sends form arguments, as it does for every method other than `chat.*`. `already_reacted` and `no_reaction` mean the reaction already stands as asked: a Known success. |
 | `link` | None. A Slack permalink needs the workspace's domain, which only a `chat.getPermalink` call gives, so a log post names a Slack thread by its address. |
 | Marker | `{"event_type": "fleet_post", "event_payload": {"key": "<intent key>"}}`[^slack-post]. History reads it back[^slack-metadata]. |
 | Idempotency | None on `chat.postMessage`: `client_msg_id` is not an argument[^slack-post]. Recovery uses the marker in a later `since` read. |
@@ -275,7 +275,7 @@ These points are **unverified**:
 | `Resolved` is Unknown: `auth.test: invalid_auth` or a similar error | The curl config holds no valid bot token. | Fix the token in the curl config. |
 | `InboundReady` is True, but no message arrives | The bot is not in the channel, or the app has no message subscriptions. | Invite the bot. Subscribe to `message.channels` and `message.groups`. |
 | A post fails with `chat.postMessage: not_in_channel` | The bot is not a member of the channel. | Invite the bot to the channel. |
-| A message gets no ⏳, 👀 or ✅, and the manager's report names `reactions.add: missing_scope` | The app lacks `reactions:write`. | Add the scope, and reinstall the app. |
+| A message gets no ⏳, 👀, 🛠️ or ✅, and the manager's report names `reactions.add: missing_scope` | The app lacks `reactions:write`. | Add the scope, and reinstall the app. |
 | `NeedsAttention/PostUnconfirmed` | A post stayed Unknown, and no recovery read found its key. | Check the thread, then act as the [Conversation](../../../resources/conversation.md) describes. |
 
 [^slack-limits2025]: <https://docs.slack.dev/changelog/2025/05/29/rate-limit-changes-for-non-marketplace-apps>

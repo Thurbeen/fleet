@@ -19,8 +19,8 @@ An adapter's `post` carries ConversationController's refusals and busy
 notices, GatewayController's posts for a tied Task, and its top-level log
 posts in the `gateway.logs` channel. An adapter's `open` carries a Question
 that opens a thread. An adapter's `react` adds and removes Fleet's queued,
-working and replied reactions on a person's message. An adapter's `link` names a
-thread in a log post. The [Gateway controller](../README.md) lists what is
+seen, working and replied reactions on a person's message. An adapter's
+`link` names a thread in a log post. The [Gateway controller](../README.md) lists what is
 built.
 
 ## Common rules

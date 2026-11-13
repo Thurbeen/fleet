@@ -2545,7 +2545,7 @@ mod reactions {
     }
 
     #[test]
-    fn the_join_marks_each_admitted_message_working_and_nothing_else() {
+    fn the_join_marks_each_admitted_message_seen_and_nothing_else() {
         let t = task(tied(), TaskStatus::default());
         let mut messages = thread();
         let mut own = msg(T0 + 400_000, 1, BOT, AuthorKind::Fleet, "Looking.");
@@ -2556,14 +2556,14 @@ mod reactions {
         let alex = (T0 + 300_000).to_string();
         assert_eq!(
             reacts(&plan),
-            vec![(react(&alex, "working", true), "eyes".into(), true)],
+            vec![(react(&alex, "seen", true), "eyes".into(), true)],
             "context and Fleet's own post get nothing"
         );
         assert_eq!(
             gw.reactions.marks,
-            BTreeMap::from([(alex.clone(), Mark::Working)])
+            BTreeMap::from([(alex.clone(), Mark::Seen)])
         );
-        assert_eq!(gw.posts[&react(&alex, "working", true)].attempts, 1);
+        assert_eq!(gw.posts[&react(&alex, "seen", true)].attempts, 1);
         // The probes ask the account's capabilities for the relay to come.
         let input = GatewayInput {
             task: &t,
@@ -2582,27 +2582,27 @@ mod reactions {
     }
 
     #[test]
-    fn the_join_adds_no_working_reaction_admission_saw_land_and_adds_any_other() {
+    fn the_join_adds_no_seen_reaction_admission_saw_land_and_adds_any_other() {
         let t = task(tied(), TaskStatus::default());
         let alex = (T0 + 300_000).to_string();
-        let conv_key = format!("conversation/conv-uid/react/{alex}/working/on");
+        let conv_key = format!("conversation/conv-uid/react/{alex}/seen/on");
         let landed = Some(Observation::Known(EffectOutcome::Reacted {
             already: false,
         }));
         let failed = Some(Observation::Known(EffectOutcome::Failed {
             why: "rate limited".into(),
         }));
-        // (the Conversation's mark, its working record's outcome, whether
+        // (the Conversation's mark, its seen record's outcome, whether
         // the join reacts itself)
         for (admitted, outcome, reacts_itself) in [
-            (Some(Mark::Working), landed.clone(), false),
-            (Some(Mark::Working), failed, true),
+            (Some(Mark::Seen), landed.clone(), false),
+            (Some(Mark::Seen), failed, true),
             (
-                Some(Mark::Working),
+                Some(Mark::Seen),
                 Some(Observation::unknown("timed out")),
                 true,
             ),
-            (Some(Mark::Working), None, true),
+            (Some(Mark::Seen), None, true),
             (Some(Mark::Queued), landed, true),
         ] {
             let mut c = conv(1, thread());
@@ -2617,17 +2617,17 @@ mod reactions {
             let what = format!("{admitted:?}, reacts itself: {reacts_itself}");
             assert_eq!(plan.appends.len(), 1, "the join goes out: {what}");
             let want = if reacts_itself {
-                vec![(react(&alex, "working", true), "eyes".into(), true)]
+                vec![(react(&alex, "seen", true), "eyes".into(), true)]
             } else {
                 Vec::new()
             };
             assert_eq!(reacts(&plan), want, "{what}");
             assert_eq!(
                 gw.reactions.marks,
-                BTreeMap::from([(alex.clone(), Mark::Working)]),
+                BTreeMap::from([(alex.clone(), Mark::Seen)]),
                 "{what}"
             );
-            // A thread post then replies to it, as to any working mark.
+            // A thread post then replies to it, as to any seen mark.
             let mut replied = gw.clone();
             for r in replied.posts.values_mut() {
                 r.receipt = Some(Receipt {
@@ -2649,7 +2649,7 @@ mod reactions {
                         "white_check_mark".into(),
                         true
                     ),
-                    (react(&alex, "working", false), "eyes".into(), false),
+                    (react(&alex, "seen", false), "eyes".into(), false),
                 ],
                 "{what}"
             );
@@ -2689,7 +2689,7 @@ mod reactions {
     #[test]
     fn an_edit_of_a_marked_message_is_relayed_without_a_second_mark() {
         let alex = (T0 + 300_000).to_string();
-        for mark in [Mark::Working, Mark::Replied] {
+        for mark in [Mark::Seen, Mark::Replied] {
             let t = task(marked(&alex, mark), TaskStatus::default());
             let mut edited = person(T0 + 300_000, 3, ALEX, "<@B0FLEET001> the weekly one");
             edited.first_seq = 1;
@@ -2701,10 +2701,10 @@ mod reactions {
     }
 
     #[test]
-    fn a_thread_post_that_lands_marks_every_working_message_replied() {
+    fn a_thread_post_that_lands_marks_every_seen_message_replied() {
         let alex = (T0 + 300_000).to_string();
-        let mut gw = marked(&alex, Mark::Working).unwrap();
-        gw.reactions.marks.insert(T0.to_string(), Mark::Working);
+        let mut gw = marked(&alex, Mark::Seen).unwrap();
+        gw.reactions.marks.insert(T0.to_string(), Mark::Seen);
         gw.reactions.replies.insert(key("comment/c0"));
         gw.posts.insert(
             key("comment/c0"),
@@ -2730,14 +2730,14 @@ mod reactions {
                 "white_check_mark".to_string(),
                 true,
             ),
-            (react(&alex, "working", false), "eyes".to_string(), false),
+            (react(&alex, "seen", false), "eyes".to_string(), false),
             (
                 react(&T0.to_string(), "replied", true),
                 "white_check_mark".to_string(),
                 true,
             ),
             (
-                react(&T0.to_string(), "working", false),
+                react(&T0.to_string(), "seen", false),
                 "eyes".to_string(),
                 false,
             ),
@@ -2758,7 +2758,7 @@ mod reactions {
     #[test]
     fn a_post_counted_before_the_marks_and_a_log_post_reply_to_nothing() {
         let alex = (T0 + 300_000).to_string();
-        let mut gw = marked(&alex, Mark::Working).unwrap();
+        let mut gw = marked(&alex, Mark::Seen).unwrap();
         gw.reactions.replies.insert(key("comment/c0"));
         gw.posts.insert(
             key("comment/c0"),
@@ -2774,7 +2774,7 @@ mod reactions {
         assert!(!GatewayController::due(&t, NOW));
         let (plan, gw) = run(&t, with_caps(conv(2, messages), caps(true)));
         assert!(reacts(&plan).is_empty(), "{:#?}", plan.effects);
-        assert_eq!(gw.reactions.marks[&alex], Mark::Working);
+        assert_eq!(gw.reactions.marks[&alex], Mark::Seen);
     }
 
     #[test]
@@ -2786,7 +2786,7 @@ mod reactions {
         );
         let t = task(Some(gw), TaskStatus::default());
         let (plan, gw) = run(&t, with_caps(conv(1, thread()), caps(true)));
-        assert_eq!(reacts(&plan).len(), 1, "one working mark");
+        assert_eq!(reacts(&plan).len(), 1, "one seen mark");
         assert_eq!(
             gw.reactions.replies.iter().cloned().collect::<Vec<_>>(),
             vec![key("comment/c0")]
@@ -2802,7 +2802,7 @@ mod reactions {
     #[test]
     fn a_message_that_left_the_mirror_gets_nothing_more() {
         let alex = (T0 + 300_000).to_string();
-        let mut gw = marked(&alex, Mark::Working).unwrap();
+        let mut gw = marked(&alex, Mark::Seen).unwrap();
         gw.posts.insert(
             key("comment/c1"),
             record("post", NOW - 2_000, posted(NOW - 2_000), 1),
@@ -2820,7 +2820,7 @@ mod reactions {
     #[test]
     fn a_reaction_is_tried_again_after_the_delay_three_times_at_most_and_never_raises() {
         let alex = (T0 + 300_000).to_string();
-        let k = react(&alex, "working", true);
+        let k = react(&alex, "seen", true);
         let failed = || {
             Some(Observation::Known(EffectOutcome::Failed {
                 why: "no".into(),
@@ -2835,7 +2835,7 @@ mod reactions {
             (lost(), 3, NOW - 40_000, false),
             (failed(), 3, NOW - 40_000, false),
         ] {
-            let mut gw = marked(&alex, Mark::Working).unwrap();
+            let mut gw = marked(&alex, Mark::Seen).unwrap();
             gw.posts
                 .insert(k.clone(), record("react", at, outcome.clone(), attempts));
             let t = task(Some(gw), TaskStatus::default());
@@ -2860,7 +2860,7 @@ mod reactions {
     #[test]
     fn a_landed_reaction_is_dropped_and_a_pointless_one_is_not_tried_again() {
         let alex = (T0 + 300_000).to_string();
-        let working = react(&alex, "working", true);
+        let seen = react(&alex, "seen", true);
         let replied = react(&alex, "replied", true);
         let mut gw = marked(&alex, Mark::Replied).unwrap();
         gw.posts.insert(
@@ -2874,25 +2874,72 @@ mod reactions {
                 1,
             ),
         );
-        // Its working reaction never answered, and the message is replied
+        // Its seen reaction never answered, and the message is replied
         // to since: adding it now would undo the removal.
         gw.posts.insert(
-            working.clone(),
+            seen.clone(),
             record("react", NOW - 40_000, Some(Observation::unknown("lost")), 1),
         );
         let t = task(Some(gw), TaskStatus::default());
         let (plan, gw) = run(&t, with_caps(conv(2, thread()), caps(true)));
         assert!(reacts(&plan).is_empty(), "{:#?}", plan.effects);
         assert!(!gw.posts.contains_key(&replied));
-        assert!(!gw.posts.contains_key(&working));
+        assert!(!gw.posts.contains_key(&seen));
         assert_eq!(gw.reactions.marks[&alex], Mark::Replied);
+    }
+
+    #[test]
+    fn a_stage_that_shows_no_mark_plans_no_reaction_and_drops_its_record() {
+        let alex = (T0 + 300_000).to_string();
+        let k = react(&alex, "seen", true);
+        let mut gw = marked(&alex, Mark::Seen).unwrap();
+        gw.posts.insert(
+            k.clone(),
+            record("react", NOW - 40_000, Some(Observation::unknown("lost")), 1),
+        );
+        // `working = "eyes"`: the seen default yielded, so seen is off.
+        let off = GatewayDefaults {
+            reactions: Some(fleet_api::gateway::Reactions {
+                seen: None,
+                working: Some("eyes".into()),
+                ..fleet_api::gateway::Reactions::default()
+            }),
+            ..defaults()
+        };
+        let t = task(Some(gw), TaskStatus::default());
+        let (plan, gw) = run_with(&t, with_caps(conv(2, thread()), caps(true)), off.clone());
+        assert!(reacts(&plan).is_empty(), "{:#?}", plan.effects);
+        assert!(!gw.posts.contains_key(&k), "{gw:#?}");
+        // The mark still moves: working shows `eyes`, and nothing removes
+        // the seen reaction that never was.
+        let mut gw = gw;
+        gw.posts.insert(
+            key("comment/c1"),
+            record("post", NOW - 2_000, posted(NOW - 2_000), 1),
+        );
+        gw.posted.push("c1".into());
+        gw.declared = 1;
+        let st = TaskStatus {
+            declared: vec![json!({"kind": "Comment", "id": "c1", "text": ".", "more": true})],
+            ..TaskStatus::default()
+        };
+        let (plan, gw) = run_with(
+            &task(Some(gw), st),
+            with_caps(conv(2, thread()), caps(true)),
+            off,
+        );
+        assert_eq!(
+            reacts(&plan),
+            vec![(react(&alex, "working", true), "eyes".into(), true)]
+        );
+        assert_eq!(gw.reactions.marks[&alex], Mark::Working);
     }
 
     #[test]
     fn turning_reactions_off_forgets_the_marks_and_drops_the_records() {
         let alex = (T0 + 300_000).to_string();
-        let k = react(&alex, "working", true);
-        let mut gw = marked(&alex, Mark::Working).unwrap();
+        let k = react(&alex, "seen", true);
+        let mut gw = marked(&alex, Mark::Seen).unwrap();
         gw.posts.insert(
             k.clone(),
             record("react", NOW - 40_000, Some(Observation::unknown("lost")), 1),
@@ -2910,6 +2957,229 @@ mod reactions {
         assert!(gw.reactions.is_empty());
         assert!(!gw.posts.contains_key(&k));
     }
+
+    /// Alex's and the other message, both marked seen, and a Comment `c1`
+    /// that landed since: `more` says whether it promises more work.
+    fn comment_landed(more: Option<bool>) -> (Object, String) {
+        let alex = (T0 + 300_000).to_string();
+        let mut gw = marked(&alex, Mark::Seen).unwrap();
+        gw.reactions.marks.insert(T0.to_string(), Mark::Seen);
+        gw.posts.insert(
+            key("comment/c1"),
+            record("post", NOW - 2_000, posted(NOW - 2_000), 1),
+        );
+        gw.posted.push("c1".into());
+        let mut c1 = json!({"kind": "Comment", "id": "c1", "text": "Looking."});
+        if let Some(more) = more {
+            c1["more"] = json!(more);
+        }
+        gw.declared = 1;
+        let st = TaskStatus {
+            declared: vec![c1],
+            ..TaskStatus::default()
+        };
+        (task(Some(gw), st), alex)
+    }
+
+    fn sorted(mut v: Vec<(String, String, bool)>) -> Vec<(String, String, bool)> {
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn a_comment_with_more_marks_every_seen_message_working_and_one_without_replied() {
+        for (more, mark, word, emoji) in [
+            (Some(true), Mark::Working, "working", "hammer_and_wrench"),
+            (Some(false), Mark::Replied, "replied", "white_check_mark"),
+            (None, Mark::Replied, "replied", "white_check_mark"),
+        ] {
+            let (t, alex) = comment_landed(more);
+            assert!(GatewayController::due(&t, NOW), "{more:?}");
+            let mut messages = thread();
+            messages.iter_mut().for_each(|m| m.seq = 2);
+            let (plan, gw) = run(&t, with_caps(conv(2, messages), caps(true)));
+            let mut want = Vec::new();
+            for id in [alex.clone(), T0.to_string()] {
+                want.push((react(&id, word, true), emoji.to_string(), true));
+                want.push((react(&id, "seen", false), "eyes".to_string(), false));
+            }
+            assert_eq!(sorted(reacts(&plan)), sorted(want), "{more:?}");
+            assert!(gw.reactions.marks.values().all(|m| *m == mark), "{gw:#?}");
+            // Working keeps the post counted, so it moves nothing again.
+            if mark == Mark::Working {
+                assert_eq!(
+                    gw.reactions.replies.iter().cloned().collect::<Vec<_>>(),
+                    vec![key("comment/c1")]
+                );
+                let mut gw = gw;
+                gw.posts.retain(|k, _| !k.contains("/react/"));
+                let st = decode_status(&t);
+                assert!(!GatewayController::due(
+                    &task(
+                        Some(gw),
+                        TaskStatus {
+                            gateway: None,
+                            ..st
+                        }
+                    ),
+                    NOW
+                ));
+            }
+        }
+    }
+
+    fn decode_status(t: &Object) -> TaskStatus {
+        serde_json::from_value(t.status.clone()).unwrap()
+    }
+
+    #[test]
+    fn a_later_final_comment_moves_working_to_replied() {
+        let alex = (T0 + 300_000).to_string();
+        let mut gw = marked(&alex, Mark::Working).unwrap();
+        gw.reactions.replies.insert(key("comment/c1"));
+        gw.posts.insert(
+            key("comment/c1"),
+            record("post", NOW - 9_000, posted(NOW - 9_000), 1),
+        );
+        gw.posts.insert(
+            key("comment/c2"),
+            record("post", NOW - 2_000, posted(NOW - 2_000), 1),
+        );
+        gw.posted = vec!["c1".into(), "c2".into()];
+        gw.declared = 2;
+        let st = TaskStatus {
+            declared: vec![
+                json!({"kind": "Comment", "id": "c1", "text": "On it.", "more": true}),
+                json!({"kind": "Comment", "id": "c2", "text": "Done."}),
+            ],
+            ..TaskStatus::default()
+        };
+        let t = task(Some(gw), st);
+        assert!(GatewayController::due(&t, NOW));
+        let (plan, gw) = run(&t, with_caps(conv(2, thread()), caps(true)));
+        assert_eq!(
+            sorted(reacts(&plan)),
+            sorted(vec![
+                (
+                    react(&alex, "replied", true),
+                    "white_check_mark".into(),
+                    true
+                ),
+                (
+                    react(&alex, "working", false),
+                    "hammer_and_wrench".into(),
+                    false
+                ),
+            ])
+        );
+        assert_eq!(gw.reactions.marks[&alex], Mark::Replied);
+    }
+
+    #[test]
+    fn a_working_declaration_moves_seen_to_working_but_not_a_message_relayed_in_the_same_pass() {
+        let other = T0.to_string();
+        let alex = (T0 + 300_000).to_string();
+        // The other message was relayed and marked seen before; Alex's is
+        // new in this pass, so the worker has not read it.
+        let mut gw = marked(&other, Mark::Seen).unwrap();
+        gw.posts.insert(
+            key("comment/c0"),
+            record("post", NOW - 9_000, posted(NOW - 9_000), 1),
+        );
+        gw.reactions.replies.insert(key("comment/c0"));
+        let st = TaskStatus {
+            declared: vec![json!({"kind": "Working", "id": "w1"})],
+            ..TaskStatus::default()
+        };
+        let t = task(Some(gw), st);
+        assert!(GatewayController::due(&t, NOW));
+        let messages = vec![
+            person(T0, 1, "U0456EFGH", "The nightly export failed again."),
+            person(T0 + 300_000, 3, ALEX, "And the weekly one?"),
+        ];
+        let (plan, gw) = run(&t, with_caps(conv(3, messages), caps(true)));
+        assert_eq!(plan.appends.len(), 1, "Alex's message is relayed");
+        assert_eq!(
+            sorted(reacts(&plan)),
+            sorted(vec![
+                (react(&alex, "seen", true), "eyes".into(), true),
+                (
+                    react(&other, "working", true),
+                    "hammer_and_wrench".into(),
+                    true
+                ),
+                (react(&other, "seen", false), "eyes".into(), false),
+            ])
+        );
+        assert_eq!(gw.reactions.marks[&other], Mark::Working);
+        assert_eq!(gw.reactions.marks[&alex], Mark::Seen);
+        assert_eq!(gw.declared, 1, "the declaration is read");
+        assert!(
+            !gw.posts.keys().any(|k| k.contains("/working/w1")),
+            "a Working declaration is no post: {gw:#?}"
+        );
+    }
+
+    #[test]
+    fn a_working_declaration_without_an_id_is_skipped_and_named() {
+        let alex = (T0 + 300_000).to_string();
+        let gw = marked(&alex, Mark::Seen).unwrap();
+        let st = TaskStatus {
+            declared: vec![json!({"kind": "Working"})],
+            ..TaskStatus::default()
+        };
+        let t = task(Some(gw), st);
+        let (plan, gw) = run(&t, with_caps(conv(2, thread()), caps(true)));
+        assert!(reacts(&plan).is_empty(), "{:#?}", plan.effects);
+        assert_eq!(gw.reactions.marks[&alex], Mark::Seen);
+        assert!(attention(&gw), "{gw:#?}");
+    }
+
+    #[test]
+    fn a_result_marks_every_open_message_replied_once() {
+        let alex = (T0 + 300_000).to_string();
+        let mut gw = marked(&alex, Mark::Working).unwrap();
+        gw.reactions.marks.insert(T0.to_string(), Mark::Seen);
+        let result: fleet_api::result::TaskResult = serde_json::from_value(json!({
+            "generation": 1, "outcome": "shipped", "summary": "fixed"
+        }))
+        .unwrap();
+        let st = TaskStatus {
+            result: Some(result.clone()),
+            ..TaskStatus::default()
+        };
+        let t = task(Some(gw), st.clone());
+        assert!(GatewayController::due(&t, NOW));
+        let (plan, gw) = run(&t, with_caps(conv(2, thread()), caps(true)));
+        assert_eq!(
+            sorted(reacts(&plan)),
+            sorted(vec![
+                (
+                    react(&alex, "replied", true),
+                    "white_check_mark".into(),
+                    true
+                ),
+                (
+                    react(&alex, "working", false),
+                    "hammer_and_wrench".into(),
+                    false
+                ),
+                (
+                    react(&T0.to_string(), "replied", true),
+                    "white_check_mark".into(),
+                    true
+                ),
+                (react(&T0.to_string(), "seen", false), "eyes".into(), false),
+            ])
+        );
+        assert_eq!(gw.reactions.result, Some(1));
+        // A message marked seen after it is not replied to by it.
+        let mut gw = gw;
+        gw.posts.retain(|k, _| !k.contains("/react/"));
+        gw.reactions.marks.insert("x2".into(), Mark::Seen);
+        let t = task(Some(gw), st);
+        assert!(!GatewayController::due(&t, NOW));
+    }
 }
 
 mod reactions_gone {
@@ -2921,10 +3191,10 @@ mod reactions_gone {
     #[test]
     fn a_thread_readably_gone_forgets_its_marks_so_the_task_is_not_due_forever() {
         let alex = (T0 + 300_000).to_string();
-        let k = format!("task/{TASK}/{TASK_UID}/gateway/react/{alex}/working/on");
+        let k = format!("task/{TASK}/{TASK_UID}/gateway/react/{alex}/seen/on");
         let mut gw = tied_at(2).unwrap();
         gw.reactions = ReactionStatus {
-            marks: BTreeMap::from([(alex, Mark::Working)]),
+            marks: BTreeMap::from([(alex, Mark::Seen)]),
             ..ReactionStatus::default()
         };
         gw.posts.insert(

@@ -112,15 +112,18 @@ GatewayController relays when a tied thread has new admitted messages:
 - If the mirror dropped messages that were never relayed, because the
   thread outgrew the 200 it keeps, the entry says that they remain on the
   platform, and the Task raises `NeedsAttention/RelayGap`.
-- Each admitted message in the entry that has no mark gets the working
+- Each admitted message in the entry that has no mark gets the seen
   reaction. See [reactions](#reactions).
+- The entry tells the worker how its answers mark the messages. See
+  [reactions](#reactions).
 
 ## Posting
 
 GatewayController posts in a tied thread, in this order:
 
 1. every `Question` and `Comment` the Task added since the last pass, in
-   declaration order;
+   declaration order. A `Working` declaration among them posts nothing. It
+   marks the open messages working when Fleet reads it;
 2. one ready notice per followed change, with its URL, the first time the
    change is in a state other than `draft` (`everReady` is true).
 
@@ -133,8 +136,9 @@ or not `gateway.logs` is set.
 - Posts to one thread go out one at a time. A post with an unknown outcome
   holds back later posts to that thread, and no other thread.
 - A full inbox does not hold back posting.
-- A post that lands marks every message still marked working as replied.
-  See [reactions](#reactions).
+- A post that lands moves every open message: to working for a Comment
+  with `"more": true`, to replied for any other post. See
+  [reactions](#reactions).
 
 ## Logging
 
@@ -173,36 +177,53 @@ account's capabilities say `reactions`.
 | --- | --- |
 | none | Fleet added no reaction. |
 | queued | Admission accepted the message, and the message waits for its Task. Fleet added the queued reaction. |
-| working | The Task has the message, or admission just created the Task for it. Fleet added the working reaction, and removed the queued reaction. |
-| replied | Fleet posted in the thread since. It added the replied reaction and removed the working reaction. |
+| seen | The Task has the message, or admission just created the Task for it. Fleet added the seen reaction, and removed the queued reaction. |
+| working | The worker said more is coming. Fleet added the working reaction, and removed the seen reaction. |
+| replied | The worker's turn is over. Fleet added the replied reaction, and removed the seen or working reaction. |
+
+A message marked seen or working is open.
 
 | From | Event | To |
 | --- | --- | --- |
-| none | Admission starts a Task for the message, and the create answers `Created` | working |
+| none | Admission starts a Task for the message, and the create answers `Created` | seen |
 | none | Admission starts a Task for the message, and the create answers `WorkspaceBusy` | queued |
 | none | The thread's create waits for its directory, and the message is `Admitted` and later than the trigger | queued |
-| queued | The create answers `Created`, and the capabilities are known on that pass | working |
-| queued | The create answered `Created` on an earlier pass, whose capabilities were Unknown | none, and Fleet removes the queued reaction. The join marks the message working. |
+| queued | The create answers `Created`, and the capabilities are known on that pass | seen |
+| queued | The create answered `Created` on an earlier pass, whose capabilities were Unknown | none, and Fleet removes the queued reaction. The join marks the message seen. |
 | queued | The wait is withdrawn: the trigger left the mirror | none, and Fleet removes the queued reaction |
-| none | A relay or the join delivers the message, and it is `Admitted` | working |
-| working | A Question, a Comment or a ready notice lands in the thread for the Task | replied |
+| none | A relay or the join delivers the message, and it is `Admitted` | seen |
+| seen | A Comment with `"more": true` lands in the thread for the Task | working |
+| seen | Fleet reads a `Working` declaration of the Task | working |
+| seen or working | A Comment without `"more": true`, a Question or a ready notice lands in the thread for the Task | replied |
+| seen or working | The Task reports a result for a generation not counted yet | replied |
 | queued | The message leaves the mirror, removed or rotated out | none, and Fleet removes the queued reaction |
-| working or replied | The message leaves the mirror, removed or rotated out | none, and Fleet changes no reaction |
-| queued, working or replied | `gateway.reactions` turns `false` | none, and Fleet changes no reaction |
-| working or replied | The tie ends: the Conversation is readably gone, or names another Task | none, and Fleet changes no reaction |
+| seen, working or replied | The message leaves the mirror, removed or rotated out | none, and Fleet changes no reaction |
+| queued, seen, working or replied | `gateway.reactions` turns `false` | none, and Fleet changes no reaction |
+| seen, working or replied | The tie ends: the Conversation is readably gone, or names another Task | none, and Fleet changes no reaction |
 
 Rules:
 
-- Fleet adds the working reaction to a message once. The join marks a
-  message that admission marked working, and adds no reaction where
-  admission's working reaction landed. Otherwise the join adds it.
-- Admission tries its working reaction once. Reason: a retry could land
-  after the Task replied, and the working reaction would then stay.
+- A mark never moves back. A working message stays working when another
+  Comment with `"more": true` lands.
+- Fleet adds the seen reaction to a message once. The join marks a
+  message that admission marked seen, and adds no reaction where
+  admission's seen reaction landed. Otherwise the join adds it.
+- Admission tries its seen reaction once. Reason: a retry could land
+  after the Task replied, and the seen reaction would then stay.
 - A message marked queued keeps the queued reaction when a thread post
   lands. Reason: nothing worked on it yet.
 - A message that is edited and relayed again keeps its mark.
-- A thread post counts as a reply only to the messages marked working
-  before it landed.
+- A thread post counts only for the messages that were open before it
+  landed.
+- When more than one thread post landed since the last move, the newest
+  post decides the mark.
+- A result counts once per generation, for the messages that were open
+  when Fleet read it. GatewayController records that generation in
+  `status.gateway.reactions.result`.
+- A `Working` declaration does not move a message that the same pass
+  relayed. Reason: the worker could not have read that message yet.
+- A `Working` declaration without an `id` is skipped, and the Task raises
+  `NeedsAttention/DeclarationInvalid`.
 - A log post, a refusal and a busy notice are no reply.
 - A reaction of ConversationController is a keyed effect on the
   Conversation, under `conversation/<uid>/react/`. It is best effort, as a
