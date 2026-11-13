@@ -2607,6 +2607,36 @@ mod reactions {
     }
 
     #[test]
+    fn a_seen_record_is_dropped_once_the_seen_stage_shows_no_mark() {
+        // Admission planned its seen reaction; the config then names `eyes`
+        // for `working`, so the seen default yields and the stage is off.
+        let (_, st) = run(
+            &object(Some(&created())),
+            with_caps(reacting(true), Some(task_object("t1"))),
+        );
+        let key = react_key(UID, MENTION, Mark::Seen, true);
+        assert!(st.effects.contains_key(&key), "{:?}", st.effects);
+        let mut off = defaults();
+        off.reactions = Some(fleet_api::gateway::Reactions {
+            seen: None,
+            working: Some("eyes".into()),
+            ..fleet_api::gateway::Reactions::default()
+        });
+        let (plan, after) = run_with(
+            &object(Some(&st)),
+            with_caps(reacting(true), Some(task_object("t1"))),
+            off,
+            NOW + 600_000,
+        );
+        assert!(reacts(&plan).is_empty(), "not retried: {plan:?}");
+        assert!(
+            !after.effects.contains_key(&key),
+            "dropped: {:?}",
+            after.effects
+        );
+    }
+
+    #[test]
     fn a_working_mark_from_before_seen_existed_is_never_tried_again() {
         // An older binary marked the trigger `working` with 👀. `working`
         // now names 🛠️, so a retry would add the wrong emoji.
