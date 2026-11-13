@@ -1,6 +1,11 @@
 <!-- rumdl-disable MD041 -->
 <!-- The banner is the first line by design; MD041 wants a level-1 heading. -->
 
+> [!WARNING]
+> This repository is deprecated. Fleet has moved into the
+> [thurbox monorepo](https://github.com/Thurbeen/thurbox). Read the Fleet
+> documentation in [`docs/fleet`](https://github.com/Thurbeen/thurbox/tree/main/docs/fleet).
+
 ![Fleet: operators at consoles in a red mission control room, a squadron of fighter craft above them, powered by thurbox][banner]
 
 [banner]: media/fleet-banner.jpg
